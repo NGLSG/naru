@@ -1,0 +1,333 @@
+module naru;
+
+use std.collections;
+use std.string;
+
+// These length-bearing functions are forwarded by mlir_loader.c to the in-process
+// MLIR bridge. Handles belong to the session; borrowed diagnostics are copied
+// before the next bridge call. The generated module is never text-roundtripped.
+extern "C" {
+    fn naru_mlir_create() -> rawptr;
+    fn naru_mlir_destroy(session: rawptr);
+    fn naru_mlir_error(session: rawptr) -> rawptr;
+    fn naru_mlir_configure(session: rawptr, json: rawptr, length: i64) -> i32;
+    fn naru_mlir_parse(session: rawptr, text: rawptr, length: i64, source: rawptr, source_length: i64) -> i32;
+    fn naru_mlir_module_body(session: rawptr) -> rawptr;
+    fn naru_mlir_location(session: rawptr, file: rawptr, length: i64, line: i64, column: i64) -> rawptr;
+    fn naru_mlir_type_parse(session: rawptr, text: rawptr, length: i64) -> rawptr;
+    fn naru_mlir_attr_string(session: rawptr, text: rawptr, length: i64) -> rawptr;
+    fn naru_mlir_attr_integer(session: rawptr, type_handle: rawptr, text: rawptr, length: i64) -> rawptr;
+    fn naru_mlir_attr_parse(session: rawptr, text: rawptr, length: i64) -> rawptr;
+    fn naru_mlir_region_create(session: rawptr) -> rawptr;
+    fn naru_mlir_block_create(session: rawptr, types: rawptr, count: i64, location: rawptr) -> rawptr;
+    fn naru_mlir_region_append_block(session: rawptr, region: rawptr, block: rawptr) -> i32;
+    fn naru_mlir_block_argument(session: rawptr, block: rawptr, index: i64) -> rawptr;
+    fn naru_mlir_op_begin(session: rawptr, name: rawptr, length: i64, location: rawptr) -> rawptr;
+    fn naru_mlir_op_add_operand(session: rawptr, state: rawptr, operand: rawptr) -> i32;
+    fn naru_mlir_op_add_type(session: rawptr, state: rawptr, type_handle: rawptr) -> i32;
+    fn naru_mlir_op_add_attribute(session: rawptr, state: rawptr, name: rawptr, length: i64, attribute: rawptr) -> i32;
+    fn naru_mlir_op_add_region(session: rawptr, state: rawptr, region: rawptr) -> i32;
+    fn naru_mlir_op_add_successor(session: rawptr, state: rawptr, block: rawptr) -> i32;
+    fn naru_mlir_op_finish(session: rawptr, state: rawptr, block: rawptr) -> rawptr;
+    fn naru_mlir_op_result(session: rawptr, operation: rawptr, index: i64) -> rawptr;
+    fn naru_mlir_compile(session: rawptr, target: rawptr, target_length: i64, output: rawptr, output_length: i64) -> i32;
+    fn naru_mlir_verify(session: rawptr) -> i32;
+    fn naru_mlir_module_text(session: rawptr, generic: i32) -> rawptr;
+    fn naru_mlir_print_size(session: rawptr) -> i64;
+}
+
+class MlirSession {
+    public handle: rawptr;
+    public values: Dict<i64, rawptr>;
+    public types: Dict<string, rawptr>;
+    public blocks: Dict<i64, rawptr>;
+    public block_regions: Dict<i64, i64>;
+    public regions: Dict<i64, rawptr>;
+    public operations: Dict<i64, rawptr>;
+    public imported: bool;
+
+    public fn close() {
+        if (self.handle != null) { naru_mlir_destroy(self.handle); self.handle = null; }
+    }
+}
+
+public fn mlir_bridge_error(e: &mut Engine, session: &mut MlirSession, fallback: string) {
+    if (!e.good()) { return; }
+    let pointer = naru_mlir_error(session.handle);
+    if (pointer != null) {
+        let message = str_dup(from_cstr(pointer));
+        if (message.len != 0) { e.reject(message); return; }
+    }
+    e.reject(fallback);
+}
+
+public fn new_mlir_session(e: &mut Engine, configuration: string) -> MlirSession {
+    var session = MlirSession {
+        handle: naru_mlir_create(), values: Dict::<i64, rawptr>.new(),
+        types: Dict::<string, rawptr>.new(), blocks: Dict::<i64, rawptr>.new(),
+        block_regions: Dict::<i64, i64>.new(), regions: Dict::<i64, rawptr>.new(),
+        operations: Dict::<i64, rawptr>.new(), imported: false
+    };
+    if (session.handle == null) { mlir_bridge_error(e, &mut session, "cannot create the MLIR session"); }
+    else if (naru_mlir_configure(session.handle, configuration.c_str(), configuration.len) != 0) {
+        mlir_bridge_error(e, &mut session, "cannot configure the MLIR session");
+    }
+    return session;
+}
+
+public fn mlir_node_location(e: &mut Engine, session: &mut MlirSession, node_id: i64) -> rawptr {
+    let node = e.node(node_id);
+    let location = naru_mlir_location(session.handle, node.file.c_str(), node.file.len, node.line, node.column);
+    if (location == null) { mlir_bridge_error(e, session, "cannot construct a source location"); }
+    return location;
+}
+
+public fn mlir_type_handle(e: &mut Engine, session: &mut MlirSession, node_id: i64) -> rawptr {
+    let node = e.node(node_id);
+    if (node.kind != 1) {
+        e.at_error(node.file, node.line, node.column, "MLIR type descriptor must be a string"); return null;
+    }
+    if (session.types.contains(node.text)) { return session.types.get(node.text); }
+    let result = naru_mlir_type_parse(session.handle, node.text.c_str(), node.text.len);
+    if (result == null) { mlir_bridge_error(e, session, "cannot construct MLIR type " + node.text); return null; }
+    session.types.put(node.text, result);
+    return result;
+}
+
+public fn mlir_attribute_handle(e: &mut Engine, session: &mut MlirSession, node_id: i64) -> rawptr {
+    let node = e.node(node_id);
+    let raw = node.text == "RawAttr" || node.text.ends_with(".RawAttr");
+    if (node.kind != 0 || (node.text != "Attr" && !node.text.ends_with(".Attr") && !raw)
+        || node.count < 2 || node.count > 3 || (raw && node.count != 2)) {
+        e.at_error(node.file, node.line, node.column, "expected Attr(name,value[,type]) or RawAttr(name,text)"); return null;
+    }
+    let name = e.node(e.child(node_id, 0)); let value = e.node(e.child(node_id, 1));
+    if (name.kind != 1 || name.text.len == 0) { e.reject("MLIR attribute name must be a nonempty string"); return null; }
+    var attribute: rawptr = null;
+    if (raw) {
+        if (value.kind != 1) { e.reject("RawAttr text must be a string"); return null; }
+        attribute = naru_mlir_attr_parse(session.handle, value.text.c_str(), value.text.len);
+    } else if (value.kind == 1) {
+        if (node.count != 2) { e.reject("string attributes do not accept a numeric type annotation"); return null; }
+        attribute = naru_mlir_attr_string(session.handle, value.text.c_str(), value.text.len);
+    } else if (value.kind == 2) {
+        var type_handle: rawptr = null;
+        if (node.count == 3) { type_handle = mlir_type_handle(e, session, e.child(node_id, 2)); }
+        else { type_handle = naru_mlir_type_parse(session.handle, "i64".c_str(), 3); }
+        if (type_handle == null || !e.good()) { mlir_bridge_error(e, session, "invalid integer attribute type"); return null; }
+        attribute = naru_mlir_attr_integer(session.handle, type_handle, value.text.c_str(), value.text.len);
+    } else { e.reject("MLIR attribute value must be a string or integer"); return null; }
+    if (attribute == null) { mlir_bridge_error(e, session, "cannot construct attribute " + name.text); }
+    return attribute;
+}
+
+public fn mlir_prepare_block(e: &mut Engine, session: &mut MlirSession, block_id: i64, region_id: i64, region: rawptr) -> bool {
+    let block = e.node(block_id);
+    if (block.kind != 9 || block.count != 2) { e.reject("invalid MLIR block graph"); return false; }
+    if (session.blocks.contains(block_id)) { e.reject("an MLIR block cannot belong to multiple regions"); return false; }
+    let arguments = e.child(block_id, 0); let operations = e.child(block_id, 1);
+    if (e.node(arguments).kind != 5 || e.node(operations).kind != 5) { e.reject("invalid MLIR block lists"); return false; }
+    var types = Vec::<rawptr>.new();
+    var edge = e.node(arguments).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edges.get(edge); let argument = e.node(item.value);
+        if (argument.kind != 7 || argument.count != 1) { e.reject("invalid MLIR block argument"); return false; }
+        if (session.values.contains(item.value)) { e.reject("an SSA value cannot define multiple block arguments"); return false; }
+        let type_handle = mlir_type_handle(e, session, e.child(item.value, 0));
+        if (type_handle == null) { return false; }
+        types.push(type_handle); edge = item.next;
+    }
+    let location = mlir_node_location(e, session, block_id);
+    if (!e.good()) { return false; }
+    let handle = naru_mlir_block_create(session.handle, types.data, types.len, location);
+    if (handle == null || naru_mlir_region_append_block(session.handle, region, handle) != 0) {
+        mlir_bridge_error(e, session, "cannot create and attach an MLIR block"); return false;
+    }
+    session.blocks.put(block_id, handle); session.block_regions.put(block_id, region_id);
+    edge = e.node(arguments).first;
+    var index: i64 = 0;
+    while (edge >= 0) {
+        let item = e.edges.get(edge);
+        let value = naru_mlir_block_argument(session.handle, handle, index);
+        if (value == null) { mlir_bridge_error(e, session, "cannot obtain block argument"); return false; }
+        session.values.put(item.value, value); edge = item.next; index = index + 1;
+    }
+    return true;
+}
+
+public fn mlir_import_operation_list(e: &mut Engine, session: &mut MlirSession, list: i64, block: rawptr, region_id: i64) -> bool {
+    var edge = e.node(list).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edges.get(edge);
+        if (!mlir_import_operation(e, session, item.value, block, region_id)) { return false; }
+        edge = item.next;
+    }
+    return e.good();
+}
+
+public fn mlir_import_region(e: &mut Engine, session: &mut MlirSession, region_id: i64) -> rawptr {
+    let node = e.node(region_id);
+    if (node.kind != 8) { e.reject("MLIR operation region must be a region node"); return null; }
+    if (session.regions.contains(region_id)) { e.reject("an MLIR region cannot be attached to multiple operations"); return null; }
+    let region = naru_mlir_region_create(session.handle);
+    if (region == null) { mlir_bridge_error(e, session, "cannot create MLIR region"); return null; }
+    session.regions.put(region_id, region);
+    let first = e.child(region_id, 0);
+    if (first < 0 && node.text == "blocks") { return region; }
+    if (first >= 0 && e.node(first).kind == 9) {
+        // Predeclare every block and argument before constructing operations so
+        // forward CFG successors and block arguments have real MLIR handles.
+        var edge = node.first;
+        while (edge >= 0 && e.good()) {
+            let item = e.edges.get(edge);
+            if (!mlir_prepare_block(e, session, item.value, region_id, region)) { return null; }
+            edge = item.next;
+        }
+        edge = node.first;
+        while (edge >= 0 && e.good()) {
+            let item = e.edges.get(edge);
+            if (!mlir_import_operation_list(e, session, e.child(item.value, 1), session.blocks.get(item.value), region_id)) { return null; }
+            edge = item.next;
+        }
+    } else {
+        // Compatibility representation: a region directly contains operations.
+        let location = mlir_node_location(e, session, region_id);
+        if (!e.good()) { return null; }
+        let block = naru_mlir_block_create(session.handle, null, 0, location);
+        if (block == null || naru_mlir_region_append_block(session.handle, region, block) != 0) {
+            mlir_bridge_error(e, session, "cannot construct implicit MLIR block"); return null;
+        }
+        if (!mlir_import_operation_list(e, session, region_id, block, region_id)) { return null; }
+    }
+    return region;
+}
+
+public fn mlir_import_operation(e: &mut Engine, session: &mut MlirSession, operation_id: i64, block: rawptr, region_id: i64) -> bool {
+    let node = e.node(operation_id);
+    if (node.kind != 6 || node.count < 5 || node.count > 6) { e.reject("invalid MLIR operation graph"); return false; }
+    if (session.operations.contains(operation_id)) { e.reject("an MLIR operation cannot be inserted twice"); return false; }
+    var index: i64 = 0;
+    while (index < node.count) {
+        if (e.node(e.child(operation_id, index)).kind != 5) { e.reject("MLIR operation components must be lists"); return false; }
+        index = index + 1;
+    }
+    let operands = e.child(operation_id, 0); let types = e.child(operation_id, 1);
+    let attributes = e.child(operation_id, 2); let regions = e.child(operation_id, 3);
+    let results = e.child(operation_id, 4);
+    if (e.node(types).count != e.node(results).count) { e.reject("MLIR result/type count mismatch"); return false; }
+    let location = mlir_node_location(e, session, operation_id);
+    if (!e.good()) { return false; }
+    let state = naru_mlir_op_begin(session.handle, node.text.c_str(), node.text.len, location);
+    if (state == null) { mlir_bridge_error(e, session, "cannot begin operation " + node.text); return false; }
+    // Mark before descending: malformed cyclic graphs must not recurse forever.
+    session.operations.put(operation_id, null);
+    var edge = e.node(operands).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edges.get(edge);
+        if (!session.values.contains(item.value)) {
+            e.at_error(node.file, node.line, node.column, "SSA operand has no preceding definition or block argument"); return false;
+        }
+        if (naru_mlir_op_add_operand(session.handle, state, session.values.get(item.value)) != 0) {
+            mlir_bridge_error(e, session, "cannot add MLIR operand"); return false;
+        }
+        edge = item.next;
+    }
+    edge = e.node(types).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edges.get(edge); let type_handle = mlir_type_handle(e, session, item.value);
+        if (type_handle == null) { return false; }
+        if (naru_mlir_op_add_type(session.handle, state, type_handle) != 0) {
+            mlir_bridge_error(e, session, "cannot add MLIR result type"); return false;
+        }
+        edge = item.next;
+    }
+    edge = e.node(attributes).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edges.get(edge); let attribute = mlir_attribute_handle(e, session, item.value);
+        if (attribute == null) { return false; }
+        let name = e.node(e.child(item.value, 0)).text;
+        if (naru_mlir_op_add_attribute(session.handle, state, name.c_str(), name.len, attribute) != 0) {
+            mlir_bridge_error(e, session, "cannot add MLIR attribute"); return false;
+        }
+        edge = item.next;
+    }
+    edge = e.node(regions).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edges.get(edge); let region = mlir_import_region(e, session, item.value);
+        if (region == null) { return false; }
+        if (naru_mlir_op_add_region(session.handle, state, region) != 0) {
+            mlir_bridge_error(e, session, "cannot add MLIR region"); return false;
+        }
+        edge = item.next;
+    }
+    if (node.count == 6) {
+        edge = e.node(e.child(operation_id, 5)).first;
+        while (edge >= 0 && e.good()) {
+            let item = e.edges.get(edge);
+            if (!session.blocks.contains(item.value) || session.block_regions.get(item.value) != region_id) {
+                e.at_error(node.file, node.line, node.column, "successor block must belong to the same region"); return false;
+            }
+            if (naru_mlir_op_add_successor(session.handle, state, session.blocks.get(item.value)) != 0) {
+                mlir_bridge_error(e, session, "cannot add MLIR successor"); return false;
+            }
+            edge = item.next;
+        }
+    }
+    let operation = naru_mlir_op_finish(session.handle, state, block);
+    if (operation == null) { mlir_bridge_error(e, session, "cannot finish operation " + node.text); return false; }
+    session.operations.put(operation_id, operation);
+    edge = e.node(results).first; index = 0;
+    while (edge >= 0) {
+        let item = e.edges.get(edge);
+        if (session.values.contains(item.value)) { e.reject("an SSA result has multiple definitions"); return false; }
+        let value = naru_mlir_op_result(session.handle, operation, index);
+        if (value == null) { mlir_bridge_error(e, session, "cannot obtain MLIR result"); return false; }
+        session.values.put(item.value, value); edge = item.next; index = index + 1;
+    }
+    return e.good();
+}
+
+public fn import_mlir_graph(e: &mut Engine, session: &mut MlirSession, root: i64) -> bool {
+    if (!e.good()) { return false; }
+    if (session.handle == null || session.imported) { e.reject("MLIR session is closed or already has a program"); return false; }
+    if (root < 0 || e.node(root).kind != 8) { e.reject("MLIR program root must be a region"); return false; }
+    let body = naru_mlir_module_body(session.handle);
+    if (body == null) { mlir_bridge_error(e, session, "MLIR module has no body"); return false; }
+    session.imported = true;
+    return mlir_import_operation_list(e, session, root, body, root);
+}
+
+public fn print_mlir_session(e: &mut Engine, session: &mut MlirSession) -> string {
+    if (!e.good() || session.handle == null) { return ""; }
+    let pointer = naru_mlir_module_text(session.handle, 1);
+    if (pointer == null) { mlir_bridge_error(e, session, "cannot print MLIR module"); return ""; }
+    let length = naru_mlir_print_size(session.handle);
+    if (length < 0) { e.reject("invalid MLIR printed text length"); return ""; }
+    return from_cstr_len(pointer, length);
+}
+
+public fn verify_mlir_session(e: &mut Engine, session: &mut MlirSession) -> bool {
+    if (!e.good() || session.handle == null) { return false; }
+    if (naru_mlir_verify(session.handle) != 0) {
+        mlir_bridge_error(e, session, "MLIR module verification failed"); return false;
+    }
+    return true;
+}
+
+public fn compile_mlir_session(e: &mut Engine, session: &mut MlirSession, target: string, output: string) -> bool {
+    if (!e.good() || session.handle == null) { return false; }
+    if (naru_mlir_compile(session.handle, target.c_str(), target.len, output.c_str(), output.len) != 0) {
+        mlir_bridge_error(e, session, "MLIR compilation failed"); return false;
+    }
+    return true;
+}
+
+// Explicit MLIR tooling input only. Naru programs use import_mlir_graph and
+// construct operations directly without printing or reparsing their module.
+public fn parse_mlir_session(e: &mut Engine, session: &mut MlirSession, text: string, source: string) -> bool {
+    if (!e.good() || session.handle == null) { return false; }
+    if (naru_mlir_parse(session.handle, text.c_str(), text.len, source.c_str(), source.len) != 0) {
+        mlir_bridge_error(e, session, "cannot parse MLIR input"); return false;
+    }
+    session.imported = true; return true;
+}

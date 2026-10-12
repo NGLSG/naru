@@ -1,0 +1,20 @@
+[package]
+name = "naru"
+version = "0.2.0"
+entry = "src/main.vyx"
+
+[build]
+output_dir = "target"
+cache_dir = ".cache"
+threads = 4
+
+[dependencies]
+core = { path = "std:core", target = "std_core" }
+collections = { path = "std:collections", target = "std_collections" }
+io = { path = "std:io", target = "std_io" }
+
+[target.naru]
+type = "executable"
+entry = "src/main.vyx"
+auto_sources = false
+sources = ["src/model.vyx", "src/lex.vyx", "src/stx.vyx", "src/grammar.vyx", "src/eval.vyx", "src/rules.vyx", "src/source_tools.vyx", "src/ir.vyx", "src/mlir.vyx", "src/project.vyx", "src/manifest.vyx", "src/source.vyx", "src/freeze.vyx", "src/specialized.vyx", "src/native.c", "src/mlir_loader.c"]

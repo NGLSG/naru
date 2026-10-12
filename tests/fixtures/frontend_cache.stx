@@ -1,0 +1,13 @@
+mod frontend_cache;
+
+// Shared recursive prefixes previously reparsed the same inner expression
+// exponentially. Different suffixes still select distinct ordinary rules.
+syntax cache.expr `$number:int` => Number($number);
+syntax cache.expr `($inner:cache.expr) a` => A($inner);
+syntax cache.expr `($inner:cache.expr) b` => B($inner);
+syntax cache.item `$value:cache.expr;` => Item($value);
+
+// Atomic terminals are chosen by a frontend, independent of core punctuation.
+syntax atomic.expr `$value:int` => Number($value);
+syntax atomic.expr `"++" $value:atomic.expr` => Increment($value);
+syntax atomic.expr `+ $value:atomic.expr` => Positive($value);

@@ -1,0 +1,36 @@
+// A deliberately small, single-resource analysis written entirely in rules.
+// If describes an unknown condition: both control-flow paths must be checked.
+// This package omits borrow lifetimes, aliases and destructors.
+// loops.stx separately adds finite-state loop analysis to the own relation.
+mod ownership;
+
+syntax flow `move` => Move();
+syntax flow `touch` => Touch();
+syntax flow `skip` => Skip();
+syntax flow `($a:flow ; $b:flow)` => Seq($a, $b);
+syntax flow `if $condition:ident { $yes:flow } else { $no:flow }`
+    => If($yes, $no);
+syntax item `check $body:flow` => Program($body);
+
+effect analyze(Program($body)) => own($body, Owned());
+
+effect own(Skip(), $state) => $state;
+effect own(Seq($first, $next), $state) => own($next, own($first, $state));
+effect own(If($yes, $no), $state) => join(own($yes, $state), own($no, $state));
+
+effect own(Move(), Owned()) => Moved();
+effect own(Move(), Moved()) => fail("resource was already moved");
+effect own(Move(), MaybeMoved()) => fail("resource may have been moved");
+effect own(Touch(), Owned()) => Owned();
+effect own(Touch(), Moved()) => fail("cannot use a moved resource");
+effect own(Touch(), MaybeMoved()) => fail("cannot use a possibly moved resource");
+
+effect join(Owned(), Owned()) => Owned();
+effect join(Owned(), Moved()) => MaybeMoved();
+effect join(Owned(), MaybeMoved()) => MaybeMoved();
+effect join(Moved(), Owned()) => MaybeMoved();
+effect join(Moved(), Moved()) => Moved();
+effect join(Moved(), MaybeMoved()) => MaybeMoved();
+effect join(MaybeMoved(), Owned()) => MaybeMoved();
+effect join(MaybeMoved(), Moved()) => MaybeMoved();
+effect join(MaybeMoved(), MaybeMoved()) => MaybeMoved();

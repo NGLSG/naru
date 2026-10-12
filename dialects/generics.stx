@@ -1,0 +1,69 @@
+mod generics;
+use base;
+use types;
+use records;
+use traits;
+use pipeline;
+use tree;
+
+syntax type_parameters `$name:ident` => [$name];
+syntax type_parameters `$name:ident, $rest:type_parameters` => list.prepend($name, $rest);
+syntax requirements `$type:typename : $trait:ident` => [Requirement($trait, $type)];
+syntax requirements `$type:typename : $trait:ident, $rest:requirements` => list.prepend(Requirement($trait, $type), $rest);
+syntax item `fn $name:ident<$variables:type_parameters>($params:parameters) -> $result:typename $body:block`
+    => Template($name, $variables, $params, $result, $body, []);
+syntax item `fn $name:ident<$variables:type_parameters>() -> $result:typename $body:block`
+    => Template($name, $variables, [], $result, $body, []);
+syntax item `fn $name:ident<$variables:type_parameters>($params:parameters) -> $result:typename where $requires:requirements $body:block`
+    => Template($name, $variables, $params, $result, $body, $requires);
+syntax expr `$name:ident<$types:type_list>($arguments:arguments)` => GenericCall($name, $types, $arguments);
+syntax expr `$name:ident<$types:type_list>()` => GenericCall($name, $types, []);
+
+effect pipeline.steps() => pipeline.Step("generics", [], "generics.prepare");
+effect prepare($items) => bind([$values, $templates], gather($items, [], env.empty()),
+    bind([$rewritten, $state], walk($values, State($templates, env.empty(), [], 0)), generics.finish($rewritten, $state)));
+effect gather([], $values, $templates) => [$values, $templates];
+effect gather($items, $values, $templates) when lt(0, size($items))
+    => gather_head(list.head($items), list.tail($items), $values, $templates);
+effect gather_head(Template($name, $variables, $params, $result, $body, $requires), $rest, $values, $templates)
+    => choose(env.contains($templates, $name), fail(concat("duplicate generic function: ", $name)),
+        gather($rest, $values, env.put($templates, $name, Template($name, $variables, $params, $result, $body, $requires))));
+effect[fallback] gather_head($item, $rest, $values, $templates) => gather($rest, list.concat($values, [$item]), $templates);
+effect walk(GenericCall($name, $types, $arguments), $state)
+    => bind([$checked_arguments, $next], walk($arguments, $state), instantiate($name, $types, $checked_arguments, $next));
+effect[fallback] walk($value, $state) when eq(term.kind($value), 0)
+    => bind([$children, $next], walk_children($value, 0, $state), [term(tag($value), $children), $next]);
+effect walk($value, $state) when eq(term.kind($value), 5) => walk_children($value, 0, $state);
+effect[fallback] walk($value, $state) when and(not(eq(term.kind($value), 0)), not(eq(term.kind($value), 5))) => [$value, $state];
+effect walk_children($value, $index, $state) when eq($index, size($value)) => [[], $state];
+effect walk_children($value, $index, $state) when lt($index, size($value))
+    => bind([$head, $next], walk(arg($value, $index), $state),
+        bind([$rest, $last], walk_children($value, add($index, 1), $next), [list.prepend($head, $rest), $last]));
+effect instantiate($name, $types, $arguments, State($templates, $cache, $queue, $count))
+    => choose(env.contains($cache, Instance($name, $types)),
+        [base.Call(env.get($cache, Instance($name, $types)), $arguments), State($templates, $cache, $queue, $count)],
+        instance(env.get($templates, $name), $types, $arguments, State($templates, $cache, $queue, $count),
+            concat("_naru_generic_", concat(text($count), concat("_", $name)))));
+effect instance(Template($name, $variables, $params, $result, $body, $requires), $types, $arguments,
+        State($templates, $cache, $queue, $count), $symbol)
+    => bind($substitution, substitutions($variables, $types, env.empty()),
+        seq(check_requirements(tree.rewrite($requires, "generics.substitute", $substitution)),
+            [base.Call($symbol, $arguments), State($templates, env.put($cache, Instance($name, $types), $symbol),
+                list.concat($queue, [tree.rewrite(base.TypedFunction($symbol, $params, $result, $body), "generics.substitute", $substitution)]),
+                add($count, 1))]));
+effect substitutions([], [], $environment) => $environment;
+effect substitutions($variables, $types, $environment) when and(eq(size($variables), size($types)), lt(0, size($types)))
+    => choose(env.contains($environment, list.head($variables)), fail("duplicate generic type parameter"),
+        substitutions(list.tail($variables), list.tail($types), env.put($environment, list.head($variables), list.head($types))));
+effect substitutions($variables, $types, $environment) when not(eq(size($variables), size($types)))
+    => fail("generic type argument count mismatch");
+effect substitute(records.Named($name), $environment) => choose(env.contains($environment, $name),
+    env.get($environment, $name), records.Named($name));
+effect[fallback] substitute($value, $environment) => $value;
+effect check_requirements([]) => 1;
+effect check_requirements($requires) when lt(0, size($requires))
+    => bind(Requirement($trait, $type), list.head($requires), seq(traits.require($trait, $type), check_requirements(list.tail($requires))));
+effect finish($items, State($templates, $cache, [], $count)) => $items;
+effect finish($items, State($templates, $cache, $queue, $count)) when lt(0, size($queue))
+    => bind([$function, $next], walk(list.head($queue), State($templates, $cache, list.tail($queue), $count)),
+        generics.finish(list.concat($items, [$function]), $next));

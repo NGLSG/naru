@@ -1,0 +1,5 @@
+mod invalid_ir;
+use base;
+syntax item `invalid_ir` => Invalid();
+effect base.emit(Invalid())
+    => mlir.op("arith.addi", [base.emit(Int(1)), base.emit(Int(2))], ["i64"], [], []);

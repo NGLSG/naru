@@ -1,0 +1,3 @@
+mod pkg.inner;
+
+effect answer() => Nested();

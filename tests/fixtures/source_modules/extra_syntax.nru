@@ -1,0 +1,2 @@
+mod extra_syntax;
+def needs_another_dialect = 1;

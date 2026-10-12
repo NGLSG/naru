@@ -1,0 +1,17 @@
+mod demo;
+use base;
+use pipeline;
+use tree;
+use money;
+use traits;
+use types;
+
+// User evidence makes an existing custom type usable in generic functions.
+effect traits.accepts("Numeric", money.Cents()) => 1;
+effect base.cast_opcode(money.Cents(), types.Signed($width)) => base.integer_cast(64,$width,"arith.extsi");
+syntax expr `twice($value:expr)` => Twice($value);
+// Ordering is declared by this package, including stages owned by other libs.
+effect pipeline.steps() => pipeline.Step("demo", [], ["generics","records","defer","affine","strings"], "demo.prepare");
+effect prepare($items) => tree.rewrite($items, "demo.expand", env.empty());
+effect expand(Twice($value), $context) => base.Add($value, $value);
+effect[fallback] expand($value, $context) => $value;

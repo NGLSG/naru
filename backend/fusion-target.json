@@ -1,0 +1,4 @@
+{
+  "name": "affine-fusion",
+  "pipeline": "builtin.module(func.func(affine-loop-fusion,affine-scalrep,canonicalize,cse))"
+}

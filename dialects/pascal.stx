@@ -1,0 +1,675 @@
+// Pascal (ISO 7185) surface dialect over the base rule library.
+// Milestone 1: program block, var sections, value-parameter functions,
+// assignment/if/while/for/halt, integer & boolean expressions.
+// Provenance and fidelity tiers: historical/pascal/iso-1983/ (INDEX + notes).
+// Deviations from ISO 7185 are listed in docs/pascal.md and must stay in sync.
+mod pascal;
+use base;
+use types;
+use numbers;
+use pipeline;
+use tree;
+use control;
+
+// ---- frontend: Pascal lexing ------------------------------------------------
+// The default scanner has no := / <> tokens, so the dialect supplies its own
+// scanner policy, following the c11 pattern (dialects/c11/lex.stx).
+effect lex_config() => [
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_",
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789",
+    "0123456789.",
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789.", "eE",
+    [":=", "<>", "..",
+     "+", "-", "*", "/", "=", "<", ">", "(", ")", "[", "]", ",", ";", ":", ".", "^", "@"],
+    [["(*", "*)"]],
+    "'"
+];
+effect lex_phases($source)
+    => text.replace(text.replace($source, "\r\n", "\n"), "\r", "\n");
+effect lex_scan($source, $path)
+    => text.lex(lex_phases($source), $path, lex_config());
+
+// Token reclassification for the parser (following c11.lex):
+// - drop newline rows (kind 7, used only for line accounting);
+// - all punctuation becomes kind 14 (indivisible terminals), so := / <> / ..
+//   survive as single tokens instead of being re-segmented by the core;
+// - ISO 7185 reserved words become kind 8 so they cannot be captured as
+//   ordinary identifiers.
+// folds (iterative) rather than per-token recursion: real programs exceed
+// the rule-engine depth limit.
+effect drop_newlines($tokens) => list.reverse(list.fold("drop_step", $tokens, []));
+effect drop_step($acc, $token)
+    => choose(eq(lex_kind($token), 7), $acc, list.prepend($token, $acc));
+effect classify($tokens) => list.reverse(list.fold("classify_step", $tokens, []));
+effect classify_step($acc, $token) => list.prepend(classify_one(fold_identifier($token)), $acc);
+// Fold only identifier tokens: quoted text and source coordinates stay intact.
+effect fold_identifier([1, $r, $f, $l, $c, $s]) => [1, text.lower($r), $f, $l, $c, $s];
+effect[fallback] fold_identifier($token) => $token;
+effect classify_one([$k, $r, $f, $l, $c, $s]) when eq($k, 5) => [14, $r, $f, $l, $c, $s];
+effect classify_one([$k, $r, $f, $l, $c, $s]) when and(eq($k, 1), reserved($r))
+    => [8, $r, $f, $l, $c, $s];
+effect[fallback] classify_one([$k, $r, $f, $l, $c, $s]) => [$k, $r, $f, $l, $c, $s];
+effect lex_kind([$k, $r, $f, $l, $c, $s]) => $k;
+effect reserved($word)
+    => text.contains(" and array begin case const div do downto else end file for function goto if in label mod nil not of or packed procedure program record repeat set then to type until uses var while with ",
+        concat(" ", concat($word, " ")));
+
+// The commit relation is where parse terms become compiler terms:
+// source.parse_tokens freezes its item terms, so the statement-chain
+// conversion (below) is applied here, once, per parsed item.
+effect pascal.frontend($path, $source, $options)
+    => source.parse_tokens(classify(drop_newlines(lex_scan($source, $path))), "pascal.item",
+        env.empty(), "commit");
+
+// ---- type names (ISO 7185 §6.4.2 required simple types) --------------------
+// integer width is a deliberate implementation choice (ISO leaves it open);
+// historical hosts were 16-bit, modern interop uses 32-bit. See notes.md.
+syntax typename `integer` => Signed(32);
+syntax typename `boolean` => Bool();
+syntax typename `real` => Real("f64");
+
+// ---- expressions ------------------------------------------------------------
+// ISO 7185 §6.7.1 operator precedence, low to high:
+//   relational < adding (+,-,or) < multiplying (*,/,div,mod,and) < not
+// Base library supplies + - * and the relations; the Pascal spellings extend
+// the same term set so both check and lower relations are reused unchanged.
+// := and <> are not in the core tokenizer's two-char list, so the templates
+// spell them as quoted terminals (single literals) to match the kind-14
+// tokens this lexer emits. <= and >= are lexed as single characters and match
+// the base library's plain templates unchanged.
+syntax expr[60,left] `$a:expr div $b:expr` => PIntegerOp("div", $a, $b);
+syntax expr[60,left] `$a:expr mod $b:expr` => PIntegerOp("rem", $a, $b);
+syntax expr[40,left] `$a:expr = $b:expr` => Compare("eq", $a, $b);
+syntax expr[40,left] `$a:expr "<>" $b:expr` => Compare("ne", $a, $b);
+syntax expr[60,left] `$a:expr and $b:expr` => Bitwise("and", $a, $b);
+syntax expr[50,left] `$a:expr or $b:expr` => Bitwise("or", $a, $b);
+syntax expr[95,right] `not $e:expr` => PNot($e);
+
+// The shared '/' surface is retargeted at commit; div/mod keep separate
+// semantic constructors so their operand restrictions cannot be confused.
+effect expression_rule(Div($a, $b), $context) => PRealDiv($a, $b);
+effect[fallback] expression_rule($node, $context) => $node;
+effect base.hint(PRealDiv($a, $b), $environment) => Real("f64");
+effect base.hint(PIntegerOp($op, $a, $b), $environment) => Signed(32);
+effect base.check(PRealDiv($a, $b), $environment, $expected)
+    => expect(numeric_binary("div", Cast($a, Real("f64")), Cast($b, Real("f64")),
+        $environment, Real("f64")), $expected);
+effect base.check(PIntegerOp($op, $a, $b), $environment, $expected)
+    => expect(Typed(Signed(32), Binary($op,
+        integer_operand(check($a, $environment, Any())), integer_operand(check($b, $environment, Any())))), $expected);
+effect integer_operand(Typed(Signed(32), $value)) => Typed(Signed(32), $value);
+effect[fallback] integer_operand($value) => fail("Pascal div/mod require integer operands");
+
+// boolean is a first-class operand of and/or in Pascal (ISO §6.7.2); the base
+// library only registers integer bitwise opcodes.
+effect base.opcode("and", Bool()) => "arith.andi";
+effect base.opcode("or", Bool()) => "arith.ori";
+effect base.bitop("and", Bool()) => "arith.andi";
+effect base.bitop("or", Bool()) => "arith.ori";
+
+// not is unary negation on boolean; i1 lowering flips via xor with true.
+effect base.check(PNot($e), $environment, $expected)
+    => bind(Typed($d, $c), check($e, $environment, Bool()),
+        expect(Typed($d, NotC(Typed($d, $c))), $expected));
+effect base.hint(PNot($e), $environment) => Bool();
+effect base.lower(Typed(Bool(), NotC($v)), $environment)
+    => mlir.op("arith.xori", [lower($v, $environment),
+        mlir.op("arith.constant", [], ["i1"], [Attr("value", 1, "i1")], [])],
+        ["i1"], [], []);
+
+// ---- statements (ISO 7185 §6.8) ---------------------------------------------
+// A statement never carries its own separator: `;` IS the empty statement
+// (§6.8.2.3), so sequences are adjacency recursion and trailing semicolons
+// before `end` fall out without special cases.
+syntax pstmt `;` => Empty();
+syntax pstmt[fallback] `begin $steps:pstmts end` => Compound($steps);
+syntax pstmt `begin end` => Compound(End());
+
+// Assignment covers plain variables and the function-name result variable;
+// the latter is rewritten to a hygienic result slot in prepare (ISO §6.8.2.2).
+syntax pstmt `$name:ident ":=" $value:expr` => Assignment($name, $value);
+
+// A bare expression statement is a procedure call (or an extension).
+// fallback keeps keyword statements unambiguous against it.
+syntax pstmt[fallback] `$e:expr` => ExprStat($e);
+
+// halt is a Turbo-Pascal extension, not ISO 7185; it is flagged as such in
+// docs/pascal.md.
+syntax pstmt `halt` => Halt(Int(0));
+syntax pstmt `halt ( $e:expr )` => Halt($e);
+
+// ISO 7185 §6.9.4 write/writeln over the archive console (printf-backed).
+// Non-fallback so the expression-statement fallback never captures them.
+syntax pstmt `write ( $args:pwriteargs )` => WriteStat($args, 0);
+syntax pstmt `writeln ( $args:pwriteargs )` => WriteStat($args, 1);
+syntax pstmt `write` => WriteStat([], 0);
+syntax pstmt `writeln` => WriteStat([], 1);
+syntax pwriteargs `$e:expr` => [$e];
+syntax pwriteargs `$e:expr , $rest:pwriteargs` => list.prepend($e, $rest);
+
+// String literals: single-quoted Pascal strings (ISO §6.1.7). Only usable in
+// write/writeln arguments in milestone 2; there is no string type yet.
+// the string token carries its delimiters; strip them (Pascal '' escapes
+// inside literals are not decoded in milestone 2)
+syntax expr `$s:string`
+    => bind($len, text.len($s), PString(text.slice($s, 1, int.sub($len, 1))));
+
+// ISO 7185 §6.8.3.4 case: constant lists per arm, optional else.
+syntax pstmt `case $e:expr of $arms:pcasearms end` => Case($e, $arms, End());
+syntax pstmt `case $e:expr of $arms:pcasearms else $else:pstmt end`
+    => Case($e, $arms, $else);
+syntax pcasearms `$c:pconsts : $s:pstmt` => [CaseArm($c, $s)];
+syntax pcasearms `$c:pconsts : $s:pstmt ; $rest:pcasearms`
+    => list.prepend(CaseArm($c, $s), $rest);
+syntax pconsts `$v:pconst` => [$v];
+syntax pconsts `$v:pconst , $rest:pconsts` => list.prepend($v, $rest);
+syntax pconst `$n:int` => Int($n);
+syntax pconst `- $n:int` => Neg(Int($n));
+syntax pconst `true` => Boolean(1);
+syntax pconst `false` => Boolean(0);
+
+// ISO 7185 §6.8.3.1 if: dangling else binds to the nearest if. The else-less
+// rule is a fallback so the else-bearing parse wins without an ambiguity.
+syntax pstmt `if $c:expr then $yes:pstmt else $no:pstmt` => Branch($c, $yes, $no);
+syntax pstmt[fallback] `if $c:expr then $yes:pstmt` => Branch($c, $yes, End());
+
+// ISO 7185 §6.8.3.5 while, §6.8.3.9 for.
+syntax pstmt `while $c:expr do $body:pstmt` => Loop($c, $body);
+syntax pstmt `for $name:ident ":=" $from:expr to $to:expr do $body:pstmt`
+    => For($name, "up", $from, $to, $body);
+syntax pstmt `for $name:ident ":=" $from:expr downto $to:expr do $body:pstmt`
+    => For($name, "down", $from, $to, $body);
+
+// Sequences are adjacency over pseq, mirroring the base library's lists.
+// pseq is the chain constructor AND its own conversion: the parser commit
+// evaluates each frozen item, the application fires here, and the item the
+// commit returns already carries converted body chains.
+effect pseq($s, $rest) => convert_step($s, $rest);
+syntax pstmts `$s:pstmt` => pascal.pseq($s, End());
+syntax pstmts `$s:pstmt $rest:pstmts` => pascal.pseq($s, $rest);
+
+// ---- declarations (ISO 7185 §6.8.2) -----------------------------------------
+// Declarations are semicolon-terminated: each declaration consumes its own
+// `;`, so a declaration section is adjacency recursion. Only value parameters
+// in milestone 1; var/result parameters are future work.
+syntax pidents `$n:ident` => [$n];
+syntax pidents `$n:ident , $rest:pidents` => list.prepend($n, $rest);
+
+syntax pdecl `var $names:pidents : $t:typename ;` => VarDecl($names, $t);
+// const introduces a named value; milestone 2 lowers it to an initialized
+// local (assignment to it is NOT rejected yet - documented deviation).
+syntax pdecl `const $name:ident = $value:expr ;` => ConstDecl($name, $value);
+// A repeated `var` keyword is required per group; the one-`var`-many-groups
+// abbreviation of the report is not accepted in milestone 1.
+
+// The parameter list, including its parentheses, is the pgroups capture.
+syntax pgroups `( )` => [];
+syntax pgroups[fallback] `( $first:pgroup )` => $first;
+syntax pgroup `$names:pidents : $t:typename` => group_params($names, $t);
+syntax pgroup `$names:pidents : $t:typename ; $rest:pgroup`
+    => list.concat(group_params($names, $t), $rest);
+
+// Functions carry their own declaration section; nested procedures are not
+// supported in milestone 1 (flat naming, like the base library). The body is
+// captured as a compound statement; the trailing `;` is part of the pdecl.
+syntax pdecl[fallback] `function $name:ident : $result:typename ; $body:pstmt ;`
+    => PascalFunction($name, [], $result, [], $body);
+syntax pdecl[fallback] `function $name:ident $params:pgroups : $result:typename ; $body:pstmt ;`
+    => PascalFunction($name, $params, $result, [], $body);
+syntax pdecl[fallback] `function $name:ident : $result:typename ; $decls:pdecls $body:pstmt ;`
+    => PascalFunction($name, [], $result, $decls, $body);
+syntax pdecl[fallback] `function $name:ident $params:pgroups : $result:typename ; $decls:pdecls $body:pstmt ;`
+    => PascalFunction($name, $params, $result, $decls, $body);
+
+// procedure = function whose (unused) result is 32-bit zero; callers discard
+// it through the expression-statement path.
+syntax pdecl[fallback] `procedure $name:ident ; $body:pstmt ;`
+    => PascalProcedure($name, [], [], $body);
+syntax pdecl[fallback] `procedure $name:ident $params:pgroups ; $body:pstmt ;`
+    => PascalProcedure($name, $params, [], $body);
+syntax pdecl[fallback] `procedure $name:ident ; $decls:pdecls $body:pstmt ;`
+    => PascalProcedure($name, [], $decls, $body);
+syntax pdecl[fallback] `procedure $name:ident $params:pgroups ; $decls:pdecls $body:pstmt ;`
+    => PascalProcedure($name, $params, $decls, $body);
+
+syntax pdecls `$d:pdecl` => [$d];
+syntax pdecls `$d:pdecl $rest:pdecls` => list.prepend($d, $rest);
+
+// ---- program items (ISO 7185 §6.1) ------------------------------------------
+// The whole file is one item; prepare_module expands it into function items
+// plus an implicit main. Program parameters are accepted and ignored. The
+// program block is captured as a compound statement.
+syntax pascal.item[fallback] `program $name:ident ; $body:pstmt .`
+    => ProgramItem($name, [], $body);
+syntax pascal.item[fallback] `program $name:ident ; $decls:pdecls $body:pstmt .`
+    => ProgramItem($name, $decls, $body);
+syntax pascal.item[fallback] `program $name:ident ( $ids:pidents ) ; $body:pstmt .`
+    => ProgramItem($name, [], $body);
+syntax pascal.item[fallback] `program $name:ident ( $ids:pidents ) ; $decls:pdecls $body:pstmt .`
+    => ProgramItem($name, $decls, $body);
+
+// ---- commit: pseq conversion has run; retarget '/' semantic terms ------------
+effect commit($context, $item) => [$context, [tree.rewrite($item, "expression_rule", 0)]];
+
+// convert_step dispatches one statement into a body term and continues with
+// the (already converted) rest. Control-structure bodies are single raw
+// statements, converted by body_of.
+effect convert_step(Branch($c, $yes, $no), $rest)
+    => base.continue(Branch($c, body_of($yes), body_of($no)), $rest);
+effect convert_step(Loop($c, $body), $rest)
+    => base.continue(Loop($c, body_of($body)), $rest);
+effect convert_step(For($name, $dir, $from, $to, $body), $rest)
+    => base.continue(For($name, $dir, $from, $to, body_of($body)), $rest);
+effect convert_step(Compound($chain), $rest) => splice_end($chain, $rest);
+// the synthesized missing-else branch of an else-less if
+effect convert_step(End(), $rest) => $rest;
+
+// write/writeln: one unchecked WritePend body term carrying the whole
+// argument list; checking consumes one argument per step.
+effect convert_step(WriteStat($args, $newline), $rest)
+    => WritePend($args, $newline, $rest);
+
+// Keep the selector until checking can infer its ordinal type. A private
+// local evaluates it once; the continuation joins outside all case arms.
+effect convert_step(Case($e, $arms, $else), $rest)
+    => PCase($e, case_pairs($arms), body_of($else), $rest);
+effect base.check_body(PCase($e, $pairs, $else, $next), $environment, $result)
+    => seq(list.fold("case_unique", $pairs, env.empty()),
+        bind(Typed($type, $value), check($e, $environment, Any()),
+            seq(case_ordinal($type), bind($id, symbol(" case.selector"),
+                MutableLocal($id, Typed($type, $value),
+                    check_body(build_case($pairs, Name(" case.selector"), $else, $next),
+                        env.put($environment, " case.selector", Mutable($type, $id)), $result))))));
+effect case_ordinal(Signed(32)) => 1;
+effect case_ordinal(Bool()) => 1;
+effect[fallback] case_ordinal($type) => fail("Pascal case selector must be ordinal");
+effect case_unique($seen, Pair($value, $stmt)) => bind($key, case_value($value),
+    choose(env.contains($seen, $key), fail("duplicate Pascal case label"), env.put($seen, $key, 1)));
+effect case_value(Int($value)) => OrdinalLabel($value);
+effect case_value(Neg(Int($value))) => OrdinalLabel(int.sub(0, $value));
+effect case_value(Boolean($value)) => BooleanLabel($value);
+effect case_pairs([]) => [];
+effect case_pairs($arms) when lt(0, size($arms))
+    => list.concat(arm_pairs(list.head($arms)), case_pairs(list.tail($arms)));
+effect arm_pairs(CaseArm($values, $stmt)) => value_pairs($values, $stmt);
+effect value_pairs([], $stmt) => [];
+effect value_pairs($values, $stmt) when lt(0, size($values))
+    => list.prepend(Pair(list.head($values), $stmt), value_pairs(list.tail($values), $stmt));
+effect build_case([], $e, $else, $rest) => splice_end($else, $rest);
+effect build_case($pairs, $e, $else, $rest) when lt(0, size($pairs))
+    => bind(Pair($v, $stmt), list.head($pairs),
+        If(Compare("eq", $e, $v), body_of($stmt),
+            build_case(list.tail($pairs), $e, $else, End()), $rest));
+effect[fallback] convert_step($s, $rest) => base.continue($s, $rest);
+
+// A single statement in a control-structure body, as a body chain.
+effect body_of($stmt) => convert_step($stmt, End());
+
+// ---- statement conversion (Pascal-specific terms) -----------------------------
+effect base.continue(Empty(), $next) => $next;
+effect base.continue(Halt($e), $next) => bind($dropped, $next, Return($e));
+effect base.continue(ExprStat($e), $next) => ExprStep($e, $next);
+
+// ISO 7185 §6.8.3.9 for: the limit expression is evaluated once into a fresh
+// slot; up/down choose the comparison and the step direction. The body arrives
+// already converted (body_of), so it splices in front of the step update.
+// Each loop has a private spelling, so a nested loop cannot shadow the
+// outer limit in the continuation appended to its body.
+effect base.continue(For($name, $dir, $from, $to, $body), $next)
+    => bind($initial, text(symbol(" for.initial")), bind($limit, text(symbol(" for.limit")),
+        Let($initial, Any(), $from, Var($limit, Any(), $to,
+        Set($name, Name($initial),
+            While(Compare(choose(eq($dir, "up"), "le", "ge"), Name($name), Name($limit)),
+                splice_end($body,
+                    If(Compare("eq", Name($name), Name($limit)), control.Break(),
+                        Set($name, choose(eq($dir, "up"),
+                            Add(Name($name), Int(1)),
+                            Sub(Name($name), Int(1))), End()), End())),
+                $next))))));
+
+// Replace the final End() of a converted body chain with a continuation.
+effect splice_end(End(), $tail) => $tail;
+effect splice_end(Return($value), $tail) => Return($value);
+effect splice_end(control.Break(), $tail) => control.Break();
+effect splice_end(Var($name, $descriptor, $value, $next), $tail)
+    => Var($name, $descriptor, $value, splice_end($next, $tail));
+effect splice_end(Set($name, $value, $next), $tail)
+    => Set($name, $value, splice_end($next, $tail));
+effect splice_end(While($c, $body, $next), $tail)
+    => While($c, $body, splice_end($next, $tail));
+effect splice_end(If($c, $yes, $no, $next), $tail)
+    => If($c, $yes, $no, splice_end($next, $tail));
+effect splice_end(PCase($e, $pairs, $else, $next), $tail)
+    => PCase($e, $pairs, $else, splice_end($next, $tail));
+effect splice_end(Let($name, $descriptor, $value, $next), $tail)
+    => Let($name, $descriptor, $value, splice_end($next, $tail));
+effect splice_end(PConst($name, $value, $next), $tail)
+    => PConst($name, $value, splice_end($next, $tail));
+effect splice_end(ExprDone($t, $next), $tail)
+    => ExprDone($t, splice_end($next, $tail));
+effect splice_end(WriteDone($t, $next), $tail)
+    => WriteDone($t, splice_end($next, $tail));
+effect splice_end(NewlineDone($next), $tail)
+    => NewlineDone(splice_end($next, $tail));
+effect splice_end(WritePend($args, $newline, $next), $tail)
+    => WritePend($args, $newline, splice_end($next, $tail));
+effect splice_end(ExprStep($e, $next), $tail)
+    => ExprStep($e, splice_end($next, $tail));
+
+// Unchecked-chain terminality (base's flow_terminal sees checked terms only).
+effect base.flow_terminal(Set($name, $value, $next)) => flow_terminal($next);
+effect base.flow_terminal(Var($name, $descriptor, $value, $next)) => flow_terminal($next);
+effect base.flow_terminal(While($c, $body, $next)) => flow_terminal($next);
+effect base.flow_terminal(If($c, $yes, $no, $next))
+    => or(and(flow_terminal($yes), flow_terminal($no)), flow_terminal($next));
+effect base.flow_terminal(PCase($e, $pairs, $else, $next)) => flow_terminal($next);
+effect base.flow_terminal(WritePend($args, $newline, $next)) => flow_terminal($next);
+effect base.flow_terminal(ExprStep($value, $next)) => flow_terminal($next);
+effect base.flow_terminal(Let($name, $descriptor, $value, $next)) => flow_terminal($next);
+effect base.flow_terminal(PConst($name, $value, $next)) => flow_terminal($next);
+
+effect base.check_body(ExprStep($e, $next), $environment, $result)
+    => bind(Typed($d, $c), check($e, $environment, Any()),
+        ExprDone(Typed($d, $c), check_body($next, $environment, $result)));
+
+// write/writeln body terms: check one argument per step; the newline flag
+// fires after the last argument.
+effect base.check_body(WritePend([], $newline, $next), $environment, $result)
+    => choose($newline, NewlineDone(check_body($next, $environment, $result)),
+        check_body($next, $environment, $result));
+effect base.check_body(WritePend($args, $newline, $next), $environment, $result) when lt(0, size($args))
+    => bind(Typed($d, $c), check(list.head($args), $environment, Any()),
+        bind($rest, check_body(WritePend(list.tail($args), $newline, $next), $environment, $result),
+            WriteDone(Typed($d, $c), $rest)));
+effect base.prepare_storage(WriteDone($t, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(NewlineDone($next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.flow_terminal(WriteDone($t, $next)) => flow_terminal($next);
+effect base.flow_terminal(NewlineDone($next)) => flow_terminal($next);
+effect base.prepare_storage(ExprDone($t, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.lower_flow(ExprDone($t, $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, lower($t, $environment)),
+        lower_flow($next, $environment, $block, $continuation));
+
+// write/writeln lowering: printf through the C runtime. llvm.call needs no
+// in-module declaration; var_callee_type carries the variadic signature
+// (same mechanism as the c11 dialect's extern calls).
+effect base.lower_flow(WriteDone(Typed($d, $c), $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, write_call($d, $c, $environment)),
+        lower_flow($next, $environment, $block, $continuation));
+effect base.lower_flow(NewlineDone($next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, printf_call(".fmt.nl", [])),
+        lower_flow($next, $environment, $block, $continuation));
+
+effect write_call(Signed($w), $c, $environment) => printf_call(".fmt.d", [lower(Typed(Signed($w), $c), $environment)]);
+effect write_call(Unsigned($w), $c, $environment) => printf_call(".fmt.u", [lower(Typed(Unsigned($w), $c), $environment)]);
+effect write_call(Real($f), $c, $environment) => printf_call(".fmt.g", [lower(Typed(Real($f), $c), $environment)]);
+effect write_call(Bool(), $c, $environment)
+    => printf_call(".fmt.s", [mlir.op("llvm.select",
+        [lower(Typed(Bool(), $c), $environment), string_ptr(".fmt.true"), string_ptr(".fmt.false")],
+        ["!llvm.ptr"], [], [])]);
+effect write_call(PStringType(), $c, $environment) => printf_call(".fmt.s", [lower(Typed(PStringType(), $c), $environment)]);
+effect[fallback] write_call($d, $c, $environment)
+    => fail("writeln argument type is not writable in milestone 2");
+
+effect printf_call($format, $arguments)
+    => mlir.op("llvm.call",
+        list.prepend(string_ptr($format), $arguments), ["i32"],
+        [RawAttr("callee", "@printf"),
+         RawAttr("var_callee_type", "!llvm.func<i32 (ptr, ...)>"),
+         RawAttr("op_bundle_sizes", "array<i32>"),
+         RawAttr("operandSegmentSizes", concat("array<i32: ", concat(text(add(size($arguments), 1)), ", 0>")))],
+        []);
+effect string_ptr($name)
+    => mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"],
+        [RawAttr("global_name", concat("@\"", concat($name, "\"")))], []);
+
+// Pascal string literals: pointer-valued constants; writable storage is not
+// part of milestone 2. String literals outside writeln fail there.
+syntax typename `pstring` => PStringType();
+effect types.repr(PStringType()) => "!llvm.ptr";
+effect base.check(PString($literal), $environment, $expected)
+    => choose(eq($expected, Any()), Typed(PStringType(), PStringValue($literal)),
+        choose(eq($expected, PStringType()), Typed(PStringType(), PStringValue($literal)),
+            fail("a Pascal string literal is only writable in milestone 2")));
+effect base.hint(PString($literal), $environment) => PStringType();
+effect base.lower(Typed(PStringType(), PStringValue($literal)), $environment)
+    => fail("string literals require interned storage (write/writeln only)");
+effect base.lower(Typed(PStringType(), PStringRef($name)), $environment)
+    => string_ptr($name);
+effect base.hint(PStringRef($name), $environment) => PStringType();
+effect base.check(PStringRef($name), $environment, $expected)
+    => choose(eq($expected, Any()), Typed(PStringType(), PStringRef($name)),
+        choose(eq($expected, PStringType()), Typed(PStringType(), PStringRef($name)),
+            fail("an interned string is only writable in milestone 2")));
+effect base.flow_terminal(ExprDone($t, $next)) => flow_terminal($next);
+
+// ---- semantic helpers --------------------------------------------------------
+effect group_params($idents, $t) when eq(size($idents), 0) => [];
+effect group_params($idents, $t) when lt(0, size($idents))
+    => list.prepend(Param(list.head($idents), $t), group_params(list.tail($idents), $t));
+
+// Zero initializers as *expression* terms (Variable initializers are checked
+// like any expression). ISO leaves an unassigned result undefined; the zero
+// init is a deliberate, documented deviation that gives clean diagnostics.
+effect pascal_zero(Signed($w)) => Int(0);
+effect pascal_zero(Bool()) => Boolean(0);
+effect pascal_zero(Real($f)) => Literal("0.0");
+
+effect expand_vars($idents, $t) when eq(size($idents), 0) => [];
+effect expand_vars($idents, $t) when lt(0, size($idents))
+    => list.prepend(Variable(list.head($idents), $t, pascal_zero($t)),
+        expand_vars(list.tail($idents), $t));
+
+effect expand_vardecls([]) => [];
+effect expand_vardecls($decls) when lt(0, size($decls))
+    => list.concat(vars_of(list.head($decls)), expand_vardecls(list.tail($decls)));
+effect vars_of(VarDecl($names, $t)) => expand_vars($names, $t);
+effect vars_of(ConstDecl($name, $value)) => [ConstantVariable($name, $value)];
+
+// Prepend Variable terms (a statement-term list) in front of a body chain.
+effect vars_chain([], $body) => $body;
+effect vars_chain($vars, $body) when lt(0, size($vars))
+    => var_step(list.head($vars), list.tail($vars), $body);
+effect var_step(Variable($name, $descriptor, $value), $rest, $body)
+    => Var($name, $descriptor, $value, vars_chain($rest, $body));
+effect var_step(ConstantVariable($name, $value), $rest, $body)
+    => PConst($name, $value, vars_chain($rest, $body));
+
+// Constants are language facts shared by the enclosing block's subprograms.
+// They never reference a main-local SSA value or invoke user code at startup.
+effect constant_value($value, $environment)
+    => choose(constant_expression($value, $environment), check($value, $environment, Any()),
+        fail("Pascal const requires a literal or a previously declared constant"));
+effect constant_expression(Int($value), $environment) => 1;
+effect constant_expression(Literal($value), $environment) => 1;
+effect constant_expression(Boolean($value), $environment) => 1;
+effect constant_expression(PStringRef($name), $environment) => 1;
+effect constant_expression(Neg($value), $environment) => constant_expression($value, $environment);
+effect constant_expression(Name($name), $environment)
+    => choose(env.contains($environment, $name), constant_binding(env.get($environment, $name)), 0);
+effect constant_binding(PConstant($value)) => 1;
+effect[fallback] constant_binding($binding) => 0;
+effect[fallback] constant_expression($value, $environment) => 0;
+effect base.read(PConstant($value), $expected) => expect($value, $expected);
+effect base.slot_type(PConstant(Typed($type, $value))) => $type;
+effect base.check_assignment(PConstant($value), $source, $next, $environment, $result)
+    => fail("assignment requires a mutable var binding");
+effect base.check_body(PConst($name, $value, $next), $environment, $result)
+    => check_body($next, env.put($environment, $name, PConstant(constant_value($value, $environment))), $result);
+
+// Program variables have real static storage. Functions and main use the same
+// address; local parameters/variables can still shadow their source spelling.
+effect program_globals([]) => [];
+effect program_globals($decls) when lt(0, size($decls))
+    => list.concat(global_decl(list.head($decls)), program_globals(list.tail($decls)));
+effect global_decl(VarDecl($names, $type)) => list.map("global_variable", expand_vars($names, $type));
+effect global_variable(Variable($name, $type, $value)) => PGlobalVariable($name, $type, $value);
+effect global_decl(ConstDecl($name, $value)) => [PGlobalConstant($name, $value)];
+effect[fallback] global_decl($decl) => [];
+effect global_name($name) => concat(".pas.global.", $name);
+effect base.declare(PGlobalVariable($name, $type, $value), $rest, $environment)
+    => global_declaration($name, PGlobalBinding($type, global_name($name)), $rest, $environment);
+effect base.declare(PGlobalConstant($name, $value), $rest, $environment)
+    => global_declaration($name, PConstant(constant_value($value, $environment)), $rest, $environment);
+effect global_declaration($name, $binding, $rest, $environment)
+    => choose(env.contains($environment, $name), fail(concat("duplicate Pascal declaration: ", $name)),
+        declarations($rest, env.put($environment, $name, $binding)));
+effect base.prepare(PGlobalVariable($name, $type, $value), $environment)
+    => CheckedPGlobal(global_name($name), check($value, $environment, $type));
+effect base.prepare(PGlobalConstant($name, $value), $environment) => NoPGlobal();
+effect base.lower_function(NoPGlobal()) => [];
+effect base.lower_function(CheckedPGlobal($name, Typed($type, $value)))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", types.repr($type)), RawAttr("linkage", "#llvm.linkage<internal>"),
+        global_zero_attr($type), Attr("alignment", global_alignment($type), "i64")], [mlir.region_blocks([])]);
+effect global_zero_attr(Real($format)) => RawAttr("value", concat("0.0 : ", types.repr(Real($format))));
+effect[fallback] global_zero_attr($type) => Attr("value", 0, types.repr($type));
+effect global_alignment(Bool()) => 1;
+effect global_alignment(Signed($width)) => int.div($width, 8);
+effect global_alignment(Real("f64")) => 8;
+effect base.slot_type(PGlobalBinding($type, $name)) => $type;
+effect base.read(PGlobalBinding($type, $name), $expected) => expect(Typed($type, PGlobalRead($name)), $expected);
+effect base.lower(Typed($type, PGlobalRead($name)), $environment)
+    => mlir.op("llvm.load", [string_ptr($name)], [types.repr($type)], [Attr("alignment", global_alignment($type), "i64")], []);
+effect base.check_assignment(PGlobalBinding($type, $name), $source, $next, $environment, $result)
+    => PGlobalStore($name, check($source, $environment, $type), check_body($next, $environment, $result));
+effect base.prepare_storage(PGlobalStore($name, $value, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.lower_flow(PGlobalStore($name, Typed($type, $value), $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, mlir.op("llvm.store", [lower(Typed($type, $value), $environment), string_ptr($name)], [],
+        [Attr("alignment", global_alignment($type), "i64")], [])), lower_flow($next, $environment, $block, $continuation));
+effect base.flow_terminal(PGlobalStore($name, $value, $next)) => flow_terminal($next);
+
+// ---- program expansion --------------------------------------------------------
+effect base.prepare_module($items) => pipeline.run(expand_programs($items));
+
+// Intern write/writeln format strings and source string literals as LLVM
+// globals (the externc mechanism, applied to Pascal terms).
+effect pipeline.steps() => pipeline.Step("pascal-strings", [], "intern_strings");
+effect intern_strings($items)
+    => bind([$rewritten, $globals, $pool], intern_walk($items, [], env.empty()),
+        list.prepend(PFuncDecl("printf"),
+            list.concat($globals, fixed_formats($rewritten))));
+effect base.declare(PFuncDecl($name), $rest, $environment) => declarations($rest, $environment);
+effect base.prepare(PFuncDecl($name), $environment) => CheckedPFuncDecl($name);
+effect base.lower_function(CheckedPFuncDecl($name))
+    => mlir.op("llvm.func", [], [], [Attr("sym_name", $name),
+        RawAttr("function_type", "!llvm.func<i32 (ptr, ...)>"),
+        RawAttr("linkage", "#llvm.linkage<external>")],
+        [mlir.region_blocks([])]);
+effect fixed_formats($items)
+    => list.concat([
+        PStringGlobal(".fmt.d", "%d"), PStringGlobal(".fmt.u", "%u"),
+        PStringGlobal(".fmt.g", "%g"), PStringGlobal(".fmt.s", "%s"),
+        PStringGlobal(".fmt.nl", "
+"), PStringGlobal(".fmt.true", "TRUE"),
+        PStringGlobal(".fmt.false", "FALSE")], $items);
+effect intern_walk($node, $globals, $pool)
+    => bind([$value, Hoisting($new_globals, $new_pool)],
+        tree.rewrite_with($node, "intern_enter", "intern_leave", 0, Hoisting($globals, $pool)),
+        [$value, $new_globals, $new_pool]);
+effect intern_enter(PString($literal), $context, Hoisting($globals, $pool))
+    => bind([$value, $new_globals, $new_pool], choose(env.contains($pool, $literal),
+        [PStringRef(env.get($pool, $literal)), $globals, $pool],
+        intern_string($literal, concat(".pstr.", text(size($globals))), $globals, $pool)),
+        tree.Stop($value, Hoisting($new_globals, $new_pool)));
+effect intern_string($literal, $name, $globals, $pool)
+    => [PStringRef($name), list.prepend(PStringGlobal($name, $literal), $globals), env.put($pool, $literal, $name)];
+effect[fallback] intern_enter($node, $context, $state) when or(eq(term.kind($node), 0), eq(term.kind($node), 5))
+    => tree.Descend(term.children($node), $context, $node, $state);
+effect[fallback] intern_enter($node, $context, $state) when and(not(eq(term.kind($node), 0)), not(eq(term.kind($node), 5)))
+    => tree.Stop($node, $state);
+effect[fallback] intern_leave($original, $children, $context, $state) => [term.rebuild($original, $children), $state];
+
+effect base.declare(PStringGlobal($name, $literal), $rest, $environment) => declarations($rest, $environment);
+effect base.prepare(PStringGlobal($name, $literal), $environment) => CheckedPStringGlobal($name, $literal);
+effect base.lower_function(CheckedPStringGlobal($name, $literal))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text(add(text.len($literal), 1)), " x i8>"))),
+        RawAttr("linkage", "#llvm.linkage<internal>"), RawAttr("constant", "unit"),
+        RawAttr("value", concat("\"", concat(escape_pstring($literal, 0, text.len($literal)), "\\00\"")))],
+        [mlir.region_blocks([])]);
+effect escape_pstring($literal, $start, $end) when eq($start, $end) => "";
+effect escape_pstring($literal, $start, $end) when eq(add($start, 1), $end)
+    => escape_byte_p(text.slice($literal, $start, $end));
+effect escape_pstring($literal, $start, $end) when lt(add($start, 1), $end)
+    => bind($middle, int.div(add($start, $end), 2),
+        concat(escape_pstring($literal, $start, $middle), escape_pstring($literal, $middle, $end)));
+effect escape_byte_p("\"") => "\\22";
+effect escape_byte_p("\\") => "\\5C";
+effect escape_byte_p("\n") => "\\0A";
+effect escape_byte_p("\r") => "\\0D";
+effect escape_byte_p("\t") => "\\09";
+effect[fallback] escape_byte_p($byte) => $byte;
+effect expand_programs([]) => [];
+effect expand_programs($items) when lt(0, size($items))
+    => list.concat(expand_head(list.head($items)), expand_programs(list.tail($items)));
+effect expand_head(ProgramItem($name, $decls, Compound($chain)))
+    => list.concat(program_globals($decls), list.concat(functions_of($decls),
+        [TypedFunction("main", [], Signed(32), main_body([], $chain))]));
+effect functions_of([]) => [];
+effect functions_of($decls) when lt(0, size($decls))
+    => list.concat(fn_of(list.head($decls)), functions_of(list.tail($decls)));
+effect fn_of(PascalFunction($name, $params, $result, $vars, $stmts))
+    => [PascalFunction($name, $params, $result, $vars, $stmts)];
+effect fn_of(PascalProcedure($name, $params, $vars, $stmts))
+    => [PascalProcedure($name, $params, $vars, $stmts)];
+effect fn_of(VarDecl($names, $t)) => [];
+effect fn_of(ConstDecl($name, $value)) => [];
+effect vardecls_of([]) => [];
+effect vardecls_of($decls) when lt(0, size($decls))
+    => list.concat(var_of(list.head($decls)), vardecls_of(list.tail($decls)));
+effect var_of(VarDecl($names, $t)) => [VarDecl($names, $t)];
+effect var_of(ConstDecl($name, $value)) => [ConstDecl($name, $value)];
+effect var_of(PascalFunction($name, $params, $result, $vars, $stmts)) => [];
+effect var_of(PascalProcedure($name, $params, $vars, $stmts)) => [];
+
+// The program block becomes main; the exit status is 0 unless halted.
+// (ISO 7185 has no exit status; halt is the flagged Turbo extension.)
+effect main_body($vars, $stmts)
+    => bind($v, vars_chain($vars, $stmts),
+        choose(flow_terminal($stmts), $v, splice_end($v, Return(Int(0)))));
+
+// A Pascal file is one whole program: route the default per-item emit to the
+// program relation so every function shares one declaration environment.
+effect base.emit(ProgramItem($name, $decls, $body))
+    => lower_items(analyze_program(prepare_module([ProgramItem($name, $decls, $body)])));
+
+// ---- functions: signature, result slot, body rewrite ---------------------------
+effect base.declare(PascalFunction($name, $params, $result, $vars, $stmts), $rest, $environment)
+    => base.declaration($name, Signature(list.map("base.param_type", $params), $result), $rest, $environment);
+effect base.declare(PascalProcedure($name, $params, $vars, $stmts), $rest, $environment)
+    => base.declaration($name, Signature(list.map("base.param_type", $params), Signed(32)), $rest, $environment);
+
+// ISO §6.8.2.2: the function name denotes its result. The result variable is
+// synthesized as the first local (initialized to the type zero; ISO leaves an
+// unassigned result undefined), the body's assignments to the function name
+// are rewritten to it, and falling off the end returns it.
+effect base.prepare(PascalFunction($name, $params, $result, $vars, Compound($chain)), $environment)
+    => bind($rid, concat(" ", $name),
+        base.prepare(TypedFunction($name, $params, $result,
+            function_body($rid, $name, $result, $vars, rewrite_result($chain, $name, $rid))),
+            $environment));
+
+effect function_body($rid, $fname, $result, $vars, $stmts)
+    => bind($v, vars_chain(list.prepend(Variable($rid, $result, pascal_zero($result)),
+            expand_vardecls($vars)), $stmts),
+        choose(flow_terminal($stmts), $v, splice_end($v, Return(Name($rid)))));
+
+// Procedures have no result slot; a zero return is appended so the base
+// lowering (which requires a returned value) accepts the body.
+effect base.prepare(PascalProcedure($name, $params, $vars, Compound($chain)), $environment)
+    => bind($v, vars_chain(expand_vardecls($vars), $chain),
+        bind($b, choose(flow_terminal($chain), $v, splice_end($v, Return(Int(0)))),
+            base.prepare(TypedFunction($name, $params, Signed(32), $b), $environment)));
+
+// Traverse unknown statement constructors too, including unchecked writes
+// and case arms. Extending the dialect no longer needs another chain walker.
+effect rewrite_result($body, $fname, $rid)
+    => tree.rewrite($body, "result_assignment", ResultScope($fname, $rid));
+effect result_assignment(Set($name, $value, $next), ResultScope($fname, $rid)) when eq($name, $fname)
+    => Set($rid, $value, $next);
+effect[fallback] result_assignment($node, $scope) => $node;

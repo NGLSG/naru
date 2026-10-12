@@ -1,0 +1,482 @@
+module naru;
+use std.collections;
+use std.string;
+
+// Evaluation contexts are per compilation. Analysis state is an ordinary term,
+// supplied by rule packages; no language-specific state is stored here.
+class Runtime {
+    public heads: Dict<string, i64>;
+    public steps: i64;
+    public limit: i64;
+    public depth_limit: i64;
+    public active_region: i64;
+    public value_counter: i64;
+    public specialized: bool;
+    public fresh_counter: i64;
+    public guard_depth: i64;
+    public bindings: i64;
+    public parse_context: i64;
+}
+
+public fn new_runtime(e: &mut Engine) -> Runtime {
+    if (e.effect_index_count != e.effect_rules.len) { prepare_effect_index(e); }
+    let region = e.add_node(8, "region", "<ir>", 1, 1);
+    let bindings = e.add_node(5, "", "<bindings>", 1, 1);
+    return Runtime { heads: e.effect_heads, steps: 0, limit: e.rule_limit, depth_limit: e.rule_depth_limit, active_region: region, value_counter: 0, specialized: false, fresh_counter: 0, guard_depth: 0, bindings: bindings, parse_context: -1 };
+}
+public fn prepare_effect_index(e: &mut Engine) {
+    var heads = Dict::<string, i64>.new();
+    var generic = Dict::<i64,i64>.new(); var specific = Dict::<i64,i64>.new();
+    var shaped = Dict::<i64,i64>.new();
+    var i = e.effect_rules.len;
+    while (i > 0) {
+        i = i - 1;
+        var rule = e.effect_rules.get(i);
+        let lhs = e.node(rule.lhs);
+        // Every effect lhs is a call.  Arity is a sound discriminator before
+        // structural matching, so a relation with many overloads no longer
+        // scans rules for the wrong argument count.
+        let name = lhs.text + ":" + naru_number(lhs.count);
+        rule.next = heads.contains(name) ? heads.get(name) : -1;
+        e.effect_rules.set(i, rule);
+        heads.put(name, i);
+    }
+    e.effect_heads = heads; e.effect_index_count = e.effect_rules.len;
+    i = 0;
+    while (i < e.effect_rules.len) {
+        let lhs = e.node(e.effect_rules.get(i).lhs); let key = heads.get(lhs.text + ":" + naru_number(lhs.count));
+        let first = e.child(e.effect_rules.get(i).lhs,0);
+        if (first < 0 || e.node(first).kind == 3) { effect_index_append(e,&mut generic,key,i); }
+        else { effect_index_append(e,&mut specific,effect_head_hash(key,e.node(first)),i); shaped.put(key,1); }
+        i = i + 1;
+    }
+    e.effect_generic_heads = generic; e.effect_specific_heads = specific; e.effect_has_shapes = shaped;
+}
+// Hash collisions only add candidates: full structural matching still
+// verifies the relation and shape, so a collision cannot select a wrong rule.
+public fn effect_head_hash(bucket: i64, n: Node) -> i64 {
+    var hash = ((bucket * 131 + n.kind as i64) * 131 + n.count) % 2147483647;
+    var i: i64 = 0;
+    while (i < n.text.len) { hash = (hash * 131 + str_char_at(n.text,i) as i64) % 2147483647; i = i + 1; }
+    return hash;
+}
+public fn effect_index_append(e: &mut Engine, index: &mut Dict<i64,i64>, key: i64, rule_id: i64) {
+    var list: i64;
+    if (index.contains(key)) { list = index.get(key); }
+    else { list = e.add_node(5,"<effect-index>","<core>",1,1); index.put(key,list); }
+    e.add_child(list,e.add_node(2,naru_number(rule_id),"<core>",1,1));
+}
+
+public fn term_equal(e: &mut Engine, a: i64, b: i64) -> bool {
+    if (a == b) { return true; }
+    if (a < 0 || b < 0) { return false; }
+    let x = e.node(a); let y = e.node(b);
+    // IR graph handles have identity and may contain cyclic CFG references.
+    if (x.kind >= 6 || y.kind >= 6) { return false; }
+    if (x.kind != y.kind || x.text != y.text || x.count != y.count) { return false; }
+    var xe = x.first; var ye = y.first;
+    while (xe >= 0) {
+        let xv = e.edges.get(xe); let yv = e.edges.get(ye);
+        if (!term_equal(e, xv.value, yv.value)) { return false; }
+        xe = xv.next; ye = yv.next;
+    }
+    return true;
+}
+
+// A binding is a variable node whose only child is its bound value.
+public fn binding_get(e: &mut Engine, bindings: i64, name: string) -> i64 {
+    var edge = e.node(bindings).first;
+    while (edge >= 0) {
+        let v = e.edges.get(edge);
+        if (e.node(v.value).text == name) { return e.child(v.value, 0); }
+        edge = v.next;
+    }
+    return -1;
+}
+
+public fn binding_merge(e: &mut Engine, outer: i64, inner: i64) -> i64 {
+    let merged = e.add_node(5, "", "<binding>", 1, 1);
+    var edge = e.node(outer).first;
+    while (edge >= 0) {
+        let item = e.edges.get(edge);
+        if (binding_get(e, inner, e.node(item.value).text) < 0) { e.add_child(merged, item.value); }
+        edge = item.next;
+    }
+    edge = e.node(inner).first;
+    while (edge >= 0) { let item = e.edges.get(edge); e.add_child(merged, item.value); edge = item.next; }
+    return merged;
+}
+
+public fn release_bindings(e: &mut Engine, bindings: i64) {
+    var edge = e.node(bindings).first;
+    while (edge >= 0) { let item = e.edges.get(edge); e.release_frame(item.value); edge = item.next; }
+    e.release_frame(bindings);
+}
+
+public fn bind_value(e: &mut Engine, bindings: i64, name: string, value: i64) -> bool {
+    if (name == "_") { return true; }
+    let prior = binding_get(e, bindings, name);
+    if (prior >= 0) { return term_equal(e, prior, value); }
+    let b = e.add_node(3, name, "<binding>", 1, 1);
+    e.add_child(b, value); e.add_child(bindings, b);
+    return true;
+}
+
+public fn match_term(e: &mut Engine, pattern: i64, value: i64, bindings: i64) -> bool {
+    let p = e.node(pattern); let v = e.node(value);
+    if (p.kind == 3) { return bind_value(e, bindings, p.text, value); }
+    if (p.kind != v.kind || p.text != v.text || p.count != v.count) { return false; }
+    var pe = p.first; var ve = v.first;
+    while (pe >= 0) {
+        let px = e.edges.get(pe); let vx = e.edges.get(ve);
+        if (!match_term(e, px.value, vx.value, bindings)) { return false; }
+        pe = px.next; ve = vx.next;
+    }
+    return true;
+}
+
+public fn substitute_scoped(e: &mut Engine, id: i64, bindings: i64, locals: i64) -> i64 {
+    let n = e.node(id);
+    if (n.kind == 3) {
+        if (locals >= 0 && stx_has_name(e, locals, n.text)) { return id; }
+        let v = binding_get(e, bindings, n.text);
+        if (v < 0) { e.at_error(n.file, n.line, n.column, "unbound variable $" + n.text); }
+        return v;
+    }
+    // Opaque graph handles and persistent environments keep identity across
+    // nested lexical substitution; their contents are not rule templates.
+    if (n.kind >= 6 || n.count == 0) { return id; }
+    let copy = e.add_node(n.kind, n.text, n.file, n.line, n.column);
+    if (n.kind == 4 && n.text == "bind" && n.count == 3) {
+        let pattern = e.child(id, 0);
+        e.add_child(copy, pattern);
+        e.add_child(copy, substitute_scoped(e, e.child(id, 1), bindings, locals));
+        let inner = e.add_node(5, "", n.file, n.line, n.column);
+        if (locals >= 0) { stx_collect_vars(e, locals, inner); }
+        stx_collect_vars(e, pattern, inner);
+        e.add_child(copy, substitute_scoped(e, e.child(id, 2), bindings, inner));
+        return copy;
+    }
+    var edge = n.first;
+    while (edge >= 0 && e.good()) {
+        let c = e.edges.get(edge);
+        let value = substitute_scoped(e, c.value, bindings, locals);
+        if (value < 0) { return -1; }
+        e.add_child(copy, value); edge = c.next;
+    }
+    return copy;
+}
+
+public fn substitute(e: &mut Engine, id: i64, bindings: i64) -> i64 { return substitute_scoped(e, id, bindings, -1); }
+
+public fn bool_node(e: &mut Engine, value: bool) -> i64 {
+    if (value) {
+        if (e.true_value < 0) { e.true_value = e.add_node(2,"1","<core>",1,1); }
+        return e.true_value;
+    }
+    if (e.false_value < 0) { e.false_value = e.add_node(2,"0","<core>",1,1); }
+    return e.false_value;
+}
+
+public fn rule_truth(e: &mut Engine, value: i64) -> bool {
+    let n = e.node(value);
+    if (n.kind != 2) { e.reject("rule condition must be an integer truth value"); return false; }
+    var nonzero = false; var i: i64 = n.text.starts_with("-") ? 1 : 0;
+    while (i < n.text.len) {
+        let c = str_char_at(n.text, i);
+        if (c < 48 || c > 57) { e.reject("invalid integer truth value"); return false; }
+        if (c != 48) { nonzero = true; } i = i + 1;
+    }
+    return nonzero;
+}
+
+public fn builtin_name(name: string) -> bool {
+    return rule_tool_name(name) || name == "eq" || name == "choose" || name == "fail" || name == "seq"
+        || name == "and" || name == "or" || name == "not" || name == "add"
+        || name == "sub" || name == "mul" || name == "lt" || name == "concat"
+        || name == "tag" || name == "arg" || name == "size" || name == "text"
+        || name == "mlir.op" || name == "mlir.region" || name == "mlir.block"
+        || name == "mlir.block_arg" || name == "mlir.in_block" || name == "mlir.with_block" || name == "mlir.region_blocks";
+}
+
+public fn expect_arity(e: &mut Engine, call: i64, arity: i64) -> bool {
+    let n = e.node(call);
+    if (n.count == arity) { return true; }
+    e.at_error(n.file, n.line, n.column, n.text + " expects " + naru_number(arity) + " arguments");
+    return false;
+}
+
+public fn scalar_int(e: &mut Engine, id: i64) -> i64 {
+    let n = e.node(id);
+    if (n.kind != 2) { e.reject("expected integer, got " + render_term(e, id)); return 0; }
+    var result: i64 = 0; var i: i64 = 0; var negative = false;
+    if (n.text.starts_with("-")) { negative = true; i = 1; }
+    while (i < n.text.len) {
+        let digit = str_char_at(n.text, i) - 48;
+        let last: i32 = negative ? 8 : 7;
+        if (digit < 0 || digit > 9 || result < -922337203685477580 || (result == -922337203685477580 && digit > last)) {
+            e.reject("metadata integer outside signed 64-bit range: " + n.text); return 0;
+        }
+        result = result * 10 - digit as i64; i = i + 1;
+    }
+    return negative ? result : -result;
+}
+
+// Explicit fallback is the only priority. Peer matches remain ambiguous,
+// regardless of source or package loading order.
+public fn effect_priority(e: &mut Engine, previous: i64, candidate: i64) -> i32 {
+    if (previous < 0) { return 1; }
+    let a = e.effect_rules.get(previous); let b = e.effect_rules.get(candidate);
+    if (a.fallback == b.fallback) { return -1; }
+    return b.fallback ? 0 : 1;
+}
+
+public fn eval_builtin(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64) -> i64 {
+    let n = e.node(call); let name = n.text;
+    if (rule_tool_name(name)) { return eval_rule_tool(e, rt, call, depth); }
+    if (rt.guard_depth > 0 && name.starts_with("mlir.")) { e.reject("rule guards cannot construct or mutate IR"); return -1; }
+    if (name == "mlir.op") { return make_ir_op(e, rt, call); }
+    if (name == "mlir.block") { return make_ir_block(e, rt, call); }
+    if (name == "mlir.block_arg") { return make_ir_block_argument(e, call); }
+    if (name == "mlir.region_blocks") { return make_ir_region_blocks(e, call); }
+    if (name == "fail") {
+        if (!expect_arity(e, call, 1)) { return -1; }
+        e.at_error(n.file, n.line, n.column, "rule failure: " + e.node(e.child(call, 0)).text); return -1;
+    }
+    if (name == "eq") {
+        if (!expect_arity(e, call, 2)) { return -1; }
+        return bool_node(e, term_equal(e, e.child(call, 0), e.child(call, 1)));
+    }
+    if (name == "not" || name == "tag" || name == "size" || name == "text") {
+        if (!expect_arity(e, call, 1)) { return -1; }
+        let v = e.node(e.child(call, 0));
+        if (name == "not") { return bool_node(e, !rule_truth(e, e.child(call, 0))); }
+        if (name == "size") { return e.add_node(2, naru_number(v.count), n.file, n.line, n.column); }
+        return e.add_node(1, v.text, n.file, n.line, n.column);
+    }
+    if (name == "arg") {
+        if (!expect_arity(e, call, 2)) { return -1; }
+        let parent = e.child(call, 0); let index = scalar_int(e, e.child(call, 1));
+        let result = e.child(parent, index);
+        if (result < 0) { e.at_error(n.file, n.line, n.column, "arg index out of range"); }
+        return result;
+    }
+    if (name == "concat") {
+        if (!expect_arity(e, call, 2)) { return -1; }
+        let a = e.node(e.child(call, 0)); let b = e.node(e.child(call, 1));
+        if (a.kind != 1 || b.kind != 1) { e.reject("concat requires two strings"); return -1; }
+        return e.add_node(1, a.text + b.text, n.file, n.line, n.column);
+    }
+    if (name == "add" || name == "sub" || name == "mul" || name == "lt" || name == "and" || name == "or") {
+        if (!expect_arity(e, call, 2)) { return -1; }
+        if (name == "add" || name == "sub" || name == "mul" || name == "lt") {
+            let a = scalar_text(e, e.child(call, 0)); let b = scalar_text(e, e.child(call, 1));
+            if (!e.good()) { return -1; }
+            return exact_node(e, call, name, a, b, 0, false);
+        }
+        let a = rule_truth(e, e.child(call, 0)); let b = rule_truth(e, e.child(call, 1));
+        if (!e.good()) { return -1; }
+        if (name == "and") { return bool_node(e, a && b); }
+        if (name == "or") { return bool_node(e, a || b); }
+        return -1;
+    }
+    return -2;
+}
+
+// Native frozen bodies and interpreted terms charge the same semantic step.
+// Dispatch routers are implementation details and do not increase depth.
+public fn rule_evaluation_step(e: &mut Engine, rt: &mut Runtime, id: i64, depth: i64) -> bool {
+    if (id < 0 || !e.good()) { return false; }
+    rt.steps = rt.steps + 1;
+    if (depth > rt.depth_limit || rt.steps > rt.limit) {
+        let n = e.node(id);
+        if (depth > rt.depth_limit) { e.at_error(n.file, n.line, n.column, "rule evaluation budget exhausted: recursion depth limit exceeded (" + naru_number(rt.depth_limit) + ")"); }
+        else { e.at_error(n.file, n.line, n.column, "rule evaluation budget exhausted"); }
+        return false;
+    }
+    return true;
+}
+
+public fn eval_term(e: &mut Engine, rt: &mut Runtime, id: i64, depth: i64) -> i64 {
+    if (!rule_evaluation_step(e,rt,id,depth)) { return -1; }
+    let n = e.node(id);
+    if (n.kind == 3) {
+        let value = binding_get(e, rt.bindings, n.text);
+        if (value < 0) { e.at_error(n.file, n.line, n.column, "unbound $" + n.text); }
+        return value;
+    }
+    if (n.kind != 0 && n.kind != 4 && n.kind != 5) { return id; }
+    if ((n.kind == 0 || n.kind == 5) && n.evaluated) { return id; }
+    if (n.kind == 4 && n.text == "bind") {
+        if (!expect_arity(e, id, 3)) { return -1; }
+        let value = eval_term(e, rt, e.child(id, 1), depth + 1);
+        if (!e.good()) { return -1; }
+        let bindings = e.add_node(5, "", n.file, n.line, n.column);
+        if (!match_term(e, e.child(id, 0), value, bindings)) {
+            e.at_error(n.file, n.line, n.column, "bind pattern does not match " + render_term(e, value)); return -1;
+        }
+        let saved = rt.bindings;
+        let scoped = binding_merge(e, saved, bindings); rt.bindings = scoped;
+        let result = eval_term(e, rt, e.child(id, 2), depth + 1);
+        rt.bindings = saved; e.release_frame(scoped); release_bindings(e,bindings); return result;
+    }
+    if (n.kind == 4 && rt.guard_depth > 0 && n.text.starts_with("mlir.")) { e.reject("rule guards cannot construct or mutate IR"); return -1; }
+    if (n.kind == 4 && n.text == "choose") {
+        if (!expect_arity(e, id, 3)) { return -1; }
+        let condition = eval_term(e, rt, e.child(id, 0), depth + 1);
+        if (!e.good()) { return -1; }
+        let truth = rule_truth(e, condition);
+        return eval_term(e, rt, e.child(id, truth ? 1 : 2), depth + 1);
+    }
+    if (n.kind == 4 && n.text == "seq") {
+        if (!expect_arity(e, id, 2)) { return -1; }
+        eval_term(e, rt, e.child(id, 0), depth + 1);
+        return eval_term(e, rt, e.child(id, 1), depth + 1);
+    }
+    if (n.kind == 4 && n.text == "mlir.region") {
+        if (!expect_arity(e, id, 1)) { return -1; }
+        let saved = rt.active_region;
+        let region = e.add_node(8, "region", n.file, n.line, n.column);
+        rt.active_region = region;
+        eval_term(e, rt, e.child(id, 0), depth + 1);
+        rt.active_region = saved;
+        return e.good() ? region : -1;
+    }
+    if (n.kind == 4 && (n.text == "mlir.in_block" || n.text == "mlir.with_block")) {
+        if (!expect_arity(e, id, 2)) { return -1; }
+        let block = eval_term(e, rt, e.child(id, 0), depth + 1);
+        if (!e.good()) { return -1; }
+        if (e.node(block).kind != 9) { e.reject(n.text + " requires a block"); return -1; }
+        let saved = rt.active_region;
+        rt.active_region = e.child(block, 1);
+        let result = eval_term(e, rt, e.child(id, 1), depth + 1);
+        rt.active_region = saved;
+        return e.good() ? (n.text == "mlir.with_block" ? result : block) : -1;
+    }
+    let value = e.add_node(n.kind, n.text, n.file, n.line, n.column);
+    var edge = n.first;
+    while (edge >= 0 && e.good()) {
+        let c = e.edges.get(edge);
+        let child = eval_term(e, rt, c.value, depth + 1);
+        if (child < 0) { return -1; }
+        e.add_child(value, child); edge = c.next;
+    }
+    if (n.kind != 4) { return e.complete_value(value); }
+    var result = eval_builtin(e, rt, value, depth);
+    if (result == -2) {
+        if (rt.specialized) { result = specialized_dispatch(e, rt, value, depth); }
+        else { result = dispatch_effect(e, rt, value, depth); }
+    }
+    e.release_frame(value); return result;
+}
+
+// Mixed dispatch keeps native matchers/bodies for the frozen prefix, while
+// including appended rules in the same ambiguity and fallback decision.
+public fn dispatch_effect(e: &mut Engine, rt: &mut Runtime, value: i64, depth: i64) -> i64 {
+    let n = e.node(value);
+    let dispatch_key = n.text + ":" + naru_number(n.count);
+    if (!rt.heads.contains(dispatch_key)) {
+        e.at_error(n.file, n.line, n.column, "no effect registered for " + n.text); return -1;
+    }
+    var generic: i64 = -1; var specific: i64 = -1;
+    let bucket = rt.heads.get(dispatch_key);
+    if (e.effect_generic_heads.contains(bucket)) { generic = e.node(e.effect_generic_heads.get(bucket)).first; }
+    if (n.count > 0 && e.effect_has_shapes.contains(bucket)) {
+        let key = effect_head_hash(bucket,e.node(e.child(value,0)));
+        if (e.effect_specific_heads.contains(key)) { specific = e.node(e.effect_specific_heads.get(key)).first; }
+    }
+    var selected: i64 = -1; var selected_bindings: i64 = -1;
+    while (generic >= 0 || specific >= 0) {
+        var generic_id = e.effect_rules.len; var specific_id = e.effect_rules.len;
+        if (generic >= 0) { generic_id = str_to_int(e.node(e.edges.get(generic).value).text); }
+        if (specific >= 0) { specific_id = str_to_int(e.node(e.edges.get(specific).value).text); }
+        var rule_id = specific_id;
+        if (generic_id < specific_id) { rule_id = generic_id; generic = e.edges.get(generic).next; }
+        else { specific = e.edges.get(specific).next; }
+        let rule = e.effect_rules.get(rule_id);
+        let bindings = e.add_node(5, "", n.file, n.line, n.column);
+        let eligible = effect_matches(e, rt, rule_id, value, bindings, depth);
+        if (!e.good()) { return -1; }
+        if (eligible) {
+            let priority = effect_priority(e, selected, rule_id);
+            if (priority < 0) {
+                e.at_error(n.file, n.line, n.column, "ambiguous effect: " + n.text + " matches rules at "
+                    + e.effect_rules.get(selected).file + ":" + naru_number(e.effect_rules.get(selected).line)
+                    + " and " + rule.file + ":" + naru_number(rule.line));
+                return -1;
+            }
+            if (priority > 0) {
+                if (selected_bindings >= 0) { release_bindings(e,selected_bindings); }
+                selected = rule_id; selected_bindings = bindings;
+            } else { release_bindings(e,bindings); }
+        } else {
+            release_bindings(e,bindings);
+        }
+    }
+    if (selected < 0) { e.at_error(n.file, n.line, n.column, "no matching effect: " + render_term(e, value)); return -1; }
+    let result = effect_body(e, rt, selected, selected_bindings, depth);
+    release_bindings(e,selected_bindings);
+    if (!e.good()) { e.diagnostic = e.diagnostic + "\n  while " + n.text + " (" + n.file + ":" + naru_number(n.line) + ")"; }
+    return result;
+}
+
+public fn effect_matches(e: &mut Engine, rt: &mut Runtime, rule_id: i64, call: i64, bindings: i64, depth: i64) -> bool {
+    if (rt.specialized && rule_id < specialized_effect_count()) { return specialized_rule_match(e, rt, rule_id, call, bindings, depth); }
+    let rule = e.effect_rules.get(rule_id);
+    var eligible = match_term(e, rule.lhs, call, bindings);
+    if (eligible && rule.guard >= 0) {
+        rt.guard_depth = rt.guard_depth + 1;
+        let saved = rt.bindings; rt.bindings = bindings;
+        let guard = eval_term(e, rt, rule.guard, depth + 1);
+        rt.bindings = saved;
+        rt.guard_depth = rt.guard_depth - 1;
+        if (!e.good()) { return false; }
+        eligible = rule_truth(e, guard);
+    }
+    return eligible;
+}
+
+public fn effect_body(e: &mut Engine, rt: &mut Runtime, rule_id: i64, bindings: i64, depth: i64) -> i64 {
+    let saved = rt.bindings; rt.bindings = bindings;
+    var result: i64 = -1;
+    if (rt.specialized && rule_id < specialized_effect_count()) { result = specialized_rule_body(e, rt, rule_id, bindings, depth); }
+    else { result = eval_term(e, rt, e.effect_rules.get(rule_id).rhs, depth + 1); }
+    rt.bindings = saved; return result;
+}
+
+public fn quoted(text: string) -> string {
+    var out = StringBuilder.create(); out.append("\"");
+    var i: i64 = 0;
+    while (i < text.len) {
+        let c = str_char_at(text, i);
+        if (c == 34) { out.append("\\\""); }
+        else if (c == 92) { out.append("\\\\"); }
+        else if (c == 10) { out.append("\\n"); }
+        else if (c == 13) { out.append("\\r"); }
+        else if (c == 9) { out.append("\\t"); }
+        else { out.append(text.substring(i, i + 1)); }
+        i = i + 1;
+    }
+    out.append("\""); let owned = out.build(); return str_dup(owned.as_str());
+}
+
+public fn render_term(e: &mut Engine, id: i64) -> string {
+    if (id < 0) { return "<error>"; }
+    let n = e.node(id);
+    if (n.kind == 1) { return quoted(n.text); }
+    if (n.kind == 2 || n.kind == 7) { return n.text; }
+    if (n.kind == 10 || n.kind == 12) { return n.text; }
+    if (n.kind == 11) { return "<environment>"; }
+    if (n.kind == 13) { return "<list-cursor:" + naru_number(n.count) + ">"; }
+    if (n.kind == 9) { return "^block" + naru_number(id); }
+    if (n.kind == 3) { return "$" + n.text; }
+    var out = n.kind == 5 ? "[" : n.text + "(";
+    var edge = n.first; var index: i64 = 0;
+    while (edge >= 0) {
+        let c = e.edges.get(edge);
+        if (index > 0) { out = out + ", "; }
+        out = out + render_term(e, c.value);
+        edge = c.next; index = index + 1;
+    }
+    return out + (n.kind == 5 ? "]" : ")");
+}

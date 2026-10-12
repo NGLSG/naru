@@ -1,0 +1,3 @@
+struct Point { x: i32; y: i32; }
+enum Event { Empty; Point(Point); Code(i32); }
+fn main() -> i32 { let e = Event::Point(Point { x: 20, y: 22 }); return match e { Empty() => 0, Point(p) => p.x + p.y, Code(n) => n }; }

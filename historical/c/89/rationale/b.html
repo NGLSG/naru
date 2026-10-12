@@ -1,0 +1,667 @@
+<html><head>
+<title>2 Environment</title>
+<link rel="made" rev="made" href="mailto:jutta@cs.tu-berlin.de">
+</head>
+<body>
+<a href="a.html">1 Introduction</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#env">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c1.html">3 Language</a>
+&#160;<tt> </tt>&#160;
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+<hr>
+<h1><a name="2">2</a>&#160;<tt> </tt>Environment</h1>
+<p>
+Because C has seen widespread use as a <a name="cross-compilation-2">cross-compiled</a>
+language,
+a clear distinction must be made between translation and execution environments.&#160;<tt> </tt>
+The <a name="preprocessing-2">preprocessor</a>,
+for instance, is permitted to evaluate the expression in a
+<a name="-35if-2"><code>#if</code></a> statement
+using the long integer arithmetic native to the translation environment:
+these integers must comprise at least 32 bits,
+but need not match the number of bits in the execution environment.&#160;<tt> </tt>
+Other translate-time arithmetic, however, such as type casting and floating
+arithmetic, must more closely model the execution environment regardless
+of translation environment.&#160;<tt> </tt>
+<p>
+<h2><a name="2-1">2.1</a>&#160;<tt> </tt>Conceptual models</h2>
+<p>
+The <a name="as-if"><i>as if</i></a> principle is invoked repeatedly in this Rationale.&#160;<tt> </tt>
+The Committee has found that
+describing various aspects of the C language, library, and environment
+in terms of concrete models
+best serves discussion and presentation.&#160;<tt> </tt>
+Every attempt has been made to craft the models
+so that implementors are constrained only insofar as
+they must bring about the same result,
+<i>as if</i> they had implemented the presentation model;
+often enough the clearest model would make for the worst implementation.&#160;<tt> </tt>
+<p>
+<h2><a name="2-1-1">2.1.1</a>&#160;<tt> </tt>Translation environment</h2>
+<p>
+<h2><a name="2-1-1-1">2.1.1.1</a>&#160;<tt> </tt>Program structure</h2>
+<p>
+The terms
+<a name="source-file"><i>source file</i></a>,
+<a name="external-linkage"><i>external linkage</i></a>,
+<a name="linked"><i>linked</i></a>,
+<a name="libraries"><i>libraries</i></a>,
+and
+<a name="executable-program"><i>executable program</i></a>
+all imply a conventional compiler-linker combination.&#160;<tt> </tt>
+All of these concepts have shaped the semantics of C, however,
+and are inescapable even in an interpreted environment.&#160;<tt> </tt>
+Thus, while implementations are not required to support separate
+compilation and linking with libraries, in some ways they must behave
+<a href="#as-if" name="as-if-2-1-1-1"><i>as if</i></a> they do.&#160;<tt> </tt>
+<p>
+<h2><a name="2-1-1-2">2.1.1.2</a>&#160;<tt> </tt><a name="phases-of-translation-2-1-1-2">Translation phases</a></h2>
+
+<p>
+Perhaps the greatest undesirable diversity
+among existing C implementations can be found in <a name="preprocessing-2-1-1-2">preprocessing</a>.&#160;<tt> </tt>
+Admittedly a distinct and primitive language superimposed upon C,
+the preprocessing commands accreted over time,
+with little central direction,
+and with even less precision in their documentation.&#160;<tt> </tt>
+This evolution has resulted in a variety of local features,
+each with its ardent adherents:
+the Base Document offers little clear basis for
+choosing one over the other.&#160;<tt> </tt>
+<p>
+The consensus of the Committee is that preprocessing should be simple and
+<i>overt</i>,
+that it should sacrifice power for clarity.&#160;<tt> </tt>
+For instance, the macro invocation
+<code>f(a,</code> <code>b)</code>
+should assuredly have two actual arguments, even if
+<code>b</code> expands to <code>c,</code> <code>d</code>;
+and the formal definition of <code>f</code> must call for exactly two arguments.&#160;<tt> </tt>
+Above all, the preprocessing sub-language
+should be specified precisely enough to minimize
+or eliminate dialect formation.&#160;<tt> </tt>
+<p>
+To clarify the nature of preprocessing,
+the translation from source text to tokens is spelled out as a number
+of separate phases.&#160;<tt> </tt>
+The separate phases need not actually be present in the translator,
+but the net effect must be <a href="#as-if" name="as-if-2-1-1-2"><i>as if</i></a> they were.&#160;<tt> </tt>
+The phases need not be performed in a separate preprocessor,
+although the definition certainly permits this common practice.&#160;<tt> </tt>
+Since the preprocessor need not know anything about the specific properties of
+the target, a machine-independent implementation is permissible.&#160;<tt> </tt>
+<p>
+The Committee deemed that it was outside the scope of its mandate to
+require the output of the preprocessing
+phases be available as a separate translator output file.&#160;<tt> </tt>
+<p>
+The <i>phases of translation</i> are spelled out
+to resolve the numerous questions raised about the precedence of
+different parses.&#160;<tt> </tt>
+Can a <code>#define</code> begin a comment? (No.)&#160;<tt> </tt>
+Is backslash/new-line permitted within a trigraph? (No.)&#160;<tt> </tt>
+Must a comment be contained within one <code>#include</code> file? (Yes.)&#160;<tt> </tt>
+And so on.&#160;<tt> </tt>
+The Rationale section on preprocessing (<a href="c8.html#3-8">&#167;3.8</a>)&#160;<tt> </tt>
+discusses the reasons for many of the particular decisions
+which shaped the specification of the phases of translation.&#160;<tt> </tt>
+<p>
+
+A backslash immediately before a new-line has long been used to continue
+string literals,
+as well as preprocessing command lines.&#160;<tt> </tt>
+In the interest of easing <a name="machine-generation-of-C-2-1-1-2">machine generation of C</a>,
+and of transporting code to machines with restrictive physical line lengths,
+the Committee generalized this mechanism to permit
+<i>any</i> token to be continued by interposing a
+backslash/new-line sequence.&#160;<tt> </tt>
+<p>
+<h2><a name="2-1-1-3">2.1.1.3</a>&#160;<tt> </tt><a name="diagnostics-2-1-1-3">Diagnostics</a></h2>
+<p>
+By mandating some form of diagnostic message for any program containing
+a syntax error or constraint violation,
+the Standard performs two important services.&#160;<tt> </tt>
+First, it gives teeth to the concept of <a name="erroneous-program"><i>erroneous program</i></a>,
+since a conforming implementation must distinguish such a program
+from a valid one.&#160;<tt> </tt>
+Second, it severely constrains the nature of extensions permissible
+to a conforming implementation.&#160;<tt> </tt>
+<p>
+The Standard says nothing about the nature of the diagnostic message,
+which could simply be ``<tt>syntax error</tt>'',
+with no hint of where the error occurs.&#160;<tt> </tt>
+(An implementation must, of course, describe what translator output 
+constitutes a diagnostic message, so that the user can recognize it as
+such.)&#160;<tt> </tt>
+The Committee ultimately decided that any diagnostic activity
+beyond this level is an issue of <a name="quality-of-implementation"><i>quality of implementation</i></a>,
+and that market forces would encourage more useful diagnostics.&#160;<tt> </tt>
+Nevertheless, the Committee felt that at least some significant class of
+errors must be diagnosed,
+and the class specified should be recognizable by all translators.&#160;<tt> </tt>
+<p>
+The Standard does not forbid extensions,
+but such extensions must not invalidate strictly conforming programs.&#160;<tt> </tt>
+The translator must diagnose the use of such extensions,
+or allow them to be disabled as discussed in (Rationale) <a href="a.html#1-7">&#167;1.7</a>.&#160;<tt> </tt>
+Otherwise, extensions to a conforming C implementation lie in such realms
+as defining semantics
+for syntax to which no semantics is ascribed by the Standard,
+or giving meaning to <a name="undefined-behavior-2-1-1-3"><i>undefined behavior</i></a>.&#160;<tt> </tt>
+<p>
+<h2><a name="2-1-2">2.1.2</a>&#160;<tt> </tt>Execution environments</h2>
+<p>
+The definition of <a name="program-startup"><i>program startup</i></a> in the Standard is designed to
+permit initialization of static storage by executable code,
+as well as by data translated into the program image.&#160;<tt> </tt>
+<p>
+<h2><a name="2-1-2-1">2.1.2.1</a>&#160;<tt> </tt>Freestanding environment</h2>
+<p>
+As little as possible is said about freestanding environments,
+since little is served by constraining them.&#160;<tt> </tt>
+<p>
+<h2><a name="2-1-2-2">2.1.2.2</a>&#160;<tt> </tt><a name="hosted-environment-2-1-2-2">Hosted environment</a></h2>
+<p>
+The properties required of a hosted environment are spelled out
+in a fair amount of detail
+in order to give programmers a reasonable chance of writing
+programs which are portable among such environments.&#160;<tt> </tt>
+<p>
+The behavior of the arguments to <a name="main-2-1-2-2"><code>main</code></a>,
+and of the interaction of <a name="exit-2-1-2-2"><code>exit</code></a>,
+<code>main</code> and <a name="atexit-2-1-2-2"><code>atexit</code></a> (see <a href="d10.html#4-10-4-2">&#167;4.10.4.2</a>)&#160;<tt> </tt>
+has been codified to curb some unwanted
+variety in the representation of <code>argv</code> strings,
+and in the meaning of values returned by <code>main</code>.&#160;<tt> </tt>
+<p>
+The specification of <a name="argc-2-1-2-2"><code>argc</code></a> and <code>argv</code>
+as arguments to <code>main</code> recognizes extensive prior practice.&#160;<tt> </tt>
+<code>argv[argc]</code> is required to be a null pointer to provide
+a redundant check for the end of the list,
+also on the basis of common practice.&#160;<tt> </tt>
+<p>
+<code>main</code> is the only function that may portably be declared
+either with zero or two arguments.&#160;<tt> </tt>
+(The number of arguments must ordinarily match exactly
+between invocation and definition.)&#160;<tt> </tt>
+This special case simply recognizes the widespread practice of leaving off the
+arguments to <code>main</code>
+when the program does not access the program argument strings.&#160;<tt> </tt>
+While many implementations support more than two arguments to <code>main,</code>
+such practice is neither blessed nor forbidden by the Standard;
+a program that defines <code>main</code> with three arguments is not
+<a name="strictly-conforming"><i>strictly conforming</i></a>. (See Standard Appendix F.5.1.)&#160;<tt> </tt>
+<p>
+<p>
+Command line I/O redirection is not mandated by the Standard;
+this was deemed to be a feature of the underlying operating
+system rather than the C language.&#160;<tt> </tt>
+<p>
+<h2><a name="2-1-2-3">2.1.2.3</a>&#160;<tt> </tt>Program execution</h2>
+<p>
+Because C expressions can contain side effects,
+issues of
+<a name="sequencing"><i>sequencing</i></a>
+are important in expression evaluation.&#160;<tt> </tt>
+(See <a href="c3.html#3-3">&#167;3.3</a>.)&#160;<tt> </tt>
+Most operators impose no sequencing requirements,
+but a few operators impose
+<a name="sequence-points"><i>sequence points</i></a>
+upon the evaluation:
+comma, logical-AND, logical-OR, and conditional.&#160;<tt> </tt>
+For example, in the expression
+<code>(i</code> <code>=</code> <code>1, a[i]</code> <code>=</code> <code>0)</code>
+the side effect (alteration to storage) specified by
+<code>i</code> <code>=</code> <code>1</code>
+must be completed before the expression
+<code>a[i]</code> <code>=</code> <code>0</code>
+is evaluated.&#160;<tt> </tt>
+<p>
+Other sequence points are imposed by statement execution and
+completion of evaluation of a
+<a name="full-expression"><i>full expression</i></a>.&#160;<tt> </tt>
+(See <a href="c6.html#3-6">&#167;3.6</a>).&#160;<tt> </tt>
+Thus in <code>fn(++a)</code>,
+the incrementation of <code>a</code> must be completed before <code>fn</code> is called.&#160;<tt> </tt>
+In <code>i</code> <code>=</code> <code>1;</code> <code>a[i]</code> <code>=</code> <code>0;</code>
+the side-effect of <code>i</code> <code>=</code> <code>1</code>
+must be complete before <code>a[i]</code> <code>=</code> <code>0</code> is evaluated.&#160;<tt> </tt>
+<p>
+The notion of
+<i>agreement</i>
+has to do with the relationship between the
+<a name="abstract-machine"><i>abstract machine</i></a>
+defining the semantics
+and an actual implementation.&#160;<tt> </tt>
+An <a name="agreement-point"><i>agreement point</i></a> for some object or class of objects
+is a sequence point at which the value of the object(s)&#160;<tt> </tt>
+in the real implementation
+must agree with the value prescribed by the abstract semantics.&#160;<tt> </tt>
+<p>
+For example, compilers that hold variables in registers
+can sometimes drastically reduce execution times.&#160;<tt> </tt>
+In a loop like
+<pre>        sum = 0;
+        for (i = 0; i &lt; N; ++i)
+            sum += a[i];
+</pre>both <code>sum</code> and <code>i</code>
+might be profitably kept in registers during the execution of the loop.&#160;<tt> </tt>
+Thus, the actual memory objects designated by <code>sum</code> and <code>i</code>
+would not change state during the loop.&#160;<tt> </tt>
+<p>
+Such behavior is, of course, too loose for hardware-oriented applications
+such as device drivers and memory-mapped I/O.&#160;<tt> </tt>
+The following loop looks almost identical to the previous example,
+but the specification of <code>volatile</code> ensures that each assignment to
+<code>*ttyport</code> takes place in the same sequence, and with the same values,
+as the (hypothetical) abstract machine would have done.&#160;<tt> </tt>
+<p>
+<pre>        volatile short *ttyport;
+        /* ... */
+        for (i = 0; i &lt; N; ++i)
+            *ttyport = a[i];
+</pre><p>
+Another common optimization is to pre-compute common subexpressions.&#160;<tt> </tt>
+In this loop:
+<pre>        volatile short *ttyport;
+        short mask1, mask2;
+        /* ... */
+        for (i = 0; i &lt; N; ++i)
+            *ttyport = a[i] &amp; mask1 &amp; mask2;
+</pre>evaluation of the subexpression <code>mask1</code> <code>&amp;</code> <code>mask2</code>
+could be performed prior to the loop in the real implementation,
+assuming that neither <code>mask1</code> nor <code>mask2</code> appear as
+an operand of the address-of (<code>&amp;</code>) operator anywhere in the function.&#160;<tt> </tt>
+In the abstract machine, of course,
+this subexpression is re-evaluated at each loop iteration,
+but the real implementation is not required to mimic this repetitiveness,
+because the variables <code>mask1</code> and <code>mask2</code> are not <code>volatile</code>
+and the same results are obtained either way.&#160;<tt> </tt>
+<p>
+The previous example shows that a subexpression can be pre-computed
+in the real implementation.&#160;<tt> </tt>
+A question sometimes asked regarding optimization is,
+``Is the rearrangement still conforming if the pre-computed
+expression might raise a <a name="signal-2-1-2-3">signal</a> (such as division by zero)?''&#160;<tt> </tt>
+Fortunately for optimizers, the answer is ``Yes,''&#160;<tt> </tt>
+because any evaluation that raises a computational signal
+has fallen into an <a name="undefined-behavior"><i>undefined behavior</i></a> (<a href="c3.html#3-3">&#167;3.3</a>),
+for which any action is allowable.&#160;<tt> </tt>
+<p>
+Behavior is described in terms of an <i>abstract machine</i> to underscore,
+once again, that the Standard mandates results
+<a href="#as-if" name="as-if-2-1-2-3"><i>as if</i></a> certain mechanisms are used,
+without requiring those actual mechanisms in the implementation.&#160;<tt> </tt>
+The Standard specifies agreement points at which
+the value of an object or class of objects in an implementation must agree
+with the value ascribed by the abstract semantics.&#160;<tt> </tt>
+<p>
+Appendix B to the Standard
+lists the sequence points
+specified in the body of the Standard.&#160;<tt> </tt>
+<p>
+The class of <a name="interactive-devices"><i>interactive devices</i></a> is intended to include
+at least asynchronous terminals, or paired display screens and keyboards.&#160;<tt> </tt>
+An implementation may extend the definition to include other input and
+output devices, or even network inter-program connections,
+provided they obey the Standard's characterization of interactivity.&#160;<tt> </tt>
+<p>
+<h2><a name="2-2">2.2</a>&#160;<tt> </tt>Environmental considerations</h2>
+<p>
+<h2><a name="2-2-1">2.2.1</a>&#160;<tt> </tt>Character sets</h2>
+<p>
+The Committee ultimately came to remarkable
+unanimity on the subject of character set requirements.&#160;<tt> </tt>
+There was strong sentiment that C should not be tied to <a name="ASCII-2-2-1">ASCII</a>,
+despite its heritage and despite the precedent of
+<a name="Ada-2-2-1">Ada</a> being defined in terms of ASCII.&#160;<tt> </tt>
+Rather, an implementation is required to provide a unique
+character code for each of the printable graphics used by C,
+and for each of the control codes representable by an escape sequence.&#160;<tt> </tt>
+(No particular graphic representation for any character is 
+prescribed --- thus the common Japanese practice of using the glyph 
+&#165; for the C character \ is perfectly legitimate.)&#160;<tt> </tt>
+Translation and execution environments may have different character sets,
+but each must meet this requirement in its own way.&#160;<tt> </tt>
+The goal is to ensure that a conforming implementation can translate a
+C translator written in C.&#160;<tt> </tt>
+<p>
+For this reason, and economy of description,
+source code is described <a href="#as-if" name="as-if-2-2-1"><i>as if</i></a>
+it undergoes the same translation as text that is input by the standard library
+I/O routines:
+each line is terminated by some new-line character,
+regardless of its external representation.&#160;<tt> </tt>
+<p>
+<h2><a name="2-2-1-1">2.2.1.1</a>&#160;<tt> </tt>Trigraph sequences</h2>
+<a name="Trigraph-sequences"><i>Trigraph sequences</i></a>
+have been introduced as alternate spellings of some characters
+to allow the implementation of C
+in character sets which do not provide a sufficient number of
+non-alphabetic graphics.&#160;<tt> </tt>
+<p>
+Implementations are required to support these alternate spellings,
+even if the character set in use is <a name="ASCII-2-2-1-1">ASCII</a>,
+in order to allow transportation of code from systems
+which must use the trigraphs.&#160;<tt> </tt>
+<p>
+The Committee faced a serious problem in trying to define a character set
+for C.&#160;<tt> </tt>
+Not all of the character sets in general use have the right number of
+characters,
+nor do they support the graphical symbols that C users expect to see.&#160;<tt> </tt>
+For instance, many character sets for languages other than English
+resemble ASCII except that codes used for
+graphic characters in ASCII are instead used for extra alphabetic characters
+or diacritical marks.&#160;<tt> </tt>
+C relies upon a richer set of graphic characters
+than most other programming languages,
+so the representation of programs in character sets other than ASCII
+is a greater problem than for most other programming languages.&#160;<tt> </tt>
+<p>
+The International Standards Organization (<a name="ISO-2-2-1-1">ISO</a>)&#160;<tt> </tt>
+uses three technical terms to describe character sets:
+<a name="repertoire"><i>repertoire</i></a>, <a name="collating-sequence"><i>collating sequence</i></a>, and <a name="codeset"><i>codeset</i></a>.&#160;<tt> </tt>
+The <i>repertoire</i> is the set of distinct printable characters.&#160;<tt> </tt>
+The term abstracts the notion of printable character from any particular
+representation;
+the glyphs R, {calligraphy R}, <i>R</i>, <b>R</b>, {slanted R}, {sans-serif R}, and {Re}
+all represent the same element of the repertoire, upper-case-R,
+which is distinct from lower-case-r.&#160;<tt> </tt>
+Having decided on the repertoire to be used
+(C needs a repertoire of 96 characters),
+one can then pick a
+<i>collating sequence</i>
+which corresponds to the internal representation in a computer.&#160;<tt> </tt>
+The repertoire and collating sequence together form the <i>codeset</i>.&#160;<tt> </tt>
+<p>
+What is needed for C is to determine the necessary repertoire,
+ignore the collating sequence altogether
+(it is of no importance to the language),
+and then find ways of expressing the repertoire
+in a way that should give no problems with currently popular codesets.&#160;<tt> </tt>
+<p>
+C derived its repertoire from the ASCII codeset.&#160;<tt> </tt>
+Unfortunately the ASCII repertoire is not a subset of all other commonly
+used character sets,
+and widespread practice in Europe is not to implement all of ASCII either,
+but use some parts of its collating sequence for special national characters.&#160;<tt> </tt>
+<p>
+The solution is an internationally agreed-upon repertoire,
+in terms of which an international representation of C can be defined.&#160;<tt> </tt>
+The ISO has defined such a standard:
+<a name="ISO-646-2-2-1-1">ISO 646</a> describes an <i>invariant subset</i> of ASCII.&#160;<tt> </tt>
+<p>
+The characters in the ASCII repertoire used by C and absent
+from the ISO 646 repertoire are:
+<pre>        # [ ] { } \ | ~ ^
+</pre>Given this repertoire,
+the Committee faced the problem of defining representations for
+the absent characters.&#160;<tt> </tt>
+The obvious idea of defining two-character escape sequences fails
+because C uses all the characters which
+<i>are</i> in the ISO 646 repertoire:
+no single escape character is available.&#160;<tt> </tt>
+The best that can be done is to use a
+<i>trigraph</i> --- an escape digraph followed by a distinguishing character.&#160;<tt> </tt>
+<p>
+<code>??</code>
+was selected as the escape digraph because it is not used anywhere else in C
+(except as noted below);
+it suggests that something unusual is going on.&#160;<tt> </tt>
+The third character was chosen with an eye to graphical similarity
+to the character being represented.&#160;<tt> </tt>
+<p>
+The sequence <code>??</code>
+cannot currently occur anywhere in a legal C program except in strings,
+character constants, comments, or header names.&#160;<tt> </tt>
+The character escape sequence <code>'\?'</code>
+(see <a href="c1.html#3-1-3-4">&#167;3.1.3.4</a>)&#160;<tt> </tt>
+was introduced to allow two adjacent question-marks in such contexts
+to be represented as <code>?\?</code>,
+a form distinct from the escape digraph.&#160;<tt> </tt>
+<p>
+The Committee makes no claims that a program written using trigraphs
+looks attractive.&#160;<tt> </tt>
+As a matter of style, it may be wise to surround trigraphs with
+white space, so that they stand out better in program text.&#160;<tt> </tt>
+Some users may wish to define preprocessing macros for some or all
+of the trigraph sequences.
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>Programs with character sequences such as <code>??!</code> in string
+constants, character constants, or header names will now produce
+different results.&#160;<tt> </tt>
+</ul><h2><a name="2-2-1-2">2.2.1.2</a>&#160;<tt> </tt><a name="multibyte-characters-2-2-1-2">Multibyte characters</a></h2>
+
+
+<p>
+The ``byte = character'' orientation of C works well for text in Western
+alphabets, where the size of the character set is under 256.&#160;<tt> </tt>
+The fit is rather uncomfortable for languages such as Japanese and
+Chinese, where the repertoire of ideograms numbers in the thousands
+or tens of thousands.&#160;<tt> </tt>
+<p>
+Internally, such character sets can be represented as numeric codes,
+and it is merely necessary to choose the appropriate integral type
+to hold any such character.&#160;<tt> </tt>
+<p>
+Externally, whether in the files manipulated by a program, or in the
+text of the source files themselves,
+a conversion between these large codes and the various byte media is
+necessary.&#160;<tt> </tt>
+<p>
+The support in C of large character sets is based on these principles:
+<ul><li>Multibyte encodings of large character sets are necessary in
+    I/O operations, in source text comments, and in source text
+    string and character literals.&#160;<tt> </tt>
+<li>No existing multibyte encoding is mandated in preference to any
+    other;  no widespread existing encoding should be precluded.&#160;<tt> </tt>
+<li>The null character (<code>'\0'</code>) may not be used as part
+    of a multibyte encoding, except for the one-byte null character
+    itself.  This allows existing functions which manipulate strings
+    transparently to work with multibyte sequences.&#160;<tt> </tt>
+<li>Shift encodings (which interpret byte sequences in part on the
+    basis of some state information) must start out in a known (default)&#160;<tt> </tt>
+    shift state under certain circumstances, such as the start of
+    string literals.&#160;<tt> </tt>
+<li>The minimum number of absolutely necessary library functions
+    is introduced.  (See <a href="d10.html#4-10-7">&#167;4.10.7</a>.)&#160;<tt> </tt>
+</ul><h2><a name="2-2-2">2.2.2</a>&#160;<tt> </tt>Character display semantics</h2>
+<p>
+The Standard defines a number of internal character codes
+for specifying ``format effecting actions on display devices,''&#160;<tt> </tt>
+and provides printable escape sequences for each of them.&#160;<tt> </tt>
+These character codes are clearly modelled after <a name="ASCII-2-2-2">ASCII</a> control codes,
+and the mnemonic letters used to specify their escape sequences
+reflect this heritage.&#160;<tt> </tt>
+Nevertheless, they are <i>internal</i> codes
+for specifying the format of a display in an environment-independent manner;
+they must be written to a <i>text file</i>
+to effect formatting on a display device.&#160;<tt> </tt>
+The Standard states quite clearly that
+the external representation of a text file (or data stream)&#160;<tt> </tt>
+may well differ from the internal form,
+both in character codes and number of characters needed to represent
+a single internal code.&#160;<tt> </tt>
+<p>
+The distinction between internal and external codes most needs emphasis
+with respect to <a name="new-line"><i>new-line</i></a>.&#160;<tt> </tt>
+<a name="ANSI-X3L2-2-2-2">ANSI X3L2</a> (Codes and Character Sets)&#160;<tt> </tt>
+uses the term to refer to an external code used for information interchange
+whose display semantics specify a move to the next line.&#160;<tt> </tt>
+Both ANSI X3L2 and ISO 646 deprecate the combination of the motion to the
+next line with a motion to the initial position on the line.&#160;<tt> </tt>
+The C Standard, on the other hand, uses <i>new-line</i>
+to designate the end-of-line internal code
+represented by the escape sequence <code>'\n'</code>.&#160;<tt> </tt>
+While this ambiguity is perhaps unfortunate,
+use of the term in the latter sense is nearly universal within the C community.&#160;<tt> </tt>
+But the knowledge that this internal code has numerous external
+representations, depending upon operating system and medium,
+is equally widespread.&#160;<tt> </tt>
+<p>
+The alert sequence (<code>'\a'</code>) has been added by popular demand,
+to replace, for instance, the ASCII BEL code explicitly coded as
+<code>'\007'</code>.&#160;<tt> </tt>
+<p>
+Proposals to add <code>'\e'</code> for ASCII ESC (<code>'\033'</code>)&#160;<tt> </tt>
+were not adopted because other popular character
+sets such as <a name="EBCDIC-2-2-2">EBCDIC</a> have no obvious equivalent.&#160;<tt> </tt>
+(See <a href="c1.html#3-1-3-4">&#167;3.1.3.4</a>.)&#160;<tt> </tt>
+<p>
+The vertical tab sequence (<code>'\v'</code>)&#160;<tt> </tt>
+was added since many existing
+implementations support it,
+and since it is convenient to have a designation within the language
+for all the defined white space characters.&#160;<tt> </tt>
+<p>
+The semantics of the motion control escape sequences carefully avoid
+the Western language assumptions that printing advances left-to-right
+and top-to-bottom.&#160;<tt> </tt>
+<p>
+To avoid the issue of whether an implementation conforms if it cannot
+properly effect vertical tabs (for instance),
+the Standard emphasizes that the semantics merely describe <i>intent</i>.&#160;<tt> </tt>
+<p>
+<h2><a name="2-2-3">2.2.3</a>&#160;<tt> </tt>Signals and interrupts</h2>
+
+<p>
+<a name="Signals"><i>Signals</i></a>
+are difficult to specify in a system-independent way.&#160;<tt> </tt>
+The Committee concluded
+that about the only thing a strictly conforming
+program can do in a signal handler is to
+assign a value to a <code>volatile static</code> variable
+which can be written uninterruptedly
+and promptly return.&#160;<tt> </tt>
+(The header <a name="-60signal-46h-62-2-2-3"><code>&lt;signal.h&gt;</code></a> specifies a type <a name="sig-95atomic-95t-2-2-3"><code>sig_atomic_t</code></a>
+which can be so written.)&#160;<tt> </tt>
+It is further guaranteed that a signal handler will not corrupt
+the automatic storage of
+an instantiation of any executing function,
+even if that function is called within the signal handler.&#160;<tt> </tt>
+<p>
+No such guarantees can be extended to library functions,
+with the explicit exceptions of
+<a name="longjmp-2-2-3"><code>longjmp</code></a> (<a href="d6.html#4-6-2-1">&#167;4.6.2.1</a>)&#160;<tt> </tt>
+and <a name="signal-2-2-3"><code>signal</code></a> (<a href="d7.html#4-7-1-1">&#167;4.7.1.1</a>),
+since the library functions may be arbitrarily interrelated
+and since some of them have profound effect on the environment.&#160;<tt> </tt>
+<p>
+Calls to <code>longjmp</code> are problematic,
+despite the assurances of <a href="d6.html#4-6-2-1">&#167;4.6.2.1</a>.&#160;<tt> </tt>
+The signal could have occurred during the execution of some
+library function which was in the process of updating external
+state and/or static variables.&#160;<tt> </tt>
+<p>
+A second signal for the same handler could occur before the first
+is processed, and the Standard makes no guarantees as to what
+happens to the second signal.&#160;<tt> </tt>
+<p>
+<h2><a name="2-2-4">2.2.4</a>&#160;<tt> </tt>Environmental limits</h2>
+<p>
+The Committee
+agreed that the Standard must say something about certain
+capacities and limitations, but just how to enforce these treaty points
+was the topic of considerable debate.&#160;<tt> </tt>
+<p>
+<h2><a name="2-2-4-1">2.2.4.1</a>&#160;<tt> </tt>Translation limits</h2>
+<p>
+The Standard requires that an implementation be able to translate
+and compile some program that meets each of the stated limits.&#160;<tt> </tt>
+This criterion was felt to give a useful latitude to the implementor
+in meeting these limits.&#160;<tt> </tt>
+While a deficient implementation could probably contrive
+a program that meets this requirement, yet still succeed in being useless,
+the Committee felt that such ingenuity would probably require more work
+than making something useful.&#160;<tt> </tt>
+The sense of the Committee is that
+implementors should not construe the translation limits
+as the values of hard-wired parameters, but
+rather as a set of criteria by which an implementation will be judged.&#160;<tt> </tt>
+<p>
+Some of the limits chosen represent interesting compromises.&#160;<tt> </tt>
+The goal was to allow reasonably large portable programs to be written,
+without placing excessive burdens on reasonably small implementations.&#160;<tt> </tt>
+<p>
+The minimum maximum limit of 257 cases in a switch statement
+allows coding of lexical routines which can branch on
+any character (one of at least 256 values) or on the value EOF.&#160;<tt> </tt>
+<p>
+<h2><a name="2-2-4-2">2.2.4.2</a>&#160;<tt> </tt>Numerical limits</h2>
+
+<p>
+In addition to the discussion below, see <a href="d1.html#4-1-4">&#167;4.1.4</a>.&#160;<tt> </tt>
+<p>
+<h3><a name="2-2-4-2-1">2.2.4.2.1</a>&#160;<tt> </tt>Sizes of integral types <code>&lt;</code><a name="-60limits-46h-62-2-2-4-2-1"><code>limits</code></a><code>.h&gt;</code></h3>
+
+Such a large body of C code has been developed for 8-bit byte machines
+that the integer sizes in such environments must be considered normative.&#160;<tt> </tt>
+The prescribed limits are minima:
+an implementation on a machine with 9-bit bytes can be conforming,
+as can an implementation that defines
+<code>int</code> to be the same width as <code>long</code>.&#160;<tt> </tt>
+The negative limits have been chosen to accommodate
+<a name="ones-complement-2-2-4-2-1">ones-complement</a> or <a name="sign-magnitude-2-2-4-2-1">sign-magnitude</a> implementations,
+as well as the more usual twos-complement.&#160;<tt> </tt>
+The limits for the maxima and minima of unsigned types are specified
+as unsigned constants (e.g., <code>65535u</code>)&#160;<tt> </tt>
+to avoid surprising widenings of expressions involving these extrema.&#160;<tt> </tt>
+<p>
+The macro <code>CHAR_BIT</code> makes available the number of bits in a <code>char</code> object.&#160;<tt> </tt>
+The Committee saw little utility in 
+adding such macros for other data types.&#160;<tt> </tt>
+<p>
+The names associated with the <code>short int</code> types (<code>SHRT_MIN</code>,
+etc., rather than <code>SHORT_MIN</code>, etc.) reflect prior art
+rather than obsessive abbreviation on the Committee's part.
+<p>
+<h3><a name="2-2-4-2-2">2.2.4.2.2</a>&#160;<tt> </tt>Characteristics of floating types <code>&lt;</code><a name="-60float-46h-62-2-2-4-2-2"><code>float</code></a><code>.h&gt;</code></h3>
+
+<p>
+The characterization of floating point follows, with minor changes,
+that of the FORTRAN standardization committee (X3J3).&#160;<tt> </tt>[Footnote: 
+    See X3J3 working document S8-112.]&#160;<tt> </tt>
+The Committee chose to follow the FORTRAN model
+in some part out of a concern for <a name="FORTRAN-to-C-translation-2-2-4-2-2">FORTRAN-to-C translation</a>,
+and in large part out of deference to the FORTRAN committee's greater
+experience with fine points of floating point usage.&#160;<tt> </tt>
+Note that the floating point model adopted 
+permits all common representations,
+including sign-magnitude and twos-complement,
+but precludes a logarithmic implementation.
+<p>
+Single precision (32-bit) floating point
+is considered adequate to support a conforming C implementation.&#160;<tt> </tt>
+Thus the minimum maxima constraining floating types are extremely permissive.&#160;<tt> </tt>
+<p>
+The Committee has also endeavored to accommodate
+the <a name="IEEE-754-fp-standard-2-2-4-2-2">IEEE 754 floating point standard</a>
+by not adopting any constraints on floating point which
+are contrary to this standard.&#160;<tt> </tt>
+<p>
+The term <code>FLT_MANT_DIG</code> stands for ``float mantissa digits.''&#160;<tt> </tt>
+The Standard now uses the more precise term <a name="significand"><i>significand</i></a> rather than
+<a name="mantissa"><i>mantissa</i></a>.
+<p>
+<hr>
+<a href="a.html">1 Introduction</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#env">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c1.html">3 Language</a>
+&#160;<tt> </tt>&#160;
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+</body></html>

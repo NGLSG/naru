@@ -1,0 +1,80 @@
+// Tagged values share the aggregate representation and storage protocol.
+mod variants;
+use base;
+use types;
+use records;
+syntax item `enum $name:ident { $cases:enum_cases }` => EnumDefinition($name, $cases);
+syntax enum_cases `$name:ident($type:typename);` => [records.Field($name, $type)];
+syntax enum_cases `$name:ident;` => [records.Field($name, Unit())];
+syntax enum_cases `$name:ident($type:typename); $rest:enum_cases` => list.prepend(records.Field($name, $type), $rest);
+syntax enum_cases `$name:ident; $rest:enum_cases` => list.prepend(records.Field($name, Unit()), $rest);
+syntax expr `$type:ident :: $case:ident($value:expr)` => Constructor(records.Named($type), $case, $value);
+syntax expr `$type:ident :: $case:ident` => Constructor(records.Named($type), $case, UnitValue());
+effect records.define(EnumDefinition($name,$cases),$rest,$values,$definitions)
+    => records.add_definition($name,EnumDefinition($name,$cases),$rest,$values,$definitions);
+effect records.resolve_definition(EnumDefinition($name,$cases),$definitions,$seen)
+    => seq(records.unique_fields($cases,env.empty()),Enum($name,records.resolve_fields($cases,$definitions,$seen)));
+effect types.repr(Unit()) => "!llvm.struct<()>";
+effect types.repr(Enum($name,$cases)) => types.repr(layout(Enum($name,$cases)));
+effect layout(Enum($name,$cases)) => records.Product(list.prepend(Unsigned(8),list.map("records.member_type",$cases)));
+effect records.aggregate(Enum($name,$cases)) => 1;
+effect records.aggregate(Unit()) => 1;
+effect base.hint(Constructor($descriptor,$name,$value),$environment) => $descriptor;
+effect base.hint(UnitValue(),$environment) => Unit();
+effect base.check(UnitValue(),$environment,$expected) => base.expect(base.Typed(Unit(),Zero()),$expected);
+effect base.check(Constructor($descriptor,$name,$value),$environment,$expected)
+    => bind([$tag,$index,$type],variants.case($descriptor,$name),
+        base.expect(base.Typed($descriptor,Tagged($tag,$index,base.check($value,$environment,$type))),$expected));
+effect base.lower(base.Typed(Unit(),Zero()),$environment) => mlir.op("llvm.mlir.zero",[],[types.repr(Unit())],[],[]);
+effect cases(Enum($name,$cases)) => list.map("variants.case_name",$cases);
+effect case_name(records.Field($name,$type)) => $name;
+effect case(Enum($name,$cases),$wanted) => bind([$index,$type],records.find_field($cases,$wanted,0),[$index,add($index,1),$type]);
+
+syntax typename `option<$type:typename>` => Option($type);
+syntax typename `result<$ok:typename, $error:typename>` => Result($ok, $error);
+syntax expr `some($value:expr)` => Some($value);
+syntax expr `none` => None();
+syntax expr `none<$type:typename>()` => Empty(Option($type));
+syntax expr `ok($value:expr)` => Ok($value);
+syntax expr `err($value:expr)` => Err($value);
+
+effect layout(Option($type)) => records.Product([Unsigned(8), $type]);
+effect layout(Result($ok, $error)) => records.Product([Unsigned(8), $ok, $error]);
+effect types.repr(Option($type)) => types.repr(layout(Option($type)));
+effect types.repr(Result($ok, $error)) => types.repr(layout(Result($ok, $error)));
+effect records.aggregate(Option($type)) => 1;
+effect records.aggregate(Result($ok, $error)) => 1;
+effect base.hint(Some($value), $environment) => Option(base.hint($value, $environment));
+effect base.hint(None(), $environment) => base.Any();
+effect base.hint(Empty($type), $environment) => $type;
+effect base.hint(Ok($value), $environment) => base.Any();
+effect base.hint(Err($value), $environment) => base.Any();
+effect base.check(Some($value), $environment, $expected)
+    => check_some($value, $environment, base.wanted($expected, Option(base.Any())));
+effect check_some($value, $environment, Option($type))
+    => bind(base.Typed($actual, $checked), base.check($value, $environment, $type),
+        base.Typed(Option($actual), Tagged(1, 1, base.Typed($actual, $checked))));
+effect base.check(None(), $environment, Option($type)) => base.Typed(Option($type), NoPayload(0));
+effect base.check(None(), $environment, base.Any()) => fail("none requires an option type annotation");
+effect base.check(Empty(Option($type)), $environment, $expected)
+    => base.expect(base.Typed(Option($type), NoPayload(0)), $expected);
+effect base.check(Ok($value), $environment, Result($ok, $error))
+    => base.Typed(Result($ok, $error), Tagged(0, 1, base.check($value, $environment, $ok)));
+effect base.check(Err($value), $environment, Result($ok, $error))
+    => base.Typed(Result($ok, $error), Tagged(1, 2, base.check($value, $environment, $error)));
+effect base.check(Ok($value), $environment, base.Any()) => fail("ok requires a result type annotation");
+effect base.check(Err($value), $environment, base.Any()) => fail("err requires a result type annotation");
+effect base.lower(base.Typed($descriptor, NoPayload($tag)), $environment)
+    => tag_value($descriptor, $tag);
+effect base.lower(base.Typed($descriptor, Tagged($tag, $index, $payload)), $environment)
+    => records.insert(tag_value($descriptor, $tag), base.lower($payload, $environment), $descriptor, $index);
+effect tag_value($descriptor, $tag)
+    => records.insert(mlir.op("llvm.mlir.zero", [], [types.repr($descriptor)], [], []),
+        base.lower(base.Typed(Unsigned(8), base.Integer($tag)), env.empty()), $descriptor, 0);
+// Pattern metadata is extensible; a new ADT supplies cases and payload slots.
+effect cases(Option($type)) => ["none", "some"];
+effect cases(Result($ok, $error)) => ["ok", "err"];
+effect case(Option($type), "none") => [0, 0, NoType()];
+effect case(Option($type), "some") => [1, 1, $type];
+effect case(Result($ok, $error), "ok") => [0, 1, $ok];
+effect case(Result($ok, $error), "err") => [1, 2, $error];

@@ -1,0 +1,517 @@
+<html><head>
+<title>1 Introduction</title>
+<link rel="made" rev="made" href="mailto:jutta@cs.tu-berlin.de">
+</head>
+<body>
+<a href="title.html#intro">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="b.html">2 Environment</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+<hr>
+<h1><a name="1">1</a>&#160;<tt> </tt>Introduction</h1>
+This Rationale summarizes the deliberations of X3J11, the Technical Committee
+charged by ANSI with devising a standard for the C programming language.&#160;<tt> </tt>
+It has been published along with the draft Standard to assist the process
+of formal public review.&#160;<tt> </tt>
+<p>
+The X3J11 Committee represents a cross-section of the C community:
+it consists of about fifty active members representing
+hardware manufacturers,
+vendors of compilers and other software development tools,
+software designers,
+consultants,
+academics,
+authors,
+applications programmers,
+and others.&#160;<tt> </tt>
+In the course of its deliberations,
+it has reviewed related American and international standards
+both published and in progress.&#160;<tt> </tt>
+It has attempted to be responsive to the concerns of the broader community:
+as of September 1988, it had received and reviewed
+almost 200 letters,
+including dozens of formal comments from the first public review,
+suggesting modifications and additions to the various
+preliminary drafts of the Standard.&#160;<tt> </tt>
+<p>
+Upon publication of the Standard, the primary role of the Committee
+will be to offer interpretations of the Standard.&#160;<tt> </tt>
+It will consider and respond to all correspondence received.&#160;<tt> </tt>
+<p>
+<h2><a name="1-1">1.1</a>&#160;<tt> </tt>Purpose</h2>
+<p>
+The Committee's overall goal was to develop a clear, consistent, and unambiguous
+Standard for the C programming language which codifies the common,
+existing definition of C and which promotes the portability of user
+programs across C language environments.&#160;<tt> </tt>
+<p>
+The X3J11 charter clearly mandates the Committee to
+<i>codify common existing practice</i>.&#160;<tt> </tt>
+The Committee has held fast to precedent wherever this was clear and
+unambiguous.&#160;<tt> </tt>
+The vast majority of the language defined by the Standard is precisely the
+same as is defined in Appendix A of
+<i>The C Programming Language</i>
+by <a href="../bwk/index.html" name="Kernighan-44-Brian-1-1">Brian Kernighan</a>
+and <a href="http://www.cs.bell-labs.com/who/dmr/index.html" name="Ritchie-44-Dennis-M-46-1-1">Dennis
+Ritchie</a>,
+and as is implemented in almost all C translators.&#160;<tt> </tt>
+(This document is hereinafter referred to as K&amp;R.)&#160;<tt> </tt>
+<p>
+K&amp;R
+is not the only source of ``existing practice.''&#160;<tt> </tt>
+Much work has been done over the years to improve the C language by
+addressing its weaknesses.&#160;<tt> </tt>
+The Committee has formalized enhancements of proven
+value which have become part of the various dialects of C.&#160;<tt> </tt>
+<p>
+Existing practice, however, has not always been consistent.&#160;<tt> </tt>
+Various dialects of C have approached problems in different
+and sometimes diametrically opposed ways.&#160;<tt> </tt>
+This divergence has happened for several reasons.&#160;<tt> </tt>
+First, K&amp;R,
+which has served as the language specification for almost all C translators,
+is imprecise in some areas (thereby allowing divergent interpretations),
+and it does not address some issues
+(such as a complete specification of a library)&#160;<tt> </tt>
+important for code portability.&#160;<tt> </tt>
+Second, as the language has matured over the years, various
+extensions have been added in different dialects to address limitations and
+weaknesses of the language;
+these extensions have not been consistent across dialects.&#160;<tt> </tt>
+<p>
+One of the Committee's goals
+was to consider such areas of divergence
+and to establish a set of clear, unambiguous rules
+consistent with the rest of the language.&#160;<tt> </tt>
+This effort included
+the consideration of extensions made in various C dialects,
+the specification of a complete set of required library functions,
+and the development of a complete, correct syntax for C.&#160;<tt> </tt>
+<p>
+The work of the Committee was in large part a balancing act.&#160;<tt> </tt>
+The Committee has tried to improve portability while retaining
+the definition of certain features of C as machine-dependent.&#160;<tt> </tt>
+It attempted to incorporate valuable new ideas
+without disrupting the basic structure and fabric
+of the language.&#160;<tt> </tt>
+It tried to develop a clear and consistent
+language without invalidating existing programs.&#160;<tt> </tt>
+All of the goals
+were important and each decision was weighed in the light of sometimes
+contradictory requirements in an attempt to reach a workable compromise.&#160;<tt> </tt>
+<p>
+In specifying a standard language, the Committee used several guiding
+principles, the most important of which are:
+<p>
+<p><p><b>Existing code is important, existing implementations are not.</b>
+A large body of C code exists of considerable commercial value.&#160;<tt> </tt>
+Every attempt has been made to ensure that the bulk of this code
+will be acceptable to any implementation conforming to the Standard.&#160;<tt> </tt>
+The Committee did not want to force most programmers to modify their C
+programs just to have them accepted by a conforming translator.&#160;<tt> </tt>
+<p>
+On the other hand, no one implementation was held up as the exemplar by which
+to define C:
+it is assumed that all existing
+implementations must change somewhat to conform to the Standard.&#160;<tt> </tt>
+<p>
+<p><b>C code can be portable.</b>
+Although the C language was originally born with the
+<a name="UNIX-1-1">UNIX</a> operating system on the <a name="DEC-PDP-11-1-1">DEC PDP-11</a>,
+it has since been implemented on a wide variety of computers and
+operating systems.&#160;<tt> </tt>
+It has also seen considerable use in cross-compilation of code for
+embedded systems to be executed in a free-standing environment.&#160;<tt> </tt>
+The Committee has attempted to specify the language and the library
+to be as widely implementable as possible,
+while recognizing that a system must meet certain minimum criteria
+to be considered a viable host or target for the language.&#160;<tt> </tt>
+<p>
+<p><b>C code can be non-portable.</b>
+Although it strove to give programmers the opportunity to write
+truly portable programs,
+the Committee did not want to
+<i>force</i>
+programmers into writing portably,
+to preclude the use of C as a ``high-level assembler'':
+the ability to write
+machine-specific code is one of the strengths of C.&#160;<tt> </tt>
+It is this principle which largely motivates drawing the distinction
+between <a name="strictly-conforming-program-1-1"><i>strictly conforming program</i></a> and
+<a name="conforming-program"><i>conforming program</i></a> (<a href="#1-7">&#167;1.7</a>).&#160;<tt> </tt>
+<p>
+<p><b>Avoid ``quiet changes.''</b>
+Any change to widespread practice altering the meaning of existing code
+causes problems.&#160;<tt> </tt>
+Changes that cause code to be so ill-formed as to require
+<a name="diagnostics-1-1" href="b.html#diagnostics-2-1-1-3">diagnostic</a> messages
+are at least easy to detect.&#160;<tt> </tt>
+As much as seemed possible consistent with its other goals,
+the Committee has avoided changes
+that quietly alter one valid program to another with different semantics,
+that cause a working program to work differently without notice.&#160;<tt> </tt>
+In important places where this principle is violated,
+the Rationale points out a <a name="quiet-change-1-1">QUIET CHANGE</a>.&#160;<tt> </tt>
+	
+<p>
+<p><b>A standard is a treaty between implementor and programmer.</b>
+Some numerical limits have been added to the Standard to give both implementors
+and programmers a better understanding of what must be provided
+by an implementation, of what can be expected and depended upon to exist.&#160;<tt> </tt>
+These limits are presented as
+<i>minimum maxima</i>
+(i.e., lower limits placed on the values of upper limits specified
+by an implementation)&#160;<tt> </tt>
+with the understanding
+that any implementor is at liberty to provide higher limits than
+the Standard mandates.&#160;<tt> </tt>
+Any program that takes advantage of these more tolerant limits is not
+strictly conforming,
+however, since other implementations are at liberty to enforce the mandated
+limits.&#160;<tt> </tt>
+<p>
+<p><b>Keep the spirit of C.</b>
+The Committee kept as a major goal to preserve the traditional
+<i>spirit of C</i>.&#160;<tt> </tt>
+There are many facets of the spirit of C, but the essence is a
+community sentiment
+of the underlying principles upon which the C language is based.&#160;<tt> </tt>
+Some of the facets of the spirit of C can be summarized in phrases like
+<ul><li><i>Trust the programmer.</i>
+<li><i>Don't prevent the programmer from doing what needs to be done.</i>
+<li><i>Keep the language small and simple.</i>
+<li><i>Provide only one way to do an operation.</i>
+<li><i>Make it fast, even if it is not guaranteed to be portable.</i>
+</ul>The last proverb needs a little explanation.&#160;<tt> </tt>
+The potential for
+efficient code generation is one of the most important strengths of C.&#160;<tt> </tt>
+To help ensure that no code explosion occurs
+for what appears to be a very simple operation,
+many operations are defined to be
+<i>how the target machine's hardware does it</i>
+rather than by a general abstract rule.&#160;<tt> </tt>
+An example of this willingness to live with
+<i>what the machine does</i>
+can be seen in the rules that govern the widening of
+<code>char</code> objects for use in expressions:
+whether the values of <code>char</code>
+objects widen to signed or unsigned quantities typically
+depends on which byte operation is more efficient on the target machine.&#160;<tt> </tt>
+<p>
+One of the goals of the Committee was to avoid interfering with the ability of
+translators to generate compact, efficient code.&#160;<tt> </tt>
+In several cases the Committee has introduced features
+to improve the possible efficiency of the generated code;
+for instance, floating point operations may be performed in single-precision
+if both operands are <code>float</code> rather than <code>double.</code>
+<p><p>
+<h2><a name="1-2">1.2</a>&#160;<tt> </tt>Scope</h2>
+<p>
+This Rationale focuses primarily on additions, clarifications, and
+changes made to the language as described in the Base Documents
+(see <a href="#1-5">&#167;1.5</a>).&#160;<tt> </tt>
+It is <i>not</i> a rationale for the C language as a whole:
+the Committee was charged with codifying an existing language,
+not designing a new one.&#160;<tt> </tt>
+No attempt is made in this Rationale to defend
+the pre-existing syntax of the language,
+such as the syntax of declarations or the binding of operators.&#160;<tt> </tt>
+<p>
+The Standard is contrived as carefully as possible to permit a broad
+range of implementations, from direct interpreters to highly optimizing
+compilers with separate linkers, from ROM-based embedded microcomputers
+to multi-user multi-processing host systems.&#160;<tt> </tt>
+A certain amount of specialized terminology has therefore been chosen
+to minimize the bias toward
+compiler implementations shown in the Base Documents.&#160;<tt> </tt>
+<p>
+The Rationale discusses some language or library features which were
+<i>not</i> adopted into the Standard.&#160;<tt> </tt>
+These are usually features which are popular in some C implementations,
+so that a user of those implementations might question why they
+do not appear in the Standard.&#160;<tt> </tt>
+<p>
+<h2><a name="1-3">1.3</a>&#160;<tt> </tt>References</h2>
+<p>
+<h2><a name="1-4">1.4</a>&#160;<tt> </tt>Organization of the document</h2>
+<p>
+This Rationale is organized to parallel the Standard as closely as possible,
+to facilitate finding relevant discussions.&#160;<tt> </tt>
+Some subsections of the Rationale comprise just the subsection title
+from the Standard:  this indicates that the Committee thought no special
+comment was necessary. 
+Where a given discussion touches on several areas,
+attempts have been made to include cross-references within the text.&#160;<tt> </tt>
+Such references, unless they specify the Standard or the Rationale,
+are deliberately ambiguous.&#160;<tt> </tt>
+<p>
+As for the organization of the Standard itself,
+Base Documents existed only for
+Sections 3 (Language) and 4 (Library) of the Standard.&#160;<tt> </tt>
+Section 1 (Introduction) was modeled after the introductory matter in
+several other standards for procedural languages.&#160;<tt> </tt>
+Section 2 (Environment) was added to fill a need, identified from the start,
+to place a C program in context and describe the way it interacts with its
+surroundings.&#160;<tt> </tt>
+The Appendices were added as a repository
+for related material not included in the Standard itself,
+or to bring together in a single place information
+about a topic which was scattered throughout the Standard.&#160;<tt> </tt>
+<p>
+Just as the Standard proper excludes all examples, footnotes,
+references, and appendices,
+<i>this rationale is not part of the Standard</i>.&#160;<tt> </tt>
+The C language is defined by the Standard alone.&#160;<tt> </tt>
+If any part of this Rationale is not in accord with that definition,
+the Committee would very much like to be so informed.&#160;<tt> </tt>
+<p>
+<h2><a name="1-5">1.5</a>&#160;<tt> </tt>Base documents</h2>
+<p>
+The Base Document for Section 3 (Language) was
+``The C Reference Manual'' by <a href="http://www.cs.bell-labs.com/who/dmr/index.html"
+name="Ritchie-44-Dennis-M-46-1-5">Dennis M. Ritchie</a>,
+which was used for several years within AT&amp;T Bell Laboratories and
+reflects enhancements to C within the UNIX environment.&#160;<tt> </tt>
+A version of this manual was published as
+Appendix A of <i>The C Programming Language</i>
+by <a name="Kernighan-44-Brian-1-5" href="../bwk/index.html">Kernighan</a> and <a href="../dmr/index.html">Ritchie</a> (K&amp;R).&#160;<tt> </tt>
+Several deviations in the Base Document from K&amp;R
+were challenged during Committee deliberations,
+but most changes from K&amp;R ultimately included in the Standard were readily
+endorsed by the Committee since they were widely known and accepted outside
+the UNIX user community.&#160;<tt> </tt>
+<p>
+The Base Document for Section 4 (Library) was the
+<a name="1984--47usr-47group-Standard-1-5">1984 /usr/group Standard</a>.&#160;<tt> </tt>
+(/usr/group is a UNIX system users group.)&#160;<tt> </tt>
+In defining what a UNIX-like environment looks like to
+an applications programmer writing in C,
+/usr/group was obliged to
+describe library functions usable in <i>any</i> C environment.&#160;<tt> </tt>
+The Committee found /usr/group's work to be an excellent codification
+of existing practice in defining C libraries,
+once the UNIX-specific functions had been removed.&#160;<tt> </tt>
+<p>
+The work begun by /usr/group is being continued by the
+<a name="IEEE-1003-1-5">IEEE</a> Committee 1003
+to define a portable operating system interface (``POSIX'')&#160;<tt> </tt>
+based on the UNIX environment.&#160;<tt> </tt>
+The X3J11 Committee has been working with IEEE 1003 to resolve potential
+areas of overlap or conflict between the two Committees.&#160;<tt> </tt>
+The result of this coordination has
+been to divide responsibility for standardizing
+library functions into two areas.&#160;<tt> </tt>
+Those functions needed for a C implementation in any environment are the
+responsibility of X3J11 and are included in the Standard.&#160;<tt> </tt>
+IEEE 1003 retains
+responsibility for those functions which are operating-system-specific;
+the <a name="POSIX-1-5">POSIX</a> standard will refer to the
+ANSI C Standard for C library function definitions.&#160;<tt> </tt>
+<p>
+Many of the discussions in this Rationale employ the formula
+``<i>feature X</i> has been changed (added, removed) because ... .''&#160;<tt> </tt>
+The changes (additions, removals) should be understood as being with respect
+to the appropriate Base Document.&#160;<tt> </tt>
+<p>
+<h2><a name="1-6">1.6</a>&#160;<tt> </tt>Definitions of terms</h2>
+<p>
+The definitions of
+<a name="object"><i>object</i></a>, <a name="bit"><i>bit</i></a>, <a name="byte"><i>byte</i></a>, and <a name="alignment"><i>alignment</i></a>
+reflect a strong consensus,
+reached after considerable discussion,
+about the fundamental nature of the memory organization of a C environment:
+<ul><li>All objects in C must be representable as a contiguous sequence of
+	bytes, each of which is at least 8 bits wide.&#160;<tt> </tt>
+<p>
+<li>A <code>char</code> (or <code>signed char</code> or <code>unsigned char</code>)&#160;<tt> </tt>
+    	occupies exactly one byte.&#160;<tt> </tt>
+</ul>(Thus, for instance, on a machine with 36-bit <i>words</i>,
+a <i>byte</i> can be defined to consist of
+9, 12, 18, or 36 bits,
+these numbers being all the exact divisors of 36 which are
+not less than 8.)&#160;<tt> </tt>
+These strictures codify
+the widespread presumption that any object can be treated
+as an array of characters,
+the size of which is given by the <a name="sizeof-1-6"><code>sizeof</code></a> operator with that
+object's type as its operand.&#160;<tt> </tt>
+<p>
+These definitions do not preclude ``holes'' in <code>struct</code> objects. 
+Such holes are in fact often mandated by alignment and packing requirements.&#160;<tt> </tt>
+The holes simply do not participate in representing the (composite) value
+of an object.&#160;<tt> </tt>
+<p>
+The definition of <i>object</i>
+does not employ the notion of type.&#160;<tt> </tt>
+Thus an object has no type in and of itself.&#160;<tt> </tt>
+However, since an object may only be designated by an
+<a name="lvalue"><i>lvalue</i></a> (see <a href="c2.html#3-2-2-1">&#167;3.2.2.1</a>),
+the phrase ``the type of an object''&#160;<tt> </tt>
+is taken to mean,
+here and in the Standard,
+``the type of the lvalue designating this object,''&#160;<tt> </tt>
+and ``the value of an object'' means
+``the contents of the object interpreted as a value of the type
+of the lvalue designating the object.''&#160;<tt> </tt>
+<p>
+The concept of <a name="multi-byte-character"><i>multi-byte character</i></a> has been added to
+C to support very large character sets.  See <a href="b.html#2-2-1-2">&#167;2.2.1.2</a>.&#160;<tt> </tt>
+<p>
+
+The terms
+<a name="unspecified-behavior"><i>unspecified behavior</i></a>,
+<a name="undefined-behavior"><i>undefined behavior</i></a>,
+and
+<a name="impl-defined-behavior"><i>implementation-defined behavior</i></a>
+are used to categorize the result of
+writing programs whose properties the Standard
+does not, or cannot, completely describe.&#160;<tt> </tt>
+The goal of adopting this categorization
+is to allow a certain variety among implementations which permits
+<i>quality of implementation</i>
+to be an active force in the marketplace
+as well as to allow certain popular extensions,
+without removing the cachet of
+<i>conformance to the Standard</i>.&#160;<tt> </tt>
+Appendix F to the Standard
+catalogs those behaviors which fall into one of these three
+categories.&#160;<tt> </tt>
+<p>
+<i>Unspecified behavior</i>
+gives the implementor some latitude in translating programs.&#160;<tt> </tt>
+This latitude does not extend as far as failing to translate
+the program.&#160;<tt> </tt>
+<p>
+<i>Undefined behavior</i>
+gives the implementor license not to catch certain
+program errors that are difficult to diagnose.&#160;<tt> </tt>
+It also identifies areas of possible conforming language extension:
+the implementor may augment the language by providing a definition of
+the officially undefined behavior.&#160;<tt> </tt>
+<p>
+<i>Implementation-defined behavior</i>
+gives an implementor the freedom to choose the appropriate approach,
+but requires that this choice be explained to the user.&#160;<tt> </tt>
+Behaviors designated as implementation-defined are generally those in
+which a user could make meaningful coding decisions based on the
+implementation definition.&#160;<tt> </tt>
+Implementors should bear in mind this criterion when deciding how extensive
+an implementation definition ought to be.&#160;<tt> </tt>
+As with unspecified behavior, simply failing to translate
+the source containing the implementation-defined behavior is not
+an adequate response.&#160;<tt> </tt>
+<p>
+<p>
+<h2><a name="1-7">1.7</a>&#160;<tt> </tt><a name="compliance-1-7">Compliance</a></h2>
+
+<p>
+The three-fold definition of compliance is used to
+broaden the population of conforming programs and distinguish between
+conforming programs using a single implementation and portable conforming
+programs.&#160;<tt> </tt>
+<p>
+A <a name="strictly-conforming-program"><i>strictly conforming program</i></a>
+is another term for a maximally portable program.&#160;<tt> </tt>
+The goal is to give the programmer a
+<i>fighting chance</i>
+to make powerful C programs that are also highly portable,
+without demeaning perfectly useful C programs that happen not to be portable.&#160;<tt> </tt>
+Thus the adverb <i>strictly</i>.&#160;<tt> </tt>
+<p>
+By defining conforming implementations in terms of the programs they accept,
+the Standard leaves open the door for a broad class of extensions as
+part of a conforming implementation.&#160;<tt> </tt>
+By defining both
+<a name="conforming-hosted"><i>conforming hosted</i></a>
+and
+<a name="conforming-freestanding"><i>conforming freestanding</i></a>
+implementations, the Standard recognizes the use of C to write such
+programs as operating systems and ROM-based applications,
+as well as more conventional hosted applications.&#160;<tt> </tt>
+Beyond this two-level scheme,
+no additional subsetting is defined for C,
+since the Committee felt strongly that too many levels
+dilutes the effectiveness of a standard.&#160;<tt> </tt>
+<p>
+<i>Conforming program</i>
+is thus the most tolerant of all categories, since
+only one conforming implementation need accept a program to rule it conforming.&#160;<tt> </tt>
+The primary limitation on this license is <a href="b.html#2-1-1-3">&#167;2.1.1.3</a>.&#160;<tt> </tt>
+<p>
+Diverse sections of the Standard comprise the ``treaty'' between
+programmers and implementors regarding various name spaces ---
+if the programmer follows the rules of the Standard the implementation
+will not impose any further restrictions or surprises:
+<ul><li>A strictly conforming program can use only a restricted subset of
+    the identifiers that begin with underscore  (<a href="d1.html#4-1-2">&#167;4.1.2</a>).&#160;<tt> </tt>
+    Identifiers and keywords are distinct (<a href="c1.html#3-1-1">&#167;3.1.1</a>).&#160;<tt> </tt>
+    Otherwise, programmers can use whatever internal names they wish;
+    a conforming implementation is guaranteed not to use conflicting
+    names of the form reserved to the programmer.&#160;<tt> </tt>
+    (Note, however, the class of identifiers which are identified
+    in <a href="d13.html#4-13">&#167;4.13</a> as possible future library names.)&#160;<tt> </tt>
+<li>The external functions defined in, or called within, a portable
+    program can be named whatever the programmer wishes, as long
+    as these names are distinct from the external names defined by
+    the Standard library (<a href="d1.html#4">&#167;4</a>).&#160;<tt> </tt>
+    External names in a maximally portable program must be distinct
+    within the first 6 characters mapped into one case (<a href="c1.html#3-1-2">&#167;3.1.2</a>).&#160;<tt> </tt>
+<li>A maximally portable program cannot, of course, assume any
+    language keywords other than those defined in the Standard.&#160;<tt> </tt>
+<li>Each function called within a maximally portable program must 
+    either be defined within some source file of the program or
+    else be a function in the Standard library.&#160;<tt> </tt>
+</ul>One proposal long entertained by the Committee
+was to mandate that
+each implementation have a translate-time switch for turning off extensions
+and making a pure Standard-conforming implementation.&#160;<tt> </tt>
+It was pointed out, however, that virtually every translate-time switch
+setting effectively creates a different ``implementation,''&#160;<tt> </tt>
+however close may be the effect of translating with two different
+switch settings.&#160;<tt> </tt>
+Whether an implementor chooses to offer a family of conforming implementations,
+or to offer an assortment of non-conforming implementations
+along with one that conforms,
+was not the business of the Committee to mandate.&#160;<tt> </tt>
+The Standard therefore confines itself to describing conformance, and merely
+suggests areas where extensions will not compromise conformance.&#160;<tt> </tt>
+<p>
+Other proposals rejected more quickly were to provide a validation suite,
+and to provide the source code for an acceptable library.&#160;<tt> </tt>
+Both were recognized to be major undertakings, and both were seen to
+compromise the integrity of the Standard by giving concrete examples that
+might bear more weight than the Standard itself.&#160;<tt> </tt>
+The potential legal implications were also a concern.&#160;<tt> </tt>
+<p>
+Standardization of such tools as program consistency checkers
+and symbolic debuggers lies outside the mandate of the Committee.&#160;<tt> </tt>
+However, the Committee has taken pains to allow such programs to
+work with conforming programs and implementations.&#160;<tt> </tt>
+<p>
+<h2><a name="1-8">1.8</a>&#160;<tt> </tt>Future directions</h2>
+<p>
+<hr>
+<a href="title.html#env">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="b.html">2 Environment</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+</body></html>

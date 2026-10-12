@@ -1,0 +1,2 @@
+mod unknown_effect;
+syntax item `mystery $n:int` => Mystery($n);

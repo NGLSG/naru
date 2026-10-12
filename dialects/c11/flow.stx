@@ -1,0 +1,74 @@
+mod c11.flow;
+use c11.syntax;
+use c11.sema;
+use c11.types;
+use base;
+use control;
+use cfg;
+use tree;
+
+syntax c11.statement `switch ($value:c11.sequence) $body:c11.statement` => Switch($value,$body,base.End());
+syntax c11.statement `case $value:c11.expr: $body:c11.statement` => Case($value,symbol("case"),$body);
+syntax c11.statement `default: $body:c11.statement` => Default(symbol("default"),$body);
+syntax c11.statement `$name:ident: $body:c11.statement` when not(eq($name,"default")) => Label($name,$body);
+syntax c11.statement `goto $name:ident;` => Goto($name);
+
+effect c11.syntax.append(Switch($value,$body,$next),$suffix) => Switch($value,$body,c11.syntax.append($next,$suffix));
+effect c11.syntax.append(Case($value,$identity,$body),$suffix) => Case($value,$identity,c11.syntax.append($body,$suffix));
+effect c11.syntax.append(Default($identity,$body),$suffix) => Default($identity,c11.syntax.append($body,$suffix));
+effect c11.syntax.append(Label($name,$body),$suffix) => Label($name,c11.syntax.append($body,$suffix));
+effect c11.syntax.append(Goto($name),$suffix) => Abrupt(Goto($name),$suffix);
+effect c11.syntax.append(base.Return($value),$suffix) => Abrupt(base.Return($value),$suffix);
+effect c11.syntax.append(control.ReturnVoid(),$suffix) => Abrupt(control.ReturnVoid(),$suffix);
+effect c11.syntax.append(control.Break(),$suffix) => Abrupt(control.Break(),$suffix);
+effect c11.syntax.append(control.Continue(),$suffix) => Abrupt(control.Continue(),$suffix);
+effect c11.syntax.append(Abrupt($terminal,$next),$suffix) => Abrupt($terminal,c11.syntax.append($next,$suffix));
+effect c11.syntax.append(base.If($condition,$yes,$no,$next),$suffix) => base.If($condition,$yes,$no,c11.syntax.append($next,$suffix));
+effect c11.syntax.append(base.While($condition,$body,$next),$suffix) => base.While($condition,$body,c11.syntax.append($next,$suffix));
+effect c11.syntax.append(control.Evaluate($value,$next),$suffix) => control.Evaluate($value,c11.syntax.append($next,$suffix));
+
+// Labels have function scope; ordinary object names remain lexically scoped.
+effect c11.sema.function_label_scope($body,$scope) => env.put($scope,LabelsKey(),tree.fold($body,"c11.flow.collect_label",env.empty()));
+effect collect_label($labels,Label($name,$body)) => choose(env.contains($labels,$name),fail(concat("duplicate C label: ",$name)),env.put($labels,$name,symbol($name)));
+effect[fallback] collect_label($labels,$node) => $labels;
+effect base.check_body(Label($name,$body),$env,$result) => cfg.Label(env.get(env.get($env,LabelsKey()),$name),base.check_body($body,$env,$result));
+effect base.check_body(Goto($name),$env,$result) => choose(env.contains(env.get($env,LabelsKey()),$name),
+    cfg.Jump(env.get(env.get($env,LabelsKey()),$name)),fail(concat("undefined C label: ",$name)));
+effect base.check_body(Abrupt($terminal,$next),$env,$result)
+    => cfg.Detached(base.check_body($terminal,$env,$result),base.check_body($next,$env,$result));
+
+effect base.check_body(Switch($value,$body,$next),$env,$result) => bind($selector,promoted_selector(base.check($value,$env,base.Any())),
+    bind(Cases($entries,$default,$seen,$scope,$type),tree.fold_with($body,"c11.flow.collect_case",Cases([],[],env.empty(),$env,arg($selector,0)),"c11.flow.switch_children"),
+        CheckedSwitch($selector,list.reverse($entries),$default,
+            base.check_body($body,env.put(env.put($env,"control.break",1),SwitchKey(),$seen),$result),base.check_body($next,$env,$result))));
+effect promoted_selector(base.Typed($type,$value)) => choose(c11.types.is_integer($type),
+    c11.sema.convert(base.Typed($type,$value),c11.types.promotion($type)),fail("C switch requires an integer selector"));
+effect switch_children(Switch($value,$body,$next)) => [$next];
+effect[fallback] switch_children($node) => tree.raw_children($node);
+effect collect_case(Cases($entries,$default,$seen,$env,$type),Case($expression,$identity,$body)) => bind($value,
+    c11.sema.integer_value(c11.sema.constant_convert(c11.sema.integer_constant_value($expression,$env),$type)),
+        choose(env.contains($seen,ValueKey($value)),fail("duplicate C switch case after conversion"),
+            Cases(list.prepend([$value,$identity],$entries),$default,env.put(env.put($seen,ValueKey($value),1),$identity,1),$env,$type)));
+effect collect_case(Cases($entries,$default,$seen,$env,$type),Default($identity,$body)) => choose(eq(size($default),0),
+    Cases($entries,[$identity],env.put($seen,$identity,1),$env,$type),fail("duplicate C switch default"));
+effect[fallback] collect_case($state,$node) => $state;
+effect base.check_body(Case($value,$identity,$body),$env,$result) => checked_case($identity,$body,$env,$result);
+effect base.check_body(Default($identity,$body),$env,$result) => checked_case($identity,$body,$env,$result);
+effect checked_case($identity,$body,$env,$result) => choose(env.contains($env,SwitchKey()),
+    choose(env.contains(env.get($env,SwitchKey()),$identity),cfg.Label($identity,base.check_body($body,$env,$result)),fail("C case belongs to a different switch")),
+    fail("C case or default outside a switch"));
+
+effect base.prepare_storage(CheckedSwitch($selector,$cases,$default,$body,$next),$entry,$env)
+    => base.prepare_storage($next,$entry,base.prepare_storage($body,$entry,$env));
+effect base.lower_flow(CheckedSwitch($selector,$cases,$default,$body,$next),$env,$block,$continuation)
+    => lower_switch($selector,$cases,$default,$body,$next,$env,$block,$continuation,mlir.block([]));
+effect lower_switch($selector,$cases,$default,$body,$next,$env,$block,$continuation,$exit)
+    => seq(mlir.in_block($block,cfg.dispatch($selector,$cases,$default,$exit,$env)),
+        list.concat([$block],list.concat(base.lower_flow($body,env.put($env,"control.exit",$exit),mlir.block([]),$exit),
+            base.lower_flow($next,$env,$exit,$continuation))));
+effect base.flow_terminal(CheckedSwitch($selector,$cases,$default,$body,$next)) => base.flow_terminal($next);
+effect c11.sema.for_continues(Switch($value,$body,$next),$step) => Switch($value,c11.sema.for_continues($body,$step),c11.sema.for_continues($next,$step));
+effect c11.sema.for_continues(Case($value,$identity,$body),$step) => Case($value,$identity,c11.sema.for_continues($body,$step));
+effect c11.sema.for_continues(Default($identity,$body),$step) => Default($identity,c11.sema.for_continues($body,$step));
+effect c11.sema.for_continues(Label($name,$body),$step) => Label($name,c11.sema.for_continues($body,$step));
+effect c11.sema.for_continues(Abrupt($terminal,$next),$step) => Abrupt(c11.sema.for_continues($terminal,$step),c11.sema.for_continues($next,$step));

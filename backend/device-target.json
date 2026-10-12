@@ -1,0 +1,5 @@
+{
+  "name": "research-device-ir",
+  "pipeline": "builtin.module(canonicalize,cse)",
+  "irdl": ["examples/device.irdl.mlir"]
+}

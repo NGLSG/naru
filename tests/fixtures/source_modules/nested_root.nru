@@ -1,0 +1,3 @@
+mod nested_root;
+use nested.lib;
+fn main() -> i32 { return 42; }

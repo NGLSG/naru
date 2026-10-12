@@ -1,0 +1,3 @@
+mod mismatch_root;
+use mismatch;
+fn main() -> i32 { return 42; }

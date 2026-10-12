@@ -1,0 +1,302 @@
+<html><head>
+<title>3.2 Conversions</title>
+<link rel="made" rev="made" href="mailto:jutta@cs.tu-berlin.de">
+</head>
+<body>
+<a href="c1.html">3.1 Lexical Elements</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-2">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c3.html">3.3 Expressions</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+<hr>
+<h1><a name="3-2">3.2</a>&#160;<tt> </tt><a name="conversions-3-2">Conversions</a></h1>
+
+<p>
+<h2><a name="3-2-1">3.2.1</a>&#160;<tt> </tt>Arithmetic operands</h2>
+<p>
+<h2><a name="3-2-1-1">3.2.1.1</a>&#160;<tt> </tt>Characters and integers</h2>
+<p>
+Since the publication of K&amp;R,
+a serious divergence has occurred among implementations of C
+in the evolution of integral promotion rules.&#160;<tt> </tt>
+Implementations fall into two major camps,
+which may be characterized as
+<a name="unsigned-preserving"><i>unsigned preserving</i></a>
+and
+<a name="value-preserving"><i>value preserving</i></a>.&#160;<tt> </tt>
+The difference between these approaches
+centers on the treatment of <code>unsigned char</code> and <code>unsigned short</code>,
+when widened by the <a name="integral-promotions"><i>integral promotions</i></a>,
+but the decision has an impact on
+the typing of constants as well (see <a href="c1.html#3-1-3-2">&#167;3.1.3.2</a>).&#160;<tt> </tt>
+<p>
+The <i>unsigned preserving</i>
+approach calls for promoting the two smaller
+unsigned types to <code>unsigned int</code>.&#160;<tt> </tt>
+This is a simple rule,
+and yields a type which is independent of execution environment.&#160;<tt> </tt>
+<p>
+The <i>value preserving</i>
+approach calls for promoting those types to <code>signed int</code>,
+if that type can properly represent all the values of the original type,
+and otherwise for promoting those types to <code>unsigned int</code>.&#160;<tt> </tt>
+Thus, if the execution environment represents <code>short</code> as something
+smaller than <code>int</code>, <code>unsigned short</code> becomes <code>int</code>;
+otherwise it becomes <code>unsigned int</code>.&#160;<tt> </tt>
+<p>
+Both schemes give the same answer in the vast majority of cases,
+and both give the same effective result in even more cases
+in implementations with twos-complement arithmetic
+and quiet wraparound on signed overflow ---
+that is, in most current implementations.&#160;<tt> </tt>
+In such implementations, differences between the two only
+appear when these two conditions are both true:
+<ol><li>An expression involving an
+	<code>unsigned char</code> or <code>unsigned short</code> produces an <code>int</code>-wide
+	result in which the sign bit is set:
+	i.e., either a unary operation on such a type,
+	or
+	a binary operation in which the other operand is an
+	<code>int</code> or ``narrower'' type.&#160;<tt> </tt>
+<p>
+<li>The result of the preceding expression is used in a context in
+    	which its signedness is significant:
+	<ul><li><code>sizeof(int) &lt; sizeof(long)</code>
+	    	and it is in a context where it must be widened to a long type,
+	or
+	<li>it is the left operand of the right-shift operator (in
+		an implementation where this shift is defined as arithmetic),
+	or
+	<li>it is either operand of
+	    	<code>/</code>,
+		<code>%</code>,
+		<code>&lt;</code>,
+		<code>&lt;=</code>,
+		<code>&gt;</code>,
+		or
+		<code>&gt;=</code>.&#160;<tt> </tt>
+	</ul></ol><p>
+In such circumstances a genuine ambiguity of interpretation arises.&#160;<tt> </tt>
+The result must be dubbed <i>questionably signed</i>,
+since a case can be made
+for either the signed or unsigned interpretation.&#160;<tt> </tt>
+Exactly the same ambiguity arises whenever an
+<code>unsigned int</code> confronts a <code>signed int</code> across an operator,
+and the <code>signed int</code> has a negative value.&#160;<tt> </tt>
+(Neither scheme does any better, or any worse, in resolving the ambiguity
+of this confrontation.)&#160;<tt> </tt>
+Suddenly, the negative signed <code>int</code> becomes a very large <code>unsigned int</code>,
+which may be surprising --- 
+or it may be exactly what is desired by a knowledgable programmer.&#160;<tt> </tt>
+Of course,
+<i>all of these ambiguities can be avoided by a judicious use of casts.</i>&#160;<tt> </tt><i>
+</i><p>
+One of the important outcomes of exploring this problem is the understanding
+that high-quality compilers might do well to look for such questionable code
+and offer (optional) <a name="diagnostics-3-2-1-1" href="b.html#diagnostics-2-1-1-3">diagnostics</a>,
+and that conscientious instructors might
+do well to warn programmers of the problems of implicit type conversions.&#160;<tt> </tt>
+<p>
+The unsigned preserving rules greatly increase the number of situations
+where <code>unsigned int</code> confronts <code>signed int</code>
+to yield a questionably signed result,
+whereas the value preserving rules minimize such confrontations.&#160;<tt> </tt>
+Thus, the value preserving rules were considered to be safer for the novice,
+or unwary, programmer.&#160;<tt> </tt>
+After much discussion, the Committee decided in favor of value preserving
+rules, despite the fact that the <a name="UNIX-3-2-1-1">UNIX</a> C compilers had evolved in the
+direction of unsigned preserving.&#160;<tt> </tt>
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>A program that depends upon unsigned preserving arithmetic
+conversions will behave differently, probably without complaint.&#160;<tt> </tt>
+This is considered the most serious semantic change made by the Committee
+to a widespread current practice.&#160;<tt> </tt>
+</ul>
+The Standard clarifies that the integral promotion rules also
+apply to bit-fields.&#160;<tt> </tt>
+<p>
+<h2><a name="3-2-1-2">3.2.1.2</a>&#160;<tt> </tt>Signed and unsigned integers</h2>
+<p>
+Precise rules are now provided for converting to and from unsigned integers.&#160;<tt> </tt>
+On a twos-complement machine, the operation is still virtual
+(no change of representation is required),
+but the rules are now stated independent of representation.&#160;<tt> </tt>
+<p>
+<p>
+<h2><a name="3-2-1-3">3.2.1.3</a>&#160;<tt> </tt>Floating and integral</h2>
+<p>
+There was strong agreement that
+floating values should truncate toward zero when converted to an integral type,
+the specification adopted in the Standard.&#160;<tt> </tt>
+Although the Base Document permitted negative floating values
+to truncate away from zero,
+no Committee member knew of current hardware
+that functions in such a manner.&#160;<tt> </tt>[Footnote: We have since been informed of one such implementation.]&#160;<tt> </tt>
+<p>
+<h2><a name="3-2-1-4">3.2.1.4</a>&#160;<tt> </tt>Floating types</h2>
+<p>
+The Standard, unlike the Base Document, does not require rounding in the
+<code>double</code> to <code>float</code> conversion.&#160;<tt> </tt>
+Some widely used IEEE floating point processor chips control
+floating to integral conversion with the same mode bits
+as for double-precision to single-precision conversion;
+since truncation-toward-zero is the appropriate setting 
+for C in the former case,
+it would be expensive to require such implementations to round to <code>float</code>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-2-1-5">3.2.1.5</a>&#160;<tt> </tt>Usual arithmetic conversions</h2>
+<p>
+The rules in the Standard for these conversions are slight modifications
+of those in the Base Document:
+the modifications accommodate the added types and the value
+preserving rules (see <a href="#3-2-1-1">&#167;3.2.1.1</a>).&#160;<tt> </tt>
+Explicit license has been added to perform calculations in a
+``wider'' type than absolutely necessary,
+since this can sometimes produce smaller and faster code
+(not to mention the correct answer more often).&#160;<tt> </tt>
+Calculations can also be performed in a ``narrower'' type,
+by the <a name="as-if"><i>as if</i></a> rule,
+so long as the same end result is obtained.&#160;<tt> </tt>
+<i>Explicit casting can always be used to obtain exactly the intermediate
+types required.</i>&#160;<tt> </tt><i>
+</i><p>
+The Committee relaxed the requirement that
+<code>float</code> operands be converted to <code>double</code>.&#160;<tt> </tt>
+An implementation may still choose to convert.&#160;<tt> </tt>
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>Expressions with <code>float</code> operands may now be computed at lower precision.&#160;<tt> </tt>
+The Base Document specified that all floating point operations be done in
+<code>double</code>.&#160;<tt> </tt>
+</ul><h2><a name="3-2-2">3.2.2</a>&#160;<tt> </tt>Other operands</h2>
+<p>
+<h2><a name="3-2-2-1">3.2.2.1</a>&#160;<tt> </tt>Lvalues and function designators</h2>
+<p>
+A difference of opinion within the C community
+has centered around the meaning of
+<a name="lvalue"><i>lvalue</i></a>,
+one group considering an lvalue to be any kind of object locator,
+another group holding that an lvalue is meaningful on the
+left side of an assigning operator.&#160;<tt> </tt>
+The Committee has adopted the definition of lvalue as an object locator.&#160;<tt> </tt>
+The term
+<a name="modifiable-lvalue"><i>modifiable lvalue</i></a>
+is used for the second of the above concepts.&#160;<tt> </tt>
+<p>
+The role of array objects has been a classic source of confusion in C,
+in large part because of the numerous contexts in which an
+array reference is converted to a pointer to its first element.&#160;<tt> </tt>
+While this conversion neatly handles the semantics of subscripting,
+the fact that
+<code>a[i]</code>
+is itself a modifiable lvalue while <code>a</code>
+is not has puzzled many students of the language.&#160;<tt> </tt>
+A more precise description has therefore been incorporated in the
+Standard, in the hopes of combatting this confusion.&#160;<tt> </tt>
+<p>
+
+<p>
+<h2><a name="3-2-2-2">3.2.2.2</a>&#160;<tt> </tt><code>void</code></h2>
+<p>
+The description of operators and expressions is simplified by saying that
+<code>void</code> yields a value,
+with the understanding that the value has no representation,
+hence requires no storage.
+<p>
+<p>
+<h2><a name="3-2-2-3">3.2.2.3</a>&#160;<tt> </tt>Pointers</h2>
+
+<p>
+C has now been implemented on a wide range of architectures.&#160;<tt> </tt>
+While some of these architectures feature uniform pointers which
+are the size of some integer type,
+maximally portable code may not assume any necessary correspondence
+between different pointer types and the integral types.&#160;<tt> </tt>
+<p>
+The use of <a name="void--42-3-2-2-3">void *</a>
+(``pointer to void'')&#160;<tt> </tt>
+as a generic object pointer type 
+is an invention of the Committee.&#160;<tt> </tt>
+Adoption of this type was stimulated by
+the desire to specify function prototype arguments
+that either quietly convert arbitrary pointers (as in <code>fread</code>)&#160;<tt> </tt>
+or complain if the argument type does not exactly match
+(as in <code>strcmp</code>).&#160;<tt> </tt>
+Nothing is said about pointers to functions,
+which may be incommensurate with object pointers and/or integers.&#160;<tt> </tt>
+<p>
+Since pointers and integers are now considered incommensurate,
+the only integer that can be safely converted to a pointer is
+the constant 0.&#160;<tt> </tt>
+The result of converting any other integer to a pointer is machine dependent.&#160;<tt> </tt>
+<p>
+Consequences of the treatment of pointer types in the Standard include:
+<ul><li>A pointer to void may be converted to
+	a pointer to an object of any type.&#160;<tt> </tt>
+<p>
+<li>A pointer to any object of any type may be converted to
+	a pointer to void.&#160;<tt> </tt>
+<p>
+<li>If a pointer to an object is converted to a pointer to void
+	and back again to the original pointer type,
+	the result compares equal to original pointer.&#160;<tt> </tt>
+<p>
+<li>It is invalid to convert a pointer to an object of any type
+	to a pointer to an object of a different type without an explicit cast.&#160;<tt> </tt>
+<p>
+<li>Even with an explicit cast, it is invalid to convert a function pointer
+	to an object pointer or a pointer to void, or vice-versa.&#160;<tt> </tt>
+<p>
+<li>It is invalid to convert a pointer to a function of one type
+	to a pointer to a function of a different type without a cast.&#160;<tt> </tt>
+<p>
+<li>Pointers to functions that have different parameter-type information
+	(including the ``old-style'' absence of parameter-type information)&#160;<tt> </tt>
+	are different types.&#160;<tt> </tt>
+</ul>
+Implicit in the Standard is the notion of <a name="invalid-pointers"><i>invalid pointers</i></a>.&#160;<tt> </tt>
+In discussing pointers, the Standard typically refers to ``a pointer to
+an object'' or ``a pointer to a function'' or ``a null pointer.''&#160;<tt> </tt>
+A special case in address arithmetic allows for a pointer to just past the
+end of an array.&#160;<tt> </tt>
+Any other pointer is invalid.&#160;<tt> </tt>
+<p>
+An invalid pointer might be created in several ways.&#160;<tt> </tt>
+An arbitrary value can be assigned (via a cast) to a pointer variable.&#160;<tt> </tt>
+(This could even create a valid pointer, depending on the value.)&#160;<tt> </tt>
+A pointer to an object becomes invalid if the memory containing the
+object is deallocated.&#160;<tt> </tt>
+Pointer arithmetic can produce pointers outside the range of an array.&#160;<tt> </tt>
+<p>
+Regardless how an invalid pointer is created,
+any use of it yields undefined behavior.&#160;<tt> </tt>
+Even assignment, comparison with a null pointer constant,
+or comparison with itself, might on some systems result in an exception.&#160;<tt> </tt>
+<p>
+Consider a hypothetical segmented architecture,
+on which pointers comprise a segment descriptor and an offset.&#160;<tt> </tt>
+Suppose that segments are relatively small, so that large arrays are
+allocated in multiple segments.&#160;<tt> </tt>
+While the segments are valid (allocated, mapped to real memory),
+the hardware, operating system, or C implementation can make these
+multiple segments behave like a single object: 
+pointer arithmetic and relational operators use the defined mapping
+to impose the proper order on the elements of the array.&#160;<tt> </tt>
+Once the memory is deallocated, the mapping is no longer guaranteed
+to exist;
+use of the segment descriptor might now cause an exception,
+or the hardware addressing logic might return meaningless data.&#160;<tt> </tt>
+<hr>
+<a href="c1.html">3.1 Lexical Elements</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-2">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c3.html">3.3 Expressions</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+</body></html>

@@ -1,0 +1,7 @@
+{
+  "format": 1,
+  "registries": { "default": "builtin" },
+  "dependencies": {
+    "std": { "package": "naru-stdlib", "version": "^0.2.0", "registry": "default" }
+  }
+}

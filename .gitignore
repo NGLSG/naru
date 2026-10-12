@@ -1,0 +1,29 @@
+# Build outputs
+target/
+.cache/
+.tools/
+.naru/
+__pycache__/
+*.pyc
+*.pyo
+*.exe
+*.obj
+*.o
+*.pdb
+*.lib
+
+# Editors / harness state
+.idea/
+.vs/
+.orbit/
+
+# Web
+web/node_modules/
+web/dist/
+web/tmp/
+
+# Vendored / generated backend dependencies
+backend/native/build/
+backend/native/lld/build/
+backend/native/lld/source/
+backend/native/lld/libraries.json

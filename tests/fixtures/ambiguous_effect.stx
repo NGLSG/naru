@@ -1,0 +1,3 @@
+mod ambiguous_effect;
+effect ambiguous($value) => First($value);
+effect ambiguous($other) => Second($other);

@@ -1,0 +1,121 @@
+// Explicit value captures. A closure has a static code identity and a native
+// environment aggregate; invoking it is an ordinary direct function call.
+mod closures;
+use base;
+use types;
+use records;
+use control;
+use affine;
+use arrays;
+use defer;
+use pipeline;
+use functions;
+use patterns;
+effect lift_expr(patterns.Match($value,$arms),$environment,$lifted)
+    => bind([$checked,$more],lift_expr($value,$environment,$lifted),bind($descriptor,arg(base.check($checked,$environment,base.Any()),0),
+        bind([$rewritten,$last],lift_arms($arms,$descriptor,$environment,$more),[patterns.Match($checked,$rewritten),$last])));
+effect lift_arms([],$descriptor,$environment,$lifted) => [[],$lifted];
+effect lift_arms($arms,$descriptor,$environment,$lifted) when lt(0,size($arms))
+    => bind(patterns.Arm($pattern,$value),list.head($arms),
+        bind([$checked,$more],lift_expr($value,patterns.arm_scope($pattern,$descriptor,$environment),$lifted),
+            bind([$rest,$last],lift_arms(list.tail($arms),$descriptor,$environment,$more),[list.prepend(patterns.Arm($pattern,$checked),$rest),$last])));
+effect functions.value_result(Closure($name,$params,$result,$captures)) => $result;
+effect functions.invoke(base.Typed(Closure($name,$params,$result,$captures),$value),$arguments,$environment,$expected)
+    => base.expect(base.Typed($result,Invocation($name,base.Typed(Closure($name,$params,$result,$captures),$value),base.check_arguments($arguments,$params,$environment))),$expected);
+
+syntax capture_names `$name:ident` => [$name];
+syntax capture_names `$name:ident,$rest:capture_names` => list.prepend($name,$rest);
+syntax expr `fn [$captures:capture_names]($params:parameters) -> $result:typename $body:block` => Lambda($captures,$params,$result,$body);
+syntax expr `fn []($params:parameters) -> $result:typename $body:block` => Lambda([],$params,$result,$body);
+syntax expr `fn [$captures:capture_names]() -> $result:typename $body:block` => Lambda($captures,[],$result,$body);
+syntax expr `fn []() -> $result:typename $body:block` => Lambda([],[],$result,$body);
+effect types.repr(Closure($name,$params,$result,$captures)) => types.repr(records.Product(list.map("records.member_type",$captures)));
+effect records.aggregate(Closure($name,$params,$result,$captures)) => 1;
+effect affine.contains_affine(Closure($name,$params,$result,$captures)) => affine.contains_affine($captures);
+effect base.hint(ClosureValue($type,$captures),$environment) => $type;
+effect base.check(ClosureValue(Closure($name,$params,$result,$captures),$values),$environment,$expected)
+    => base.expect(base.Typed(Closure($name,$params,$result,$captures),records.Packed(base.check_arguments($values,list.map("records.member_type",$captures),$environment))),$expected);
+effect base.signature_result(base.Slot(Closure($name,$params,$result,$captures),$identity)) => $result;
+effect base.signature_params(base.Slot(Closure($name,$params,$result,$captures),$identity)) => $params;
+effect base.call_checked($local,$arguments,base.Slot(Closure($name,$params,$result,$captures),$identity),$environment,$expected)
+    => base.expect(base.Typed($result,Invocation($name,base.Typed(Closure($name,$params,$result,$captures),base.Read($identity)),base.check_arguments($arguments,$params,$environment))),$expected);
+effect base.lower(base.Typed($result,Invocation($name,$closure,$arguments)),$environment)
+    => mlir.op("func.call",list.prepend(base.lower($closure,$environment),base.lower_arguments($arguments,$environment)),base.result_types($result),[RawAttr("callee",concat("@",$name))],[]);
+// Mutable closure bindings are addressable, and use the same aggregate policy.
+effect base.signature_result(base.Mutable(Closure($name,$params,$result,$captures),$identity)) => $result;
+effect base.call_checked($local,$arguments,base.Mutable(Closure($name,$params,$result,$captures),$identity),$environment,$expected)
+    => base.expect(base.Typed($result,Invocation($name,base.Typed(Closure($name,$params,$result,$captures),base.Load($identity)),base.check_arguments($arguments,$params,$environment))),$expected);
+
+effect pipeline.steps() => pipeline.Step("closures",["generics","records"],["defer","affine","strings"],"closures.prepare");
+effect prepare($items) => bind($environment,base.declarations($items,env.empty()),
+    bind([$rewritten,$lifted], lift_items($items,$environment,[]), list.concat($rewritten,process_lifted($lifted,$environment))));
+effect lift_items([],$environment,$lifted) => [[],$lifted];
+effect lift_items($items,$environment,$lifted) when lt(0,size($items))
+    => bind([$head,$next],lift_item(list.head($items),$environment,$lifted),
+        bind([$tail,$last],lift_items(list.tail($items),$environment,$next),[list.prepend($head,$tail),$last]));
+effect lift_item(base.TypedFunction($name,$params,$result,$body),$environment,$lifted)
+    => bind([$rewritten,$next],lift_body($body,param_scope($params,$environment),$lifted),[base.TypedFunction($name,$params,$result,$rewritten),$next]);
+effect lift_item(base.Function($name,$value),$environment,$lifted)
+    => lift_item(base.TypedFunction($name,[],Signed(32),base.Return($value)),$environment,$lifted);
+effect[fallback] lift_item($item,$environment,$lifted) => [$item,$lifted];
+effect param_scope([],$environment) => $environment;
+effect param_scope($params,$environment) when lt(0,size($params)) => bind(base.Param($name,$type),list.head($params),
+    param_scope(list.tail($params),env.put($environment,$name,scope_slot($type,symbol($name)))));
+effect scope_slot(affine.Owned($type),$identity) => base.Mutable(affine.Owned($type),$identity);
+effect[fallback] scope_slot($type,$identity) => base.Slot($type,$identity);
+effect process_lifted([],$environment) => [];
+effect process_lifted($items,$environment) when lt(0,size($items))
+    => bind([$item,$more],lift_item(list.head($items),$environment,[]),list.prepend($item,process_lifted(list.concat(list.tail($items),$more),$environment)));
+effect lift_expr(Lambda($captures,$params,$result,$body),$environment,$lifted)
+    => bind($name,concat("_naru_closure_",text(symbol("code"))),bind($fields,capture_fields($captures,$environment,env.empty()),
+        bind($record,records.Record($name,$fields),bind($slot,text(symbol("closure.environment")),
+            [ClosureValue(Closure($name,list.map("base.param_type",$params),$result,$fields),capture_values($captures)),
+                list.concat($lifted,[base.TypedFunction($name,list.prepend(base.Param($slot,$record),$params),$result,capture_body($fields,$slot,$body))])]))));
+effect capture_fields([],$environment,$seen) => [];
+effect capture_fields($names,$environment,$seen) when lt(0,size($names)) => bind($name,list.head($names),
+    choose(env.contains($seen,$name),fail("duplicate closure capture"),bind($type,base.slot_type(env.get($environment,$name)),
+        seq(records.storable($type),list.prepend(records.Field($name,$type),capture_fields(list.tail($names),$environment,env.put($seen,$name,1)))))));
+effect capture_values([]) => [];
+effect capture_values($names) when lt(0,size($names)) => list.prepend(base.Name(list.head($names)),capture_values(list.tail($names)));
+effect capture_body([],$slot,$body) => $body;
+effect capture_body($fields,$slot,$body) when lt(0,size($fields)) => bind(records.Field($name,$type),list.head($fields),
+    base.Let($name,$type,records.Get(base.Name($slot),$name),capture_body(list.tail($fields),$slot,$body)));
+effect[fallback] lift_expr($value,$environment,$lifted) when eq(term.kind($value),0)
+    => bind([$children,$next],lift_children($value,0,$environment,$lifted),[term(tag($value),$children),$next]);
+effect lift_expr($value,$environment,$lifted) when eq(term.kind($value),5) => lift_children($value,0,$environment,$lifted);
+effect[fallback] lift_expr($value,$environment,$lifted) when and(not(eq(term.kind($value),0)),not(eq(term.kind($value),5))) => [$value,$lifted];
+effect lift_children($value,$index,$environment,$lifted) when eq($index,size($value)) => [[],$lifted];
+effect lift_children($value,$index,$environment,$lifted) when lt($index,size($value))
+    => bind([$head,$next],lift_expr(arg($value,$index),$environment,$lifted),
+        bind([$tail,$last],lift_children($value,add($index,1),$environment,$next),[list.prepend($head,$tail),$last]));
+effect lift_body(base.End(),$environment,$lifted) => [base.End(),$lifted];
+effect lift_body(control.Break(),$environment,$lifted) => [control.Break(),$lifted];
+effect lift_body(control.Continue(),$environment,$lifted) => [control.Continue(),$lifted];
+effect lift_body(control.ReturnVoid(),$environment,$lifted) => [control.ReturnVoid(),$lifted];
+effect lift_body(base.Return($value),$environment,$lifted) => bind([$checked,$next],lift_expr($value,$environment,$lifted),[base.Return($checked),$next]);
+effect lift_body(base.Let($name,$type,$value,$next),$environment,$lifted) => lift_local($name,$type,$value,$next,$environment,$lifted,"let");
+effect lift_body(base.Var($name,$type,$value,$next),$environment,$lifted) => lift_local($name,$type,$value,$next,$environment,$lifted,"var");
+effect lift_local($name,$type,$value,$next,$environment,$lifted,$kind)
+    => bind([$checked,$more],lift_expr($value,$environment,$lifted),bind($actual,arg(base.check($checked,$environment,$type),0),
+        bind([$tail,$last],lift_body($next,env.put($environment,$name,scope_slot($actual,symbol($name))),$more),
+            [make_local($kind,$name,$actual,$checked,$tail),$last])));
+effect make_local("let",$name,$type,$value,$next) => base.Let($name,$type,$value,$next);
+effect make_local("var",$name,$type,$value,$next) => base.Var($name,$type,$value,$next);
+effect lift_body(base.Set($name,$value,$next),$environment,$lifted)
+    => bind([$checked,$more],lift_expr($value,$environment,$lifted),bind([$tail,$last],lift_body($next,$environment,$more),[base.Set($name,$checked,$tail),$last]));
+effect lift_body(control.Evaluate($value,$next),$environment,$lifted)
+    => bind([$checked,$more],lift_expr($value,$environment,$lifted),bind([$tail,$last],lift_body($next,$environment,$more),[control.Evaluate($checked,$tail),$last]));
+effect lift_body(defer.Deferred($value,$next),$environment,$lifted)
+    => bind([$checked,$more],lift_expr($value,$environment,$lifted),bind([$tail,$last],lift_body($next,$environment,$more),[defer.Deferred($checked,$tail),$last]));
+effect lift_body(affine.Release($name,$next),$environment,$lifted)
+    => bind([$tail,$last],lift_body($next,$environment,$lifted),[affine.Release($name,$tail),$last]);
+effect lift_body(affine.Write($reference,$value,$next),$environment,$lifted)
+    => bind([$checked,$more],lift_expr($value,$environment,$lifted),bind([$tail,$last],lift_body($next,$environment,$more),[affine.Write($reference,$checked,$tail),$last]));
+effect lift_body(arrays.ArrayStore($name,$index,$value,$next),$environment,$lifted)
+    => bind([$checked,$more],lift_expr($value,$environment,$lifted),bind([$tail,$last],lift_body($next,$environment,$more),[arrays.ArrayStore($name,$index,$checked,$tail),$last]));
+effect lift_body(base.If($condition,$yes,$no,$next),$environment,$lifted)
+    => bind([$checked,$a],lift_expr($condition,$environment,$lifted),bind([$yes_body,$b],lift_body($yes,$environment,$a),
+        bind([$no_body,$c],lift_body($no,$environment,$b),bind([$tail,$last],lift_body($next,$environment,$c),[base.If($checked,$yes_body,$no_body,$tail),$last]))));
+effect lift_body(base.While($condition,$body,$next),$environment,$lifted)
+    => bind([$checked,$a],lift_expr($condition,$environment,$lifted),bind([$loop,$b],lift_body($body,$environment,$a),
+        bind([$tail,$last],lift_body($next,$environment,$b),[base.While($checked,$loop,$tail),$last])));

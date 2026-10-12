@@ -1,0 +1,1 @@
+check (unless ready { move } ; touch)

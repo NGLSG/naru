@@ -1,0 +1,91 @@
+<html><head>
+<title>3.9 Future language directions</title>
+<link rel="made" rev="made" href="mailto:jutta@cs.tu-berlin.de">
+</head>
+<body>
+<a href="c8.html">3.8 Preprocessing directives</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-9">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="d1.html">4 Library</a>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+<hr>
+<h1><a name="3-9">3.9</a>&#160;<tt> </tt><a name="future-directions-3-9">Future language directions</a></h1>
+
+<p>
+This section includes specific mention of the future direction in which
+the Committee intends to extend and/or restrict the language.&#160;<tt> </tt>
+The contents of this section should be considered as
+quite likely to become a part of the next version of the Standard.&#160;<tt> </tt>
+Implementors are advised that failure to
+take heed of the points mentioned herein
+is considered undesirable for a conforming hosted or freestanding
+implementation.&#160;<tt> </tt>
+Users are advised that failure to take heed of the points mentioned herein
+is considered
+undesirable for a conforming program.&#160;<tt> </tt>
+<p>
+<h2><a name="3-9-1">3.9.1</a>&#160;<tt> </tt>External names</h2>
+<p>
+<h2><a name="3-9-2">3.9.2</a>&#160;<tt> </tt>Character escape sequences</h2>
+<p>
+<h2><a name="3-9-3">3.9.3</a>&#160;<tt> </tt>Storage-class specifiers</h2>
+<p>
+See <a href="c5.html#3-5-1">&#167;3.5.1</a>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-9-4">3.9.4</a>&#160;<tt> </tt>Function declarators</h2>
+<p>
+The characterization as <a name="obsolescent-3-9-4">obsolescent</a>
+of the use of the ``old style'' function declarations and definitions
+--- that is, the traditional style not using <a name="prototypes-3-9-4">prototypes</a> ---
+signals the Committee's intent that the new prototype style should
+eventually replace the old style.&#160;<tt> </tt>
+<p>
+The case for the prototype style is presented in
+<a href="c3.html#3-3-2-2">&#167;3.3.2.2</a> and <a href="c5.html#3-5-4-3">&#167;3.5.4.3</a>.&#160;<tt> </tt>
+The gist of this case is that the new syntax addresses
+some of the most glaring weaknesses
+of the language defined in the Base Document,
+that the new style is superior to the old style on every count.&#160;<tt> </tt>
+<p>
+It was obviously out of the question to remove syntax used in
+the overwhelming majority of extant C code,
+so the Standard specifies two ways of writing function declarations
+and function definitions.&#160;<tt> </tt>
+Characterizing the old style as obsolescent
+is meant to discourage its use,
+and to serve as a strong endorsement by the Committee of the new style.&#160;<tt> </tt>
+It confidently expects that approval and adoption of the prototype style
+will make it feasible for some future C Standard to remove the
+old style syntax.&#160;<tt> </tt>
+<p>
+<h2><a name="3-9-5">3.9.5</a>&#160;<tt> </tt>Function definitions</h2>
+See <a href="#3-9-4">&#167;3.9.4</a>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-9-6">3.9.6</a>&#160;<tt> </tt>Array parameters</h2>
+<p>
+As vector and parallel hardware,
+and numeric applications in C,
+become more common, the aliasing semantics of C have been a source
+of frustration for implementors wanting to make optimum use of
+such hardware.  If arrays are known not to overlap, certain 
+optimizations become possible, but C currently provides no way
+to specify to a translator that argument arrays indeed do not overlap.&#160;<tt> </tt>
+The Committee, in adopting this future direction, hopes to provide 
+common ground for implementors and users concerned with this problem,
+so that some future C Standard can adopt this non-overlapping rule
+on the basis of widespread experience.
+<hr>
+<a href="c8.html">3.8 Preprocessing directives</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-9">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="d1.html">4 Library</a>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+</body></html>

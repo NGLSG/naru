@@ -1,0 +1,118 @@
+<html><head>
+<title>3.6 Statements</title>
+<link rel="made" rev="made" href="mailto:jutta@cs.tu-berlin.de">
+</head>
+<body>
+<a href="c5.html">3.5 Declarations</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-6">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c7.html">3.7 External Definitions</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+<hr>
+<h1><a name="3-6">3.6</a>&#160;<tt> </tt><a name="statements-3-6">Statements</a></h1>
+
+<p>
+<h2><a name="3-6-1">3.6.1</a>&#160;<tt> </tt>Labeled statements</h2>
+<p>
+Since label definition
+and label reference
+are syntactically distinctive contexts,
+<a name="labels-3-6-1">labels</a> are established as a separate name space.&#160;<tt> </tt>
+<p>
+<h2><a name="3-6-2">3.6.2</a>&#160;<tt> </tt>Compound statement, or block</h2>
+<p>
+The Committee considered proposals
+for forbidding a <a name="goto-3-6-2"><code>goto</code></a> into a block from outside,
+since such a restriction would make possible much easier flow
+optimization and would avoid the whole issue of initializing
+<code>auto</code> storage
+(see <a href="c1.html#3-1-2-4">&#167;3.1.2.4</a>).&#160;<tt> </tt>
+The Committee rejected such a ban out of fear of invalidating working code
+(however undisciplined)&#160;<tt> </tt>
+and out <a name="machine-generation-of-C-3-6-2">of concern for those
+producing machine-generated C</a>.
+<p>
+<h2><a name="3-6-3">3.6.3</a>&#160;<tt> </tt>Expression and null statements</h2>
+<p>
+The <code>void</code> cast is not needed in an expression statement,
+since any value is always discarded.&#160;<tt> </tt>
+Some checking compilers prefer this reassurance, however, for functions
+that return objects of types other than <code>void</code>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-6-4">3.6.4</a>&#160;<tt> </tt>Selection statements</h2>
+<p>
+<h2><a name="3-6-4-1">3.6.4.1</a>&#160;<tt> </tt>The <code>if</code> statement</h2>
+<p>
+See <a href="#3-6-2">&#167;3.6.2</a>.&#160;<tt> </tt>
+<h2><a name="3-6-4-2">3.6.4.2</a>&#160;<tt> </tt>The <code>switch</code> statement</h2>
+<p>
+The controlling expression of a <code>switch</code>
+statement may now have any integral type,
+even <code>unsigned long</code>.&#160;<tt> </tt>
+Floating types were rejected for switch statements since exact
+equality in floating point is not portable.&#160;<tt> </tt>
+<p>
+<code>case</code>
+labels are first converted to the type of the controlling expression
+of the switch, then checked for equality with other labels;
+no two may match after conversion.&#160;<tt> </tt>
+<p>
+<a name="case-ranges-3-6-4-2">Case ranges</a>  
+(of the form <code>lo</code> <code>..</code> <code>hi</code>)&#160;<tt> </tt>
+were seriously considered,
+but ultimately not adopted in the Standard on the grounds that
+it added no new capability, just a problematic coding convenience.&#160;<tt> </tt>
+The construct seems to promise more than it could be mandated to deliver:
+<ul><li>A great deal of code (or jump table space) might be generated
+    for an innocent-looking case range such as <code>0</code> <code>..</code> <code>65535</code>.&#160;<tt> </tt>
+<li>The range <code>'A'..'Z'</code> would specify all the integers between
+    the character code for <code>A</code> and that for <code>Z</code>.  In some common
+    character sets this range would include non-alphabetic characters,
+    and in others it might not include all the alphabetic characters
+    (especially in non-English character sets).&#160;<tt> </tt>
+</ul>No serious consideration was given to
+making the switch more structured,
+as in <a name="Pascal-3-6-4-2">Pascal</a>, out of fear of invalidating working code.&#160;<tt> </tt>
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul><code>long</code> expressions and constants in switch statements are
+no longer truncated to <code>int</code>.&#160;<tt> </tt>
+</ul><h2><a name="3-6-5">3.6.5</a>&#160;<tt> </tt>Iteration statements</h2>
+<p>
+<h2><a name="3-6-5-1">3.6.5.1</a>&#160;<tt> </tt>The <code>while</code> statement</h2>
+<p>
+<h2><a name="3-6-5-2">3.6.5.2</a>&#160;<tt> </tt>The <code>do</code> statement</h2>
+<p>
+<h2><a name="3-6-5-3">3.6.5.3</a>&#160;<tt> </tt>The <code>for</code> statement</h2>
+<p>
+<h2><a name="3-6-6">3.6.6</a>&#160;<tt> </tt>Jump statements</h2>
+<p>
+<h2><a name="3-6-6-1">3.6.6.1</a>&#160;<tt> </tt>The <code>goto</code> statement</h2>
+<p>
+See <a href="#3-6-2">&#167;3.6.2</a>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-6-6-2">3.6.6.2</a>&#160;<tt> </tt>The <code>continue</code> statement</h2>
+<p>
+The Committee rejected proposed enhancements to
+<a name="continue-3-6-6-2"><code>continue</code></a> and <a name="break-3-6-6-2"><code>break</code></a>
+which would allow specification of an iteration statement
+other than the immediately enclosing one,
+on grounds of insufficient prior art.&#160;<tt> </tt>
+<p>
+<h2><a name="3-6-6-3">3.6.6.3</a>&#160;<tt> </tt>The <code>break</code> statement</h2>
+<p>
+See <a href="#3-6-6-2">&#167;3.6.6.2</a>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-6-6-4">3.6.6.4</a>&#160;<tt> </tt>The <code>return</code> statement</h2>
+<hr>
+<a href="c5.html">3.5 Declarations</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-6">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c7.html">3.7 External Definitions</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+</body></html>

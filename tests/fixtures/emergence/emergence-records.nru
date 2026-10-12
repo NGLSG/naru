@@ -1,0 +1,4 @@
+struct Point { x: i32; y: i32; }
+fn make() -> Point { return Point { y: 22, x: 19 }; }
+fn sum(p: Point) -> i32 { return p.x + p.y; }
+fn main() -> i32 { var p = make(); p.x = 20; return sum(p); }

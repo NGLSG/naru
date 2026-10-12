@@ -1,0 +1,4 @@
+mod operator_syntax;
+use operators;
+syntax operator_symbol `@` => "@";
+syntax expr[55,left] `$a:expr @ $b:expr` => operators.OperatorExpression("@", [$a, $b]);

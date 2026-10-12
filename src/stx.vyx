@@ -1,0 +1,283 @@
+module naru;
+
+use std.collections;
+use std.string;
+
+public fn stx_name(s: &mut Stream) -> string {
+    let first = s.take();
+    if (first.kind != 1) { s.reject("expected an identifier"); return ""; }
+    var name = str_dup(first.text);
+    while (s.accept(".")) {
+        let part = s.take();
+        if (part.kind != 1) { s.reject("expected an identifier after '.'"); return name; }
+        name = name + "." + part.text;
+    }
+    return name;
+}
+
+// In a capture annotation, only adjacent dots qualify a category name.
+// `$value:expr . $field:ident` therefore has a literal field-access dot,
+// while `$value:library.expr` still names a qualified category.
+public fn stx_capture_category(s: &mut Stream) -> string {
+    var last = s.take();
+    if (last.kind != 1) { s.reject("expected a capture category"); return ""; }
+    var name = str_dup(last.text);
+    while (s.at(".") && s.peek().line == last.line && s.peek().column == last.column + last.text.len) {
+        s.take();
+        last = s.take();
+        if (last.kind != 1) { s.reject("expected a category identifier after '.'"); return name; }
+        name = name + "." + last.text;
+    }
+    return name;
+}
+
+public fn stx_term(e: &mut Engine, s: &mut Stream, depth: i64) -> i64 {
+    if (depth > 256) { s.reject("rule expression nesting exceeds 256"); return -1; }
+    let t = s.peek();
+    if (t.kind == 0) { s.reject("expected a rule expression, found end of file"); return -1; }
+    if (s.accept("$")) {
+        let name = s.take();
+        if (name.kind != 1) { s.reject("expected a capture name after '$'"); return -1; }
+        return e.add_node(3, name.text, s.path, t.line, t.column);
+    }
+    if (t.kind == 3) { s.take(); return e.add_node(1, t.text, s.path, t.line, t.column); }
+    // Rule expressions keep every numeric spelling as an exact scalar atom.
+    // The lexer uses kind 6 for decimal fractions, radix forms and suffixes;
+    // delaying interpretation lets rule primitives (int.parse/float.attr or
+    // a user relation) choose the policy instead of rejecting the spelling in
+    // the STX parser.
+    if (t.kind == 2 || t.kind == 6) { s.take(); return e.add_node(2, t.text, s.path, t.line, t.column); }
+    if (s.accept("-")) {
+        let number = s.take();
+        if (number.kind != 2 && number.kind != 6) { s.reject("expected a numeric atom after '-'"); return -1; }
+        return e.add_node(2, "-" + number.text, s.path, t.line, t.column);
+    }
+    if (s.accept("[")) {
+        let list = e.add_node(5, "", s.path, t.line, t.column);
+        if (s.accept("]")) { return list; }
+        while (s.diagnostic.len == 0) {
+            let value = stx_term(e, s, depth + 1);
+            if (value < 0) { return -1; }
+            e.add_child(list, value);
+            if (s.accept("]")) { return list; }
+            if (!s.expect(",")) { return -1; }
+        }
+        return -1;
+    }
+    if (t.kind == 1) {
+        let name = stx_name(s);
+        if (s.diagnostic.len != 0) { return -1; }
+        if (!s.accept("(")) { return e.add_node(0, name, s.path, t.line, t.column); }
+        var initial = str_char_at(name, 0);
+        var i: i64 = 0;
+        while (i < name.len) {
+            if (str_char_at(name, i) == 46) { initial = str_char_at(name, i + 1); }
+            i = i + 1;
+        }
+        let kind: i32 = initial >= 65 && initial <= 90 ? 0 : 4;
+        let call = e.add_node(kind, name, s.path, t.line, t.column);
+        if (s.accept(")")) { return call; }
+        while (s.diagnostic.len == 0) {
+            let value = stx_term(e, s, depth + 1);
+            if (value < 0) { return -1; }
+            e.add_child(call, value);
+            if (s.accept(")")) { return call; }
+            if (!s.expect(",")) { return -1; }
+        }
+        return -1;
+    }
+    s.reject("expected a rule expression, found '" + t.text + "'");
+    return -1;
+}
+
+public fn stx_has_name(e: &mut Engine, names: i64, name: string) -> bool {
+    var edge = e.node(names).first;
+    while (edge >= 0) {
+        let item = e.edges.get(edge);
+        if (e.node(item.value).text == name) { return true; }
+        edge = item.next;
+    }
+    return false;
+}
+
+public fn stx_collect_vars(e: &mut Engine, root: i64, names: i64) {
+    let n = e.node(root);
+    if (n.kind == 3) {
+        if (!stx_has_name(e, names, n.text)) { e.add_child(names, root); }
+        return;
+    }
+    var edge = n.first;
+    while (edge >= 0) {
+        let item = e.edges.get(edge);
+        stx_collect_vars(e, item.value, names);
+        edge = item.next;
+    }
+}
+
+public fn stx_check_vars(e: &mut Engine, root: i64, names: i64) -> bool {
+    let n = e.node(root);
+    if (n.kind == 4 && n.text == "bind") {
+        if (n.count != 3) { e.at_error(n.file, n.line, n.column, "bind expects pattern, value and body"); return false; }
+        if (!stx_check_vars(e, e.child(root, 1), names)) { return false; }
+        let inner = e.add_node(5, "", n.file, n.line, n.column);
+        stx_collect_vars(e, names, inner); stx_collect_vars(e, e.child(root, 0), inner);
+        return stx_check_vars(e, e.child(root, 2), inner);
+    }
+    if (n.kind == 3 && !stx_has_name(e, names, n.text)) {
+        e.at_error(n.file, n.line, n.column, "undefined capture '$" + n.text + "'");
+        return false;
+    }
+    var edge = n.first;
+    while (edge >= 0) {
+        let item = e.edges.get(edge);
+        if (!stx_check_vars(e, item.value, names)) { return false; }
+        edge = item.next;
+    }
+    return true;
+}
+
+public fn stx_pattern(e: &mut Engine, quote: Token, path: string, names: i64) -> i64 {
+    var s = tokenize(quote.text, path);
+    if (s.diagnostic.len != 0) { e.reject(s.diagnostic); return -1; }
+    // Rebase quotation tokens to their actual location in the rule file.
+    var token_index: i64 = 0;
+    while (token_index < s.tokens.len) {
+        var t = s.tokens.get(token_index);
+        if (t.line == 1) { t.column = t.column + quote.column; }
+        t.line = t.line + quote.line - 1;
+        s.tokens.set(token_index, t);
+        token_index = token_index + 1;
+    }
+    let pattern = e.add_node(5, "pattern", path, quote.line, quote.column);
+    while (s.peek().kind != 0 && s.diagnostic.len == 0 && e.good()) {
+        let t = s.take();
+        if (t.text == "$" && t.kind == 5) {
+            let name = s.take();
+            if (name.kind != 1) { s.reject("expected capture name after '$'"); break; }
+            if (stx_has_name(e, names, name.text)) {
+                e.at_error(path, name.line, name.column, "duplicate syntax capture '$" + name.text + "'");
+                return -1;
+            }
+            if (!s.expect(":")) { break; }
+            let category = stx_capture_category(s);
+            if (s.diagnostic.len != 0) { break; }
+            let capture = e.add_node(3, name.text, path, t.line, t.column);
+            let category_node = e.add_node(1, category, path, t.line, t.column);
+            e.add_child(capture, category_node);
+            e.add_child(pattern, capture);
+            e.add_child(names, capture);
+        } else {
+            let literal = e.add_node(1, t.text, path, t.line, t.column);
+            let token_kind = e.add_node(2, naru_number(t.kind as i64), path, t.line, t.column);
+            e.add_child(literal, token_kind);
+            e.add_child(pattern, literal);
+        }
+    }
+    if (s.diagnostic.len != 0) { e.reject(s.diagnostic); return -1; }
+    if (e.node(pattern).count == 0) {
+        e.at_error(path, quote.line, quote.column, "syntax quotation must consume at least one token");
+        return -1;
+    }
+    return pattern;
+}
+
+// Literal text is not enough: a quoted string "fn" must not match keyword fn.
+// Capture nodes use their child for category metadata instead, unchanged.
+public fn syntax_literal_kind(e: &mut Engine, literal: i64) -> i32 {
+    let metadata = e.child(literal, 0);
+    if (metadata < 0) { return -1; }
+    return str_to_int(e.node(metadata).text);
+}
+
+public fn stx_precedence(s: &mut Stream) -> i64 {
+    let t = s.take();
+    if (t.kind != 2) { s.reject("expected a nonnegative precedence"); return 0; }
+    var value: i64 = 0;
+    var i: i64 = 0;
+    while (i < t.text.len) {
+        value = value * 10 + (str_char_at(t.text, i) - 48) as i64;
+        if (value > 1000000) { s.reject("precedence must be at most 1000000"); return 0; }
+        i = i + 1;
+    }
+    return value;
+}
+
+public fn load_stx(e: &mut Engine, source: string, path: string) -> bool {
+    if (!e.good()) { return false; }
+    var s = tokenize(source, path);
+    if (s.diagnostic.len != 0) { e.reject(s.diagnostic); return false; }
+    if (!s.expect("mod")) { e.reject(s.diagnostic); return false; }
+    let module_name = stx_name(&mut s);
+    if (!s.expect(";")) { e.reject(s.diagnostic); return false; }
+    let imports = e.add_node(5, "imports", path, 1, 1);
+    while (s.peek().kind != 0 && s.diagnostic.len == 0 && e.good()) {
+        let start = s.take();
+        if (start.text == "use" && start.kind == 1) {
+            let imported = stx_name(&mut s);
+            if (!s.expect(";")) { break; }
+            let item = e.add_node(1, imported, path, start.line, start.column);
+            e.add_child(imports, item);
+        } else if (start.text == "syntax" && start.kind == 1) {
+            let category = stx_name(&mut s);
+            var precedence: i64 = 0;
+            var right_assoc = false;
+            var fallback = false;
+            if (s.accept("[")) {
+                if (s.accept("fallback")) { fallback = true; }
+                else { precedence = stx_precedence(&mut s); }
+                if (!fallback && s.accept(",")) {
+                    let assoc = s.take();
+                    if (assoc.kind == 1 && assoc.text == "right") { right_assoc = true; }
+                    else if (assoc.kind != 1 || assoc.text != "left") { s.reject("associativity must be 'left' or 'right'"); }
+                    if (s.accept(",")) { s.expect("fallback"); fallback = true; }
+                }
+                s.expect("]");
+            }
+            let quote = s.take();
+            if (quote.kind != 4) { s.reject("expected a backtick syntax quotation"); break; }
+            let names = e.add_node(5, "captures", path, start.line, start.column);
+            let pattern = stx_pattern(e, quote, path, names);
+            if (pattern < 0) { break; }
+            var guard: i64 = -1;
+            if (s.accept("when")) { guard = stx_term(e, &mut s, 0); if (guard < 0) { break; } }
+            if (!s.expect("=>")) { break; }
+            let rhs = stx_term(e, &mut s, 0);
+            if (rhs < 0 || !s.expect(";")) { break; }
+            if (!stx_check_vars(e, rhs, names)) { break; }
+            if (guard >= 0 && !stx_check_vars(e, guard, names)) { break; }
+            e.syntax_rules.push(SyntaxRule {
+                category: str_dup(category), pattern: pattern, rhs: rhs, guard: guard,
+                precedence: precedence, right_assoc: right_assoc, fallback: fallback,
+                module_name: str_dup(module_name), file: str_dup(path), line: start.line, next: -1
+            });
+        } else if (start.text == "effect" && start.kind == 1) {
+            var fallback = false;
+            if (s.accept("[")) {
+                if (!s.expect("fallback") || !s.expect("]")) { break; }
+                fallback = true;
+            }
+            let lhs = stx_term(e, &mut s, 0);
+            if (lhs < 0) { break; }
+            var guard: i64 = -1;
+            if (s.accept("when")) { guard = stx_term(e, &mut s, 0); if (guard < 0) { break; } }
+            if (!s.expect("=>")) { break; }
+            if (e.node(lhs).kind != 4) { s.reject("effect left side must be a named call such as emit($node)"); break; }
+            let rhs = stx_term(e, &mut s, 0);
+            if (rhs < 0 || !s.expect(";")) { break; }
+            let names = e.add_node(5, "captures", path, start.line, start.column);
+            stx_collect_vars(e, lhs, names);
+            if (guard >= 0 && !stx_check_vars(e, guard, names)) { break; }
+            if (!stx_check_vars(e, rhs, names)) { break; }
+            e.effect_rules.push(EffectRule {
+                lhs: lhs, rhs: rhs, guard: guard, fallback: fallback, module_name: str_dup(module_name),
+                file: str_dup(path), line: start.line, next: -1
+            });
+        } else {
+            s.reject("expected 'use', 'syntax', or 'effect', found '" + start.text + "'");
+        }
+    }
+    if (s.diagnostic.len != 0) { e.reject(s.diagnostic); }
+    if (!e.good()) { return false; }
+    e.modules.push(ModuleInfo { path: str_dup(path), name: str_dup(module_name), imports: imports });
+    return true;
+}

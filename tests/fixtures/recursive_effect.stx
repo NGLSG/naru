@@ -1,0 +1,2 @@
+mod recursive_effect;
+effect forever($value) => forever($value);

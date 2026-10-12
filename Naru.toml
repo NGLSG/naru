@@ -1,0 +1,22 @@
+# The compiler is built by Vyx.toml; this file selects the example Naru dialect
+# and passes a whole program to the library's analysis and lowering relation.
+[package]
+name = "naru-examples"
+version = "0.1.0"
+entry = "examples/answer.nru"
+
+[language]
+dialects = ["std/base"]
+entry = "item"
+relation = "emit_program"
+unit = "program"
+
+[backend]
+target = "mlir"
+pipeline = "builtin.module(canonicalize,cse)"
+
+[dependencies]
+std = { path = "dialects", package = "naru-stdlib", version = "^0.2.0" }
+
+[build]
+output_dir = "target"

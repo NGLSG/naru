@@ -1,0 +1,13 @@
+fn kernel(n: u32, seed: u32) -> u32 {
+    var i: u32 = 0;
+    var a: u32 = seed;
+    var b: u32 = 67890;
+    while i < n {
+        a = (a * 1664525 + 1013904223) ^ b;
+        b = (b * 22695477 + 1) ^ a;
+        i = i + 1;
+    }
+    return a ^ b;
+}
+
+fn main() -> i32 { return kernel(100000000, 12345) as i32; }

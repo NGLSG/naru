@@ -1,0 +1,99 @@
+// Reinterpret a value through a target-defined object representation.
+// Shapes supply scalar bit widths and aggregate offsets; there are no source
+// language types here. The current adapters select little-endian byte order.
+mod storage;
+
+// Scalar(IR type, value bits, object bits, integer|float|pointer)
+// Aggregate(IR type, object bits, [[bit offset, LLVM index, child shape], ...])
+effect width(Scalar($repr,$value_bits,$object_bits,$kind)) => $object_bits;
+effect width(Aggregate($repr,$object_bits,$members)) => $object_bits;
+effect repr(Scalar($repr,$value_bits,$object_bits,$kind)) => $repr;
+effect repr(Aggregate($repr,$object_bits,$members)) => $repr;
+effect integer_type($width) => choose(and(lt(0,$width),not(lt(1048576,$width))),concat("i",text($width)),
+    fail("storage image width exceeds resource limit or is zero"));
+effect integer($value,$width) => mlir.op("llvm.mlir.constant",[],[integer_type($width)],
+    [Attr("value",$value,integer_type($width))],[]);
+effect resize($value,$from,$to) => choose(eq($from,$to),$value,
+    mlir.op(choose(lt($from,$to),"llvm.zext","llvm.trunc"),[$value],[integer_type($to)],[],[]));
+// Project ordered scalar windows instead of assembling an integer the size of
+// an entire object. Each source scalar is extracted once; a monotone cursor
+// visits only overlapping fragments. Complete pointer-sized windows preserve
+// relocations without shifting or splitting symbolic addresses.
+effect reinterpret($value,$source,$destination)
+    => seq(integer_type(width($source)),seq(integer_type(width($destination)),
+        arg(materialize(list.cursor(fragments($value,$source)),$destination,0),0)));
+effect fragments($value,$shape) => list.unfold("storage.fragment_step",[Source($value,$shape,0)],1000000);
+effect fragment_step([]) => [0,[],[]];
+effect fragment_step($pending) when lt(0,size($pending)) => fragment_node(list.head($pending),list.tail($pending));
+effect fragment_node(Source($value,Scalar($repr,$bits,$object_bits,$kind),$offset),$rest)
+    => [1,$rest,[Fragment($offset,Scalar($repr,$bits,$object_bits,$kind),$value)]];
+effect fragment_node(Source($value,Aggregate($repr,$bits,$members),$offset),$rest)
+    => [1,list.prepend(SourceMembers($value,$offset,$bits,0,list.cursor($members)),$rest),[]];
+effect fragment_node(SourceMembers($value,$base,$limit,$end,$cursor),$rest)
+    => choose(list.cursor.empty($cursor),[1,$rest,[]],
+        bind([$offset,$index,$shape],list.cursor.head($cursor),seq(member_range($offset,width($shape),$end,$limit),
+            [1,list.prepend(Source(mlir.op("llvm.extractvalue",[$value],[repr($shape)],[position($index)],[]),$shape,add($base,$offset)),
+                list.prepend(SourceMembers($value,$base,$limit,add($offset,width($shape)),list.cursor.tail($cursor)),$rest)),[]])));
+effect member_range($offset,$bits,$end,$limit)
+    => choose(and(not(lt($offset,$end)),and(lt(0,$bits),not(lt($limit,add($offset,$bits))))),1,
+        fail("storage members must be ordered, nonoverlapping and inside the object"));
+effect materialize($cursor,Scalar($repr,$bits,$object_bits,$kind),$base)
+    => window(skip_before($cursor,$base),Scalar($repr,$bits,$object_bits,$kind),$base);
+effect materialize($cursor,Aggregate($repr,$bits,$members),$base)
+    => bind(Materializing($value,$remaining,$ir,$offset,$limit,$end),
+        list.fold("storage.materialize_member",$members,
+            Materializing(mlir.op("llvm.mlir.zero",[],[$repr],[],[]),$cursor,$repr,$base,$bits,0)),[$value,$remaining]);
+effect materialize_member(Materializing($value,$cursor,$repr,$base,$limit,$end),[$offset,$index,$shape])
+    => seq(member_range($offset,width($shape),$end,$limit),bind([$part,$remaining],materialize($cursor,$shape,add($base,$offset)),
+        Materializing(mlir.op("llvm.insertvalue",[$value,$part],[$repr],[position($index)],[]),$remaining,$repr,$base,$limit,add($offset,width($shape)))));
+effect skip_before($cursor,$base) => bind(Skipping($remaining,$offset),
+    rule.iterate("storage.skip_step",Skipping($cursor,$base),1000000),$remaining);
+effect skip_step(Skipping($cursor,$base)) => choose(list.cursor.empty($cursor),[0,Skipping($cursor,$base)],
+    bind(Fragment($offset,$shape,$value),list.cursor.head($cursor),
+        choose(not(lt($base,add($offset,width($shape)))),[1,Skipping(list.cursor.tail($cursor),$base)],[0,Skipping($cursor,$base)])));
+effect window($cursor,$shape,$base) => choose(list.cursor.empty($cursor),[unpack(integer(0,width($shape)),$shape),$cursor],
+    bind(Fragment($offset,$source,$value),list.cursor.head($cursor),
+        choose(and(eq($offset,$base),eq(width($source),width($shape))),
+            [scalar_window($value,$source,$shape),list.cursor.tail($cursor)],window_parts($cursor,$shape,$base))));
+effect scalar_window($value,$source,$destination)
+    => choose(eq($source,$destination),$value,unpack(pack($value,$source),$destination));
+effect window_parts($cursor,$shape,$base) => bind(Window($remaining,$image,$start,$end,$bits),
+    rule.iterate("storage.window_step",Window($cursor,integer(0,width($shape)),$base,add($base,width($shape)),width($shape)),1000000),
+        [unpack($image,$shape),$remaining]);
+effect window_step(Window($cursor,$image,$base,$end,$bits))
+    => choose(list.cursor.empty($cursor),[0,Window($cursor,$image,$base,$end,$bits)],
+        bind(Fragment($offset,$shape,$value),list.cursor.head($cursor),choose(not(lt($offset,$end)),[0,Window($cursor,$image,$base,$end,$bits)],
+            window_fragment($cursor,$image,$base,$end,$bits,$offset,$shape,$value))));
+effect window_fragment($cursor,$image,$base,$end,$bits,$offset,$shape,$value)
+    => bind($low,choose(lt($offset,$base),$base,$offset),bind($high,choose(lt($end,add($offset,width($shape))),$end,add($offset,width($shape))),
+        bind($part,resize(shift("llvm.lshr",pack($value,$shape),sub($low,$offset),width($shape)),width($shape),sub($high,$low)),
+            [choose(lt(add($offset,width($shape)),$end),1,0),Window(choose(lt($end,add($offset,width($shape))),$cursor,list.cursor.tail($cursor)),
+                mlir.op("llvm.or",[$image,shift("llvm.shl",resize($part,sub($high,$low),$bits),sub($low,$base),$bits)],[integer_type($bits)],[],[]),$base,$end,$bits)])));
+
+effect pack($value,Scalar($repr,$bits,$object_bits,"integer")) => resize($value,$bits,$object_bits);
+effect pack($value,Scalar($repr,$bits,$object_bits,"float"))
+    => resize(mlir.op("llvm.bitcast",[$value],[integer_type($bits)],[],[]),$bits,$object_bits);
+effect pack($value,Scalar($repr,$bits,$object_bits,"pointer"))
+    => resize(mlir.op("llvm.ptrtoint",[$value],[integer_type($bits)],[],[]),$bits,$object_bits);
+effect pack($value,Aggregate($repr,$bits,$members))
+    => bind(Packing($result,$source,$width),list.fold("storage.pack_member",$members,Packing(integer(0,$bits),$value,$bits)),$result);
+effect pack_member(Packing($image,$value,$width),[$offset,$index,$shape])
+    => bind($part,mlir.op("llvm.extractvalue",[$value],[repr($shape)],[position($index)],[]),
+        bind($bits,resize(pack($part,$shape),width($shape),$width),
+            Packing(mlir.op("llvm.or",[$image,shift("llvm.shl",$bits,$offset,$width)],[integer_type($width)],[],[]),$value,$width)));
+effect shift($op,$value,0,$width) => $value;
+effect shift($op,$value,$offset,$width) when lt(0,$offset)
+    => mlir.op($op,[$value,integer($offset,$width)],[integer_type($width)],[],[]);
+effect position($index) => RawAttr("position",concat("array<i64: ",concat(text($index),">")));
+
+effect unpack($image,Scalar($repr,$bits,$object_bits,"integer")) => resize($image,$object_bits,$bits);
+effect unpack($image,Scalar($repr,$bits,$object_bits,"float"))
+    => mlir.op("llvm.bitcast",[resize($image,$object_bits,$bits)],[$repr],[],[]);
+effect unpack($image,Scalar($repr,$bits,$object_bits,"pointer"))
+    => mlir.op("llvm.inttoptr",[resize($image,$object_bits,$bits)],[$repr],[],[]);
+effect unpack($image,Aggregate($repr,$bits,$members))
+    => bind(Unpacking($result,$source,$type,$width),list.fold("storage.unpack_member",$members,
+        Unpacking(mlir.op("llvm.mlir.zero",[],[$repr],[],[]),$image,$repr,$bits)),$result);
+effect unpack_member(Unpacking($value,$image,$repr,$width),[$offset,$index,$shape])
+    => bind($part,unpack(resize(shift("llvm.lshr",$image,$offset,$width),$width,width($shape)),$shape),
+        Unpacking(mlir.op("llvm.insertvalue",[$value,$part],[$repr],[position($index)],[]),$image,$repr,$width));

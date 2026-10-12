@@ -1,0 +1,56 @@
+mod c11.declarators;
+use c11.types;
+use base;
+use control;
+
+// Declarator composition follows C's binding rules. Resolve walks from the
+// outside toward the name, independently of the declaration's base type.
+syntax c11.declarator `$name:ident` => c11.declarators.Named($name);
+syntax c11.declarator `($decl:c11.declarator)` => $decl;
+syntax c11.declarator[20,right] `* $decl:c11.declarator` => c11.declarators.PointerDecl($decl,0,0,0);
+syntax c11.declarator[20,right] `* const $decl:c11.declarator` => c11.declarators.PointerDecl($decl,1,0,0);
+syntax c11.declarator[20,right] `* volatile $decl:c11.declarator` => c11.declarators.PointerDecl($decl,0,1,0);
+syntax c11.declarator[20,right] `* restrict $decl:c11.declarator` => c11.declarators.PointerDecl($decl,0,0,1);
+syntax c11.declarator[30,left] `$decl:c11.declarator[$count:c11.expr]` => c11.declarators.ArrayDecl($decl,$count);
+syntax c11.declarator[30,left] `$decl:c11.declarator[]` => c11.declarators.IncompleteArrayDecl($decl);
+syntax c11.declarator[30,left] `$decl:c11.declarator($params:c11.parameters)` => c11.declarators.FunctionDecl($decl,$params);
+syntax c11.declarator[30,left] `$decl:c11.declarator()` => c11.declarators.FunctionDecl($decl,c11.declarators.Parameters([],0,0));
+syntax c11.param `$type:c11.specifier $decl:c11.declarator` => c11.declarators.parameter($decl,$type);
+syntax c11.param[fallback] `$type:c11.type` => base.Param("",c11.declarators.adjust_parameter($type));
+syntax c11.params `$param:c11.param` => [$param];
+syntax c11.params `$param:c11.param, $rest:c11.params` => list.prepend($param,$rest);
+syntax c11.parameters `$params:c11.params` => c11.declarators.parameters($params);
+syntax c11.parameters `$params:c11.params, "..."` => c11.declarators.Parameters($params,1,1);
+
+effect c11.declarators.resolve(c11.declarators.Named($name),$type) => c11.declarators.Resolved($name,$type);
+effect c11.declarators.resolve(c11.declarators.PointerDecl($inner,$const,$volatile,$restrict),$type)
+    => c11.declarators.resolve($inner,c11.types.qualify(c11.types.Pointer($type),[$const,$volatile,$restrict]));
+effect c11.declarators.resolve(c11.declarators.ArrayDecl($inner,$count),$type) => c11.declarators.resolve($inner,c11.types.Array(c11.declarators.array_count($count),$type));
+effect c11.declarators.resolve(c11.declarators.IncompleteArrayDecl($inner),$type) => c11.declarators.resolve($inner,c11.types.IncompleteArray($type));
+effect c11.declarators.resolve(c11.declarators.FunctionDecl($inner,c11.declarators.Parameters($params,$variadic,$prototype)),$type)
+    => c11.declarators.resolve($inner,c11.types.FunctionType($type,$params,$variadic,$prototype));
+effect c11.declarators.array_count($expression) => bind(base.Typed($type,base.Integer($count)),apply("c11.sema.integer_constant_value",[$expression,syntax.context()]),
+    choose(int.lt(0,$count),$count,fail("C array bound must be a positive integer constant")));
+effect c11.declarators.parameter($decl,$base) => bind(c11.declarators.Resolved($name,$type),c11.declarators.resolve($decl,$base),base.Param($name,c11.declarators.adjust_parameter($type)));
+effect c11.declarators.adjust_parameter(c11.types.Array($count,$element)) => c11.types.Pointer($element);
+effect c11.declarators.adjust_parameter(c11.types.IncompleteArray($element)) => c11.types.Pointer($element);
+effect c11.declarators.adjust_parameter(c11.types.FunctionType($result,$params,$variadic,$prototype)) => c11.types.Pointer(c11.types.FunctionType($result,$params,$variadic,$prototype));
+effect[fallback] c11.declarators.adjust_parameter($type) => $type;
+
+syntax c11.abstract_decl `*` => c11.declarators.PointerDecl(c11.declarators.Named(""),0,0,0);
+syntax c11.abstract_decl `* const` => c11.declarators.PointerDecl(c11.declarators.Named(""),1,0,0);
+syntax c11.abstract_decl[20,right] `* $decl:c11.abstract_decl` => c11.declarators.PointerDecl($decl,0,0,0);
+syntax c11.abstract_decl[20,right] `* const $decl:c11.abstract_decl` => c11.declarators.PointerDecl($decl,1,0,0);
+syntax c11.abstract_decl `($decl:c11.abstract_decl)` => $decl;
+syntax c11.abstract_decl `[$count:c11.expr]` => c11.declarators.ArrayDecl(c11.declarators.Named(""),$count);
+syntax c11.abstract_decl `[]` => c11.declarators.IncompleteArrayDecl(c11.declarators.Named(""));
+syntax c11.abstract_decl `($params:c11.parameters)` => c11.declarators.FunctionDecl(c11.declarators.Named(""),$params);
+syntax c11.abstract_decl `()` => c11.declarators.FunctionDecl(c11.declarators.Named(""),c11.declarators.Parameters([],0,0));
+syntax c11.abstract_decl[30,left] `$decl:c11.abstract_decl[$count:c11.expr]` => c11.declarators.ArrayDecl($decl,$count);
+syntax c11.abstract_decl[30,left] `$decl:c11.abstract_decl[]` => c11.declarators.IncompleteArrayDecl($decl);
+syntax c11.abstract_decl[30,left] `$decl:c11.abstract_decl($params:c11.parameters)` => c11.declarators.FunctionDecl($decl,$params);
+syntax c11.abstract_decl[30,left] `$decl:c11.abstract_decl()` => c11.declarators.FunctionDecl($decl,c11.declarators.Parameters([],0,0));
+effect c11.declarators.type_name($decl,$base) => bind(c11.declarators.Resolved($name,$type),c11.declarators.resolve($decl,$base),$type);
+
+effect c11.declarators.parameters([base.Param("",control.Void())]) => c11.declarators.Parameters([],0,1);
+effect[fallback] c11.declarators.parameters($params) => c11.declarators.Parameters($params,0,1);

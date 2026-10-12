@@ -1,0 +1,26 @@
+struct Vec { x: i32; y: i32; }
+
+fn operator+(a: Vec, b: Vec) -> Vec {
+    return Vec { x: a.x + b.x, y: a.y + b.y };
+}
+
+operator +(a: Vec, scale: i32) -> Vec {
+    return Vec { x: a.x + scale, y: a.y + scale };
+}
+
+operator -(a: Vec) -> Vec {
+    return Vec { x: -a.x, y: -a.y };
+}
+
+operator *(a: Vec, b: Vec) -> i32 {
+    return a.x * b.x + a.y * b.y;
+}
+
+fn main() -> i32 {
+    let a = Vec { x: 1, y: 2 };
+    let b = Vec { x: 3, y: 4 };
+    let sum = a + b;
+    let shifted = sum + 1;
+    let opposite = -shifted;
+    return opposite * Vec { x: -7, y: -1 };
+}

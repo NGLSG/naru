@@ -1,0 +1,433 @@
+module naru;
+
+use std.collections;
+use std.string;
+
+// Arena IDs remain stable when their backing vectors grow. No node owns a Vec.
+struct Node {
+    public kind: i32;
+    public text: string;
+    public first: i64;
+    public last: i64;
+    public count: i64;
+    public file: string;
+    public line: i64;
+    public column: i64;
+    // Only completed constructor/list values are reusable. Calls are always
+    // evaluated in the current rule/IR context.
+    public evaluated: bool;
+}
+
+struct Edge { public value: i64; public next: i64; }
+// Persistent compressed binary hash trie for arbitrary rule environment keys.
+// A leaf has bit=-1; right links same-hash collision leaves. Branches test one
+// differing hash bit, so updates copy only the search path.
+struct EnvIndex { public bit: i64; public left: i64; public right: i64; public hash: i64; public key: i64; public value: i64; }
+struct ArenaScope { public epoch: i64; public nodes: Vec<i64>; public edges: Vec<i64>; public indexes: Vec<i64>; public mutations: Vec<i64>; }
+
+struct SyntaxRule {
+    public category: string;
+    public pattern: i64;
+    public rhs: i64;
+    public guard: i64;
+    public precedence: i64;
+    public right_assoc: bool;
+    public fallback: bool;
+    public module_name: string;
+    public file: string;
+    public line: i64;
+    public next: i64;
+}
+
+struct EffectRule {
+    public lhs: i64;
+    public rhs: i64;
+    public guard: i64;
+    public fallback: bool;
+    public module_name: string;
+    public file: string;
+    public line: i64;
+    public next: i64;
+}
+
+// imports points to a list of string nodes containing qualified module names.
+struct ModuleInfo {
+    public path: string;
+    public name: string;
+    public imports: i64;
+}
+
+struct RuleSymbol {
+    public kind: i32;
+    public name: string;
+    public module_name: string;
+    public full_name: string;
+    public declared_here: bool;
+}
+
+class Engine {
+    public nodes: Vec<Node>;
+    public edges: Vec<Edge>;
+    public free_nodes: Vec<i64>;
+    public free_edges: Vec<i64>;
+    public env_index: Vec<EnvIndex>;
+    public free_env_index: Vec<i64>;
+    public index_epochs: Vec<i64>;
+    public env_roots: Dict<i64, i64>;
+    public text_pool: Dict<string, string>;
+    public false_value: i64;
+    public true_value: i64;
+    public grammar_index_count: i64;
+    public grammar_heads: Dict<string, i64>;
+    public grammar_prefix_heads: Dict<string, i64>;
+    public grammar_generic_heads: Dict<string, i64>;
+    public grammar_infix_heads: Dict<string, i64>;
+    public effect_index_count: i64;
+    public effect_heads: Dict<string, i64>;
+    public effect_generic_heads: Dict<i64,i64>;
+    public effect_specific_heads: Dict<i64,i64>;
+    public effect_has_shapes: Dict<i64,i64>;
+    public entry_cache: Dict<string,string>;
+    // A callback scope collects only its new, unreachable values. Borrowed
+    // values precede the scope and remain roots in the caller's native stack.
+    // Epoch signs mark reachability without a hash table or recursive walk.
+    public scope_active: bool;
+    public scope_epoch: i64;
+    public scope_serial: i64;
+    public scope_stack: Vec<ArenaScope>;
+    public scope_pool: Vec<ArenaScope>;
+    public mark_pending: Vec<i64>;
+    public mark_indexes: Vec<i64>;
+    public node_epochs: Vec<i64>;
+    public edge_epochs: Vec<i64>;
+    public scope_nodes: Vec<i64>;
+    public scope_edges: Vec<i64>;
+    public scope_indexes: Vec<i64>;
+    // Edges appended to borrowed builders, rather than the whole builders.
+    // The write barrier retains exactly the allocations escaping this scope.
+    public scope_mutations: Vec<i64>;
+    public syntax_rules: Vec<SyntaxRule>;
+    public effect_rules: Vec<EffectRule>;
+    public modules: Vec<ModuleInfo>;
+    public symbols: Vec<RuleSymbol>;
+    public source_paths: Vec<string>;
+    public source_modules: i64;
+    public rule_catalog: Dict<string, string>;
+    public rule_hashes: Dict<string, string>;
+    public project_inputs: Vec<string>;
+    public linked: bool;
+    public rule_limit: i64;
+    public parse_limit: i64;
+    public rule_depth_limit: i64;
+    public parse_depth_limit: i64;
+    public diagnostic: string;
+
+    public static fn new() -> Engine {
+        return Engine {
+            nodes: Vec::<Node>.new(), edges: Vec::<Edge>.new(), free_nodes: Vec::<i64>.new(), free_edges: Vec::<i64>.new(), env_index: Vec::<EnvIndex>.new(), free_env_index: Vec::<i64>.new(), index_epochs: Vec::<i64>.new(), env_roots: Dict::<i64, i64>.new(), text_pool: Dict::<string, string>.new(),
+            false_value: -1, true_value: -1, grammar_index_count: -1, grammar_heads: Dict::<string,i64>.new(), grammar_prefix_heads: Dict::<string,i64>.new(),
+            grammar_generic_heads: Dict::<string,i64>.new(), grammar_infix_heads: Dict::<string,i64>.new(),
+            effect_index_count: -1, effect_heads: Dict::<string,i64>.new(), scope_active: false, scope_epoch: 0, scope_serial: 0, scope_stack: Vec::<ArenaScope>.new(), scope_pool: Vec::<ArenaScope>.new(), mark_pending: Vec::<i64>.new(), mark_indexes: Vec::<i64>.new(),
+            effect_generic_heads: Dict::<i64,i64>.new(), effect_specific_heads: Dict::<i64,i64>.new(), effect_has_shapes: Dict::<i64,i64>.new(), entry_cache: Dict::<string,string>.new(),
+            node_epochs: Vec::<i64>.new(), edge_epochs: Vec::<i64>.new(), scope_nodes: Vec::<i64>.new(), scope_edges: Vec::<i64>.new(), scope_indexes: Vec::<i64>.new(), scope_mutations: Vec::<i64>.new(),
+            syntax_rules: Vec::<SyntaxRule>.new(), effect_rules: Vec::<EffectRule>.new(),
+            modules: Vec::<ModuleInfo>.new(), symbols: Vec::<RuleSymbol>.new(),
+            source_paths: Vec::<string>.new(), source_modules: -1,
+            rule_catalog: Dict::<string, string>.new(), rule_hashes: Dict::<string, string>.new(),
+            project_inputs: Vec::<string>.new(), linked: false, rule_limit: 1000000, parse_limit: 1000000, rule_depth_limit: 256, parse_depth_limit: 256, diagnostic: ""
+        };
+    }
+
+    public fn good() -> bool { return self.diagnostic.len == 0; }
+    public fn reject(message: string) {
+        if (self.diagnostic.len == 0) { self.diagnostic = str_dup(message); }
+    }
+    public fn at_error(file: string, line: i64, column: i64, message: string) {
+        self.reject(file + ":" + naru_number(line) + ":" + naru_number(column) + ": " + message);
+    }
+    public fn add_node(kind: i32, text: string, file: string, line: i64, column: i64) -> i64 {
+        let recycled = self.free_nodes.len > 0;
+        var id = self.nodes.len;
+        if (recycled) { id = self.free_nodes.pop(); }
+        var stored = text;
+        if (kind == 2) { stored = canonical_integer(text); }
+        let value = Node {
+            kind: kind, text: self.intern(stored), first: -1, last: -1, count: 0,
+            file: self.intern(file), line: line, column: column, evaluated: false
+        };
+        if (recycled) { self.nodes.set(id,value); } else { self.nodes.push(value); }
+        while (self.node_epochs.len < self.nodes.len) { self.node_epochs.push(0); }
+        if (self.scope_active && self.node_epochs.get(id) != self.scope_epoch) {
+            self.node_epochs.set(id,self.scope_epoch); self.scope_nodes.push(id);
+        }
+        return id;
+    }
+    public fn intern(text: string) -> string {
+        if (self.text_pool.contains(text)) { return self.text_pool.get(text); }
+        let retained = str_dup(text); self.text_pool.put(retained, retained); return retained;
+    }
+    public fn node(id: i64) -> Node { return self.nodes.get(id); }
+    // Only private evaluator frames and evaluated-call containers are released.
+    // Their child values may escape and remain alive with stable arena IDs.
+    // Never call this on a list value: its immutable edges may be shared.
+    public fn release_frame(id: i64) {
+        var n = self.node(id); var edge = n.first;
+        while (edge >= 0) { let item = self.edges.get(edge); self.edges.set(edge,Edge { value: -1, next: -1 }); self.free_edges.push(edge); edge = item.next; }
+        n.kind = -1; n.first = -1; n.last = -1; n.count = 0;
+        self.nodes.set(id,n); self.free_nodes.push(id);
+    }
+    public fn add_edge(value: i64) -> i64 {
+        var id = self.edges.len;
+        if (self.free_edges.len > 0) { id = self.free_edges.pop(); self.edges.set(id,Edge { value: value, next: -1 }); }
+        else { self.edges.push(Edge { value: value, next: -1 }); }
+        while (self.edge_epochs.len < self.edges.len) { self.edge_epochs.push(0); }
+        if (self.scope_active && self.edge_epochs.get(id) != self.scope_epoch) {
+            self.edge_epochs.set(id,self.scope_epoch); self.scope_edges.push(id);
+        }
+        return id;
+    }
+    public fn add_env_index(value: EnvIndex) -> i64 {
+        var id = self.env_index.len;
+        if (self.free_env_index.len > 0) { id = self.free_env_index.pop(); self.env_index.set(id,value); }
+        else { self.env_index.push(value); self.index_epochs.push(0); }
+        if (self.scope_active && self.index_epochs.get(id) != self.scope_epoch) {
+            self.index_epochs.set(id,self.scope_epoch); self.scope_indexes.push(id);
+        }
+        return id;
+    }
+    public fn add_child(parent: i64, child: i64) {
+        let borrowed = self.scope_active && self.node_epochs.get(parent) != self.scope_epoch;
+        var n = self.nodes.get(parent);
+        // Completed constructors and lists may share immutable edges. A builder that
+        // appends to such a value must detach first; otherwise it would mutate
+        // other terms/lists/cursors that retain the same tail.
+        if ((n.kind == 0 || n.kind == 5) && n.evaluated && n.count > 0) {
+            var old = n.first;
+            n.first = -1; n.last = -1;
+            while (old >= 0) {
+                let item = self.edges.get(old); let copy = self.add_edge(item.value);
+                if (borrowed) { self.scope_mutations.push(copy); }
+                if (n.last < 0) { n.first = copy; }
+                else { var prior = self.edges.get(n.last); prior.next = copy; self.edges.set(n.last, prior); }
+                n.last = copy; old = item.next;
+            }
+        }
+        n.evaluated = false;
+        let id = self.add_edge(child);
+        if (borrowed) { self.scope_mutations.push(id); }
+        if (n.last < 0) { n.first = id; }
+        else {
+            var prior = self.edges.get(n.last);
+            prior.next = id;
+            self.edges.set(n.last, prior);
+        }
+        n.last = id;
+        n.count = n.count + 1;
+        self.nodes.set(parent, n);
+    }
+    public fn begin_scope() -> bool {
+        while (self.node_epochs.len < self.nodes.len) { self.node_epochs.push(0); }
+        while (self.edge_epochs.len < self.edges.len) { self.edge_epochs.push(0); }
+        self.scope_stack.push(ArenaScope { epoch: self.scope_epoch, nodes: self.scope_nodes, edges: self.scope_edges, indexes: self.scope_indexes, mutations: self.scope_mutations });
+        self.scope_serial = self.scope_serial + 1; self.scope_epoch = self.scope_serial; self.scope_active = true;
+        let depth = self.scope_stack.len - 1;
+        if (depth == self.scope_pool.len) {
+            self.scope_pool.push(ArenaScope { epoch: 0, nodes: Vec::<i64>.new(), edges: Vec::<i64>.new(), indexes: Vec::<i64>.new(), mutations: Vec::<i64>.new() });
+        }
+        let buffers = self.scope_pool.get(depth);
+        self.scope_nodes = buffers.nodes; self.scope_edges = buffers.edges; self.scope_indexes = buffers.indexes; self.scope_mutations = buffers.mutations;
+        self.scope_nodes.clear(); self.scope_edges.clear(); self.scope_indexes.clear(); self.scope_mutations.clear(); return true;
+    }
+    public fn scope_mark(root: i64) {
+        if (root < 0) { return; }
+        if (self.node_epochs.get(root) != self.scope_epoch) { return; }
+        self.mark_pending.clear(); self.mark_pending.push(root);
+        var index: i64 = 0;
+        while (index < self.mark_pending.len) {
+            let id = self.mark_pending.get(index); index = index + 1;
+            let epoch = self.node_epochs.get(id);
+            if (epoch == -self.scope_epoch || self.node(id).kind < 0) { continue; }
+            if (epoch != self.scope_epoch) { continue; }
+            if (epoch == self.scope_epoch) { self.node_epochs.set(id,-self.scope_epoch); }
+            if (self.node(id).kind == 11 && self.env_roots.contains(id)) {
+                self.mark_indexes.clear(); self.mark_indexes.push(self.env_roots.get(id));
+                var at: i64 = 0;
+                while (at < self.mark_indexes.len) {
+                    let entry = self.mark_indexes.get(at); at = at + 1;
+                    if (entry < 0 || self.index_epochs.get(entry) != self.scope_epoch) { continue; }
+                    self.index_epochs.set(entry,-self.scope_epoch); let part = self.env_index.get(entry);
+                    if (part.bit >= 0) { self.mark_indexes.push(part.left); self.mark_indexes.push(part.right); }
+                    else { self.mark_pending.push(part.key); self.mark_pending.push(part.value); self.mark_indexes.push(part.right); }
+                }
+            }
+            var edge = self.node(id).first;
+            while (edge >= 0) {
+                let item = self.edges.get(edge); let edge_epoch = self.edge_epochs.get(edge);
+                if (edge_epoch == -self.scope_epoch) { break; }
+                // Immutable borrowed tails contain no new allocations. Only a
+                // recorded append edge can introduce a new allocation.
+                if (edge_epoch != self.scope_epoch) { break; }
+                if (edge_epoch == self.scope_epoch) { self.edge_epochs.set(edge,-self.scope_epoch); }
+                self.mark_pending.push(item.value); edge = item.next;
+            }
+        }
+    }
+    public fn reclaim_scope(result: i64) {
+        self.scope_mark(result); self.scope_mark(self.false_value); self.scope_mark(self.true_value);
+        self.scope_mark(self.source_modules);
+        var i: i64 = 0;
+        while (i < self.scope_mutations.len) {
+            var edge = self.scope_mutations.get(i);
+            // Retain the newly appended suffix once. A negative edge mark
+            // means its entire current-scope tail has been visited, including
+            // additions made after a nested callback returned to its owner.
+            while (edge >= 0 && self.edge_epochs.get(edge) == self.scope_epoch) {
+                let item = self.edges.get(edge);
+                if (item.value < 0) { break; }
+                self.edge_epochs.set(edge,-self.scope_epoch); self.scope_mark(item.value);
+                edge = item.next;
+            }
+            i = i + 1;
+        }
+        // IR creation has an effect even if its result is discarded. Cached
+        // syntax indexes also escape through Engine dictionaries.
+        i = 0;
+        while (i < self.scope_nodes.len) {
+            let id = self.scope_nodes.get(i); let n = self.node(id);
+            if ((n.kind >= 6 && n.kind <= 9) || n.text == "<syntax-index>" || n.text == "<effect-index>") { self.scope_mark(id); }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < self.scope_nodes.len) {
+            let id = self.scope_nodes.get(i); var n = self.node(id);
+            if (self.node_epochs.get(id) == self.scope_epoch && n.kind >= 0) {
+                if (n.kind == 11) { self.env_roots.remove(id); }
+                n.kind = -1; n.first = -1; n.last = -1; n.count = 0; self.nodes.set(id,n); self.free_nodes.push(id);
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < self.scope_edges.len) {
+            let id = self.scope_edges.get(i);
+            if (self.edge_epochs.get(id) == self.scope_epoch && self.edges.get(id).value >= 0) {
+                self.edges.set(id,Edge { value: -1, next: -1 }); self.free_edges.push(id);
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while (i < self.scope_indexes.len) {
+            let id = self.scope_indexes.get(i);
+            if (self.index_epochs.get(id) == self.scope_epoch && self.env_index.get(id).bit >= -1) {
+                self.env_index.set(id,EnvIndex { bit: -2, left: -1, right: -1, hash: 0, key: -1, value: -1 }); self.free_env_index.push(id);
+            }
+            i = i + 1;
+        }
+    }
+    // Iterative tools retain only their current state, borrowed immutable
+    // inputs and observable side effects. Compact allocation logs in place;
+    // turning a mark positive also deduplicates recycled arena identities.
+    public fn collect_scope(result: i64) {
+        self.reclaim_scope(result);
+        var i: i64 = 0; var kept: i64 = 0;
+        while (i < self.scope_nodes.len) {
+            let id = self.scope_nodes.get(i);
+            if (self.node_epochs.get(id) == -self.scope_epoch && self.node(id).kind >= 0) {
+                self.node_epochs.set(id,self.scope_epoch); self.scope_nodes.set(kept,id); kept = kept + 1;
+            }
+            i = i + 1;
+        }
+        while (self.scope_nodes.len > kept) { self.scope_nodes.pop(); }
+        i = 0; kept = 0;
+        while (i < self.scope_edges.len) {
+            let id = self.scope_edges.get(i);
+            if (self.edge_epochs.get(id) == -self.scope_epoch && self.edges.get(id).value >= 0) {
+                self.edge_epochs.set(id,self.scope_epoch); self.scope_edges.set(kept,id); kept = kept + 1;
+            }
+            i = i + 1;
+        }
+        while (self.scope_edges.len > kept) { self.scope_edges.pop(); }
+        i = 0; kept = 0;
+        while (i < self.scope_indexes.len) {
+            let id = self.scope_indexes.get(i);
+            if (self.index_epochs.get(id) == -self.scope_epoch && self.env_index.get(id).bit >= -1) {
+                self.index_epochs.set(id,self.scope_epoch); self.scope_indexes.set(kept,id); kept = kept + 1;
+            }
+            i = i + 1;
+        }
+        while (self.scope_indexes.len > kept) { self.scope_indexes.pop(); }
+    }
+    public fn end_scope(result: i64) {
+        self.reclaim_scope(result);
+        var i: i64 = 0;
+        let child_nodes = self.scope_nodes; let child_edges = self.scope_edges; let child_indexes = self.scope_indexes; let child_mutations = self.scope_mutations;
+        // Vec is a value with a backing buffer. Save its updated pointer,
+        // length and capacity after growth before reusing this depth's cache.
+        self.scope_pool.set(self.scope_stack.len - 1,ArenaScope { epoch: 0, nodes: child_nodes, edges: child_edges, indexes: child_indexes, mutations: child_mutations });
+        let parent = self.scope_stack.pop();
+        self.scope_epoch = parent.epoch; self.scope_nodes = parent.nodes; self.scope_edges = parent.edges; self.scope_indexes = parent.indexes; self.scope_mutations = parent.mutations;
+        self.scope_active = self.scope_epoch > 0;
+        if (self.scope_active) {
+            i = 0;
+            while (i < child_nodes.len) {
+                let id = child_nodes.get(i);
+                if (self.node(id).kind >= 0 && self.node_epochs.get(id) != self.scope_epoch) { self.node_epochs.set(id,self.scope_epoch); self.scope_nodes.push(id); }
+                i = i + 1;
+            }
+            i = 0;
+            while (i < child_edges.len) {
+                let id = child_edges.get(i);
+                if (self.edges.get(id).value >= 0 && self.edge_epochs.get(id) != self.scope_epoch) { self.edge_epochs.set(id,self.scope_epoch); self.scope_edges.push(id); }
+                i = i + 1;
+            }
+            i = 0;
+            while (i < child_indexes.len) {
+                let id = child_indexes.get(i);
+                if (self.env_index.get(id).bit >= -1 && self.index_epochs.get(id) != self.scope_epoch) { self.index_epochs.set(id,self.scope_epoch); self.scope_indexes.push(id); }
+                i = i + 1;
+            }
+            i = 0;
+            while (i < child_mutations.len) { self.scope_mutations.push(child_mutations.get(i)); i = i + 1; }
+        }
+    }
+    public fn complete_value(id: i64) -> i64 {
+        var n = self.nodes.get(id);
+        if (n.kind == 0 || n.kind == 5) { n.evaluated = true; self.nodes.set(id, n); }
+        return id;
+    }
+    public fn child(parent: i64, index: i64) -> i64 {
+        if (parent < 0 || parent >= self.nodes.len || index < 0) { return -1; }
+        var edge = self.nodes.get(parent).first;
+        var i: i64 = 0;
+        while (edge >= 0) {
+            let item = self.edges.get(edge);
+            if (i == index) { return item.value; }
+            edge = item.next;
+            i = i + 1;
+        }
+        return -1;
+    }
+}
+
+public fn naru_digit(c: i32) -> bool { return c >= 48 && c <= 57; }
+public fn naru_hex_digit(c: i32) -> bool {
+    return naru_digit(c) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102);
+}
+public fn canonical_integer(spelling: string) -> string {
+    let negative = spelling.starts_with("-");
+    var start: i64 = negative ? 1 : 0;
+    while (start < spelling.len - 1 && str_char_at(spelling, start) == 48) { start = start + 1; }
+    let digits = spelling.substring(start, spelling.len);
+    if (digits == "0") { return "0"; }
+    return (negative ? "-" : "") + digits;
+}
+public fn naru_ident_start(c: i32) -> bool {
+    return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c >= 128;
+}
+public fn naru_ident_part(c: i32) -> bool { return naru_ident_start(c) || naru_digit(c); }
+
+public fn naru_number(value: i64) -> string {
+    var builder = StringBuilder.create();
+    builder.appendI64(value);
+    let owned = builder.build();
+    return str_dup(owned.as_str());
+}

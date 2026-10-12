@@ -1,0 +1,77 @@
+// Optional shaped-value operations.  The core remains unaware of vectors and
+// tensors; this package extends base's open check/lower relations.
+mod shapes;
+use base;
+use types;
+
+syntax expr[90,left] `$value:expr[$index:int]` => Extract($value, $index);
+syntax expr `vector { $values:arguments }` => VectorLiteral($values);
+effect base.hint(VectorLiteral($values),$environment) => Any();
+effect base.check(VectorLiteral($values),$environment,Vector([$count],$element))
+    => choose(eq(size($values),$count),Typed(Vector([$count],$element),VectorValues(vector_values($values,$element,$environment))),fail("vector initializer length mismatch"));
+effect base.check(VectorLiteral($values),$environment,Any())
+    => bind($first,base.check(list.head($values),$environment,Any()),
+        Typed(Vector([size($values)],arg($first,0)),VectorValues(list.prepend($first,vector_values(list.tail($values),arg($first,0),$environment)))));
+effect vector_values([],$element,$environment) => [];
+effect vector_values($values,$element,$environment) when lt(0,size($values))
+    => list.prepend(base.check(list.head($values),$environment,$element),vector_values(list.tail($values),$element,$environment));
+effect base.opcode($op,Vector($shape,$element)) => base.opcode($op,$element);
+effect base.bitop($op,Vector($shape,$element)) => base.bitop($op,$element);
+effect base.lower(Typed($type,VectorValues($values)),$environment)
+    => mlir.op("vector.from_elements",base.lower_arguments($values,$environment),[types.repr($type)],[],[]);
+
+effect base.hint(Extract($value, $index), $environment) => Any();
+effect base.check(Extract($value, $index), $environment, $expected)
+    => bind(Typed($container, $checked), base.check($value, $environment, Any()),
+        shapes.extract_checked($container, $checked, $index, $expected));
+
+effect extract_checked(Vector($shape, $element), $container, $index, $expected)
+    => bind($dims, types.shape_dims($shape),
+        choose(valid_index($dims, $index),
+            extract_shape(Vector($dims, $element), $container, $index, $expected),
+            fail("shaped index is outside the first dimension")));
+effect extract_checked(Tensor($shape, $element), $container, $index, $expected)
+    => bind($dims, types.shape_dims($shape),
+        choose(valid_index($dims, $index),
+            extract_shape(Tensor($dims, $element), $container, $index, $expected),
+            fail("shaped index is outside the first dimension")));
+effect[fallback] extract_checked($other, $container, $index, $expected)
+    => fail("indexing requires a vector or tensor value");
+
+effect valid_index([$dimension], $index)
+    => and(not(lt($index, 0)), lt($index, $dimension));
+effect valid_index($shape, $index) when lt(1, size($shape))
+    => and(not(lt($index, 0)), lt($index, list.head($shape)));
+
+effect extract_shape(Vector($shape, $element), $container, $index, $expected)
+    => bind($result, drop_shape(Vector($shape, $element)),
+        shape_expected($result, $expected, Extracted(Vector($shape, $element), $container, $index)));
+effect extract_shape(Tensor([$dimension], $element), $container, $index, $expected)
+    => bind($result, drop_shape(Tensor([$dimension], $element)),
+        shape_expected($result, $expected, Extracted(Tensor([$dimension], $element), $container, $index)));
+effect[fallback] extract_shape(Tensor($shape, $element), $container, $index, $expected)
+    => fail("tensor indexing currently requires a rank-1 tensor");
+
+effect shape_expected($result, Any(), $value) => Typed($result, $value);
+effect shape_expected($result, $expected, $value) when eq($result, $expected) => Typed($result, $value);
+effect[fallback] shape_expected($result, $expected, $value)
+    => fail("shaped index result type mismatch");
+
+effect drop_shape(Vector($shape, $element)) => drop_shape_result($shape, $element);
+effect drop_shape(Tensor($shape, $element)) => drop_shape_result($shape, $element);
+effect drop_shape_result([$dimension], $element) => $element;
+effect drop_shape_result($shape, $element) when lt(1, size($shape))
+    => Vector(list.tail($shape), $element);
+
+effect base.lower(Typed($result, Extracted($descriptor, $container, $index)), $environment)
+    => shapes.lower_extract($descriptor, $container, $index, $result, $environment);
+effect lower_extract(Vector($shape, $element), $value, $index, $result, $environment)
+    => mlir.op("vector.extract", [base.lower(Typed(Vector($shape, $element), $value), $environment)],
+        [types.repr($result)],
+        [RawAttr("static_position", concat(concat("array<i64: ", text($index)), ">"))], []);
+effect lower_extract(Tensor($shape, $element), $value, $index, $result, $environment)
+    => mlir.op("tensor.extract",
+        [base.lower(Typed(Tensor($shape, $element), $value), $environment), index_constant($index)],
+        [types.repr($result)], [], []);
+effect index_constant($index)
+    => mlir.op("arith.constant", [], ["index"], [Attr("value", $index, "index")], []);

@@ -1,0 +1,19 @@
+[package]
+name = "b-examples"
+version = "0.1.0"
+entry = "recursion.b"
+
+[language]
+dialects = ["std/base", "std/b"]
+frontend = "b.frontend"
+unit = "program"
+relation = "emit_program"
+
+[dependencies]
+std = { path = "../../dialects", package = "naru-stdlib", version = "^0.2.0" }
+
+[build]
+output_dir = "target"
+
+[link]
+runtime = "crt-static"

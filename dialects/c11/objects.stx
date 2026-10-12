@@ -1,0 +1,258 @@
+mod c11.objects;
+use c11.syntax;
+use c11.types;
+use c11.sema;
+use base;
+use types;
+use control;
+use tree;
+use layout;
+
+// Complete record tags and fixed-size object arrays are a separate rule layer.
+// Record layout follows the selected target facts in c11.types.
+effect c11.sema.prepare_domain($items) => bind($tags,resolve_tags(tree.fold($items,"c11.objects.tag_node",env.empty())),
+    list.prepend(Tags($tags),c11.objects.rewrite($items,$tags,[])));
+effect tag_node($tags,c11.syntax.RecordDeclaration($name,$fields,$origin)) => install_tag($tags,$name,Tag("struct",$fields,$origin));
+effect tag_node($tags,c11.syntax.RecordSpecifier($name,$fields,$origin)) => install_tag($tags,$name,Tag("struct",$fields,$origin));
+effect tag_node($tags,c11.syntax.UnionDeclaration($name,$fields,$origin)) => install_tag($tags,$name,Tag("union",$fields,$origin));
+effect tag_node($tags,c11.syntax.UnionSpecifier($name,$fields,$origin)) => install_tag($tags,$name,Tag("union",$fields,$origin));
+effect[fallback] tag_node($tags,$node) => $tags;
+// Parse-time ICE contexts (enumerators and array declarators) need definitions
+// committed before them. Keep raw tag facts here and complete on demand;
+// eagerly resolving every tag would reject legal incomplete pointer members.
+effect c11.syntax.commit($context,c11.syntax.RecordDeclaration($name,$fields,$origin))
+    => commit_tag($context,c11.syntax.RecordDeclaration($name,$fields,$origin));
+effect c11.syntax.commit($context,c11.syntax.UnionDeclaration($name,$fields,$origin))
+    => commit_tag($context,c11.syntax.UnionDeclaration($name,$fields,$origin));
+effect commit_tag($context,$item) => bind($prior,choose(env.contains($context,TagsKey()),env.get($context,TagsKey()),env.empty()),
+    [env.put($context,TagsKey(),tree.fold($item,"c11.objects.tag_node",$prior)),[$item]]);
+effect install_tag($tags,$name,$definition) => choose(env.contains($tags,$name),
+    choose(eq(env.get($tags,$name),$definition),$tags,fail(concat("duplicate or incompatible C tag: ",$name))),env.put($tags,$name,$definition));
+effect c11.objects.rewrite($node,$tags,$active)
+    => arg(tree.rewrite_with($node,"c11.objects.rewrite_enter","c11.objects.rewrite_leave",[$tags,$active],0),0);
+effect rewrite_enter(c11.types.RecordName($name),[$tags,$active],$state) => tree.Stop(complete_tag($name,"struct",$tags,$active),$state);
+effect rewrite_enter(c11.types.UnionName($name),[$tags,$active],$state) => tree.Stop(complete_tag($name,"union",$tags,$active),$state);
+// Validate every definition and cache completed descriptors, including unused
+// definitions. Later references share that result instead of rebuilding it.
+effect resolve_tags($tags) => list.fold("c11.objects.resolve_tag",env.entries($tags),$tags);
+effect resolve_tag($tags,[$name,Tag($kind,$fields,$origin)]) when not(eq($kind,"enum"))
+    => env.put($tags,$name,CompletedTag($kind,complete_tag($name,$kind,$tags,[])));
+effect[fallback] resolve_tag($tags,$entry) => $tags;
+effect complete_tag($name,$kind,$tags,$active) => choose(env.contains($tags,$name),
+    choose(c11.objects.member($name,$active),fail("C aggregate contains itself by value"),
+        complete_definition($name,$kind,env.get($tags,$name),$tags,$active)),
+    fail(concat("incomplete C aggregate used by value: ",$name)));
+effect complete_definition($name,$kind,CompletedTag($actual,$type),$tags,$active)
+    => choose(eq($actual,$kind),$type,fail("C tag kind mismatch"));
+effect complete_definition($name,$kind,Tag($actual,$fields,$origin),$tags,$active)
+    => choose(eq($actual,$kind),aggregate($kind,$name,c11.objects.rewrite($fields,$tags,list.prepend($name,$active))),fail("C tag kind mismatch"));
+effect rewrite_enter(c11.syntax.RecordSpecifier($name,$fields,$origin),[$tags,$active],$state) => tree.Stop(complete_tag($name,"struct",$tags,$active),$state);
+effect rewrite_enter(c11.syntax.UnionSpecifier($name,$fields,$origin),[$tags,$active],$state) => tree.Stop(complete_tag($name,"union",$tags,$active),$state);
+effect rewrite_enter(c11.types.Record($name,$fields),$context,$state) => tree.Descend([$fields],$context,Aggregate("struct",$name),$state);
+effect rewrite_enter(c11.types.Union($name,$fields),$context,$state) => tree.Descend([$fields],$context,Aggregate("union",$name),$state);
+effect rewrite_leave(Aggregate($kind,$name),[$fields],$context,$state) => [aggregate($kind,$name,$fields),$state];
+// Named pointees may remain incomplete or recursive. Structural pointees
+// (anonymous aggregates, arrays and function signatures) still need their
+// by-value components completed before layout or member access.
+effect rewrite_enter(c11.types.Pointer($element),[$tags,$active],$state)
+    => tree.Stop(c11.types.Pointer(pointer_element($element,$tags,$active)),$state);
+effect pointer_element(c11.syntax.RecordSpecifier($name,$fields,$origin),$tags,$active) => c11.types.RecordName($name);
+effect pointer_element(c11.syntax.UnionSpecifier($name,$fields,$origin),$tags,$active) => c11.types.UnionName($name);
+effect pointer_element(c11.types.RecordName($name),$tags,$active) => c11.types.RecordName($name);
+effect pointer_element(c11.types.UnionName($name),$tags,$active) => c11.types.UnionName($name);
+effect pointer_element(c11.types.Qualified($type,$const,$volatile,$restrict),$tags,$active)
+    => c11.types.Qualified(pointer_element($type,$tags,$active),$const,$volatile,$restrict);
+effect[fallback] pointer_element($type,$tags,$active) => c11.objects.rewrite($type,$tags,$active);
+effect rewrite_enter(c11.syntax.RecordDeclaration($name,$fields,$origin),$context,$state) => tree.Stop(c11.syntax.RecordDeclaration($name,$fields,$origin),$state);
+effect rewrite_enter(c11.syntax.UnionDeclaration($name,$fields,$origin),$context,$state) => tree.Stop(c11.syntax.UnionDeclaration($name,$fields,$origin),$state);
+effect[fallback] rewrite_enter($node,$context,$state) when or(eq(term.kind($node),0),eq(term.kind($node),5))
+    => tree.Descend(term.children($node),$context,$node,$state);
+effect[fallback] rewrite_enter($node,$context,$state) when and(not(eq(term.kind($node),0)),not(eq(term.kind($node),5))) => tree.Stop($node,$state);
+effect[fallback] rewrite_leave($original,$children,$context,$state) => [term.rebuild($original,$children),$state];
+effect c11.objects.member($name,[]) => 0;
+effect c11.objects.member($name,$names) when lt(0,size($names)) => choose(eq($name,list.head($names)),1,c11.objects.member($name,list.tail($names)));
+effect c11.sema.declare(Tags($tags),$rest,$env) => c11.sema.declarations($rest,env.put($env,TagsKey(),$tags));
+effect c11.sema.prepare_item(Tags($tags),$rest,$env,$seen) => c11.sema.prepare_items($rest,$env,$seen);
+effect c11.sema.complete_type(c11.types.RecordName($name),$env) => c11.objects.rewrite(c11.types.RecordName($name),env.get($env,TagsKey()),[]);
+effect c11.sema.complete_type(c11.types.UnionName($name),$env) => c11.objects.rewrite(c11.types.UnionName($name),env.get($env,TagsKey()),[]);
+effect c11.sema.complete_type(c11.types.Pointer(c11.types.RecordName($name)),$env)
+    => c11.types.Pointer(c11.sema.complete_type(c11.types.RecordName($name),$env));
+effect c11.sema.complete_type(c11.types.Pointer(c11.types.UnionName($name)),$env)
+    => c11.types.Pointer(c11.sema.complete_type(c11.types.UnionName($name),$env));
+effect c11.sema.complete_type(c11.types.Pointer(c11.types.Qualified($type,$const,$volatile,$restrict)),$env)
+    => c11.types.Pointer(c11.types.Qualified(c11.sema.complete_type($type,$env),$const,$volatile,$restrict));
+effect c11.sema.complete_type(c11.types.Qualified($type,$const,$volatile,$restrict),$env)
+    => c11.types.Qualified(c11.sema.complete_type($type,$env),$const,$volatile,$restrict);
+
+effect aggregate($kind,$name,$fields) => bind(Normalized($out,$policy,$index,$count),
+    list.fold("c11.objects.normalize_field",$fields,Normalized([],$kind,0,size($fields))),
+    bind($members,list.reverse($out),seq(unique_members(visible_members($members)),aggregate_value($kind,$name,$members))));
+effect aggregate_value("struct",$name,$fields) => c11.types.Record($name,$fields);
+effect aggregate_value("union",$name,$fields) => c11.types.Union($name,$fields);
+effect normalize_field(Normalized($out,$kind,$index,$count),c11.types.Field($name,c11.types.IncompleteArray($element)))
+    => choose(and(eq($kind,"struct"),and(lt(0,$index),eq(add($index,1),$count))),
+        seq(c11.types.bytes($element),Normalized(list.prepend(c11.types.Field($name,c11.types.FlexibleArray($element)),$out),$kind,add($index,1),$count)),
+        fail("C flexible array must be the final member of a nonempty struct"));
+effect normalize_field(Normalized($out,$kind,$index,$count),c11.types.Field($name,c11.types.FlexibleArray($element)))
+    => choose(and(eq($kind,"struct"),and(lt(0,$index),eq(add($index,1),$count))),
+        Normalized(list.prepend(c11.types.Field($name,c11.types.FlexibleArray($element)),$out),$kind,add($index,1),$count),
+        fail("C flexible array must be the final member of a nonempty struct"));
+effect[fallback] normalize_field(Normalized($out,$kind,$index,$count),c11.types.Field($name,$type))
+    => choose(has_flexible($type),fail("nested flexible array objects are not supported"),
+        seq(c11.types.bytes($type),Normalized(list.prepend(c11.types.Field($name,$type),$out),$kind,add($index,1),$count)));
+effect has_flexible(c11.types.FlexibleArray($element)) => 1;
+effect has_flexible(c11.types.Record($name,$fields)) => list.fold("c11.objects.flexible_member",$fields,0);
+effect has_flexible(c11.types.Union($name,$fields)) => list.fold("c11.objects.flexible_member",$fields,0);
+effect has_flexible(c11.types.Array($count,$element)) => has_flexible($element);
+effect has_flexible(c11.types.Qualified($type,$const,$volatile,$restrict)) => has_flexible($type);
+effect[fallback] has_flexible($type) => 0;
+effect flexible_member($seen,c11.types.Field($name,$type)) => or($seen,has_flexible($type));
+effect visible_members($fields) => list.flatten(list.map("c11.objects.visible_member",$fields));
+effect visible_member(c11.types.Field("",$type)) => visible_members(aggregate_fields($type));
+effect visible_member(c11.types.Field($name,$type)) when not(eq($name,"")) => [$name];
+effect aggregate_fields(c11.types.Record($name,$fields)) => $fields;
+effect aggregate_fields(c11.types.Union($name,$fields)) => $fields;
+effect unique_members($names) => seq(list.fold("c11.objects.unique_member",$names,env.empty()),1);
+effect unique_member($seen,$name) => choose(env.contains($seen,$name),fail(concat("duplicate C aggregate member: ",$name)),env.put($seen,$name,1));
+
+effect c11.sema.initializer(c11.syntax.Initializer($values),$env,c11.types.Array($count,$element))
+    => base.Typed(c11.types.Array($count,$element),Packed(c11.objects.array_values($values,$count,$element,$env)));
+effect c11.sema.initializer(c11.syntax.Initializer($values),$env,c11.types.Record($name,$fields))
+    => base.Typed(c11.types.Record($name,$fields),Packed(c11.objects.record_values($values,$fields,$env)));
+effect c11.sema.constant_initializer(c11.syntax.Initializer($values),c11.types.Array($count,$element))
+    => bind($converted,list.map("c11.sema.constant",$values),
+        base.Typed(c11.types.Array($count,$element),Packed(c11.objects.constant_array($converted,$count,$element))));
+effect c11.objects.constant_array($values,$count,$type) => choose(lt($count,size($values)),fail("too many C array initializers"),
+    bind(ConstantArray($out,$remaining,$descriptor,$left),rule.iterate("c11.objects.constant_array_step",ConstantArray([],$values,$type,$count),1000000),list.reverse($out)));
+effect c11.objects.constant_array_step(ConstantArray($out,$values,$type,0)) => [0,ConstantArray($out,$values,$type,0)];
+effect c11.objects.constant_array_step(ConstantArray($out,$values,$type,$count)) when lt(0,$count)
+    => [1,ConstantArray(list.prepend(choose(eq(size($values),0),c11.sema.zero($type),c11.sema.constant_convert(list.head($values),$type)),$out),
+        choose(eq(size($values),0),[],list.tail($values)),$type,sub($count,1))];
+effect c11.objects.array_values($values,$count,$type,$env) => choose(lt($count,size($values)),fail("too many C array initializers"),
+    bind(Filled($out,$remaining,$descriptor,$environment,$left),rule.iterate("c11.objects.fill_array",Filled([],$values,$type,$env,$count),1000000),list.reverse($out)));
+effect c11.objects.fill_array(Filled($out,$values,$type,$env,0)) => [0,Filled($out,$values,$type,$env,0)];
+effect c11.objects.fill_array(Filled($out,$values,$type,$env,$count)) when lt(0,$count)
+    => [1,Filled(list.prepend(choose(eq(size($values),0),c11.sema.zero($type),
+        c11.objects.initializer_value(list.head($values),$type,$env)),$out),
+        choose(eq(size($values),0),[],list.tail($values)),$type,$env,sub($count,1))];
+effect c11.objects.record_values($values,[],$env) => choose(eq(size($values),0),[],fail("too many C record initializers"));
+effect c11.objects.record_values($values,$fields,$env) when lt(0,size($fields)) => bind($type,c11.types.field_type(list.head($fields)),
+    list.prepend(choose(eq(size($values),0),c11.sema.zero($type),c11.objects.initializer_value(list.head($values),$type,$env)),
+        c11.objects.record_values(choose(eq(size($values),0),[],list.tail($values)),list.tail($fields),$env)));
+// Initializer extensions (nested braces, designated forms, string aggregates)
+// provide the value conversion hook.  The c11.initializers module owns the
+// fallback so its braced forms can be excluded from that fallback explicitly.
+// Keep an owner-side declaration so the relation is visible to modules that
+// import c11.objects before loading the extension layer.
+effect c11.objects.initializer_value($value,$type,$env) when eq(0,1)
+    => fail("initializer value extension is not loaded");
+effect c11.sema.zero(c11.types.Array($count,$element)) => base.Typed(c11.types.Array($count,$element),ZeroAggregate());
+effect c11.sema.zero(c11.types.Record($name,$fields)) => base.Typed(c11.types.Record($name,$fields),ZeroAggregate());
+effect c11.sema.zero(c11.types.Union($name,$fields)) => base.Typed(c11.types.Union($name,$fields),ZeroAggregate());
+effect c11.sema.zero(c11.types.FlexibleArray($element)) => base.Typed(c11.types.FlexibleArray($element),ZeroAggregate());
+effect base.lower(base.Typed($type,ZeroAggregate()),$env) => mlir.op("llvm.mlir.zero",[],[types.repr($type)],[],[]);
+effect[fallback] base.lower(base.Typed($type,Packed($values)),$env) => bind($initial,mlir.op("llvm.mlir.undef",[],[types.repr($type)],[],[]),
+    bind(Packing($result,$descriptor,$environment,$index),list.fold("c11.objects.pack",$values,Packing($initial,$type,$env,0)),$result));
+effect c11.objects.pack(Packing($aggregate,$type,$env,$index),$value)
+    => Packing(mlir.op("llvm.insertvalue",[$aggregate,base.lower($value,$env)],[types.repr($type)],
+        [RawAttr("position",concat("array<i64: ",concat(text($index),">")))],[]),$type,$env,add($index,1));
+
+effect c11.sema.object_read(c11.types.Array($count,$element),$reference) => base.Typed(c11.types.Pointer($element),ArrayDecay($reference));
+effect c11.sema.object_read(c11.types.FlexibleArray($element),$reference) => base.Typed(c11.types.Pointer($element),ArrayDecay($reference));
+effect c11.sema.object_read(c11.types.Qualified($type,$const,$volatile,$restrict),$reference)
+    => qualified_read($type,[$const,$volatile,$restrict],$reference);
+effect c11.sema.object_read(c11.types.AlignedType($type,$alignment),$reference) => c11.sema.object_read($type,$reference);
+effect qualified_read(c11.types.Array($count,$element),$qualifiers,$reference)
+    => base.Typed(c11.types.Pointer(c11.types.qualify($element,$qualifiers)),ArrayDecay($reference));
+effect qualified_read(c11.types.FlexibleArray($element),$qualifiers,$reference)
+    => base.Typed(c11.types.Pointer(c11.types.qualify($element,$qualifiers)),ArrayDecay($reference));
+effect[fallback] qualified_read($type,$qualifiers,$reference) => c11.sema.object_read($type,$reference);
+effect base.lower(base.Typed($type,ArrayDecay($reference)),$env) => c11.sema.reference_pointer($reference,$env);
+effect c11.sema.lvalue(c11.syntax.Subscript($array,$index),$env)
+    => bind($pointer,base.check($array,$env,base.Any()),bind($offset,base.check($index,$env,base.Any()),
+        c11.objects.subscript($pointer,$offset)));
+effect c11.objects.subscript(base.Typed(c11.types.Pointer($element),$pointer),base.Typed($index_type,$index))
+    => choose(c11.types.is_integer($index_type),c11.sema.IndirectReference($element,
+        base.Typed(c11.types.Pointer($element),Offset(base.Typed(c11.types.Pointer($element),$pointer),
+            c11.sema.convert(base.Typed($index_type,$index),c11.types.integer("long long"))))),fail("C subscript requires an integer index"));
+effect base.check(c11.syntax.Subscript($array,$index),$env,$expected)
+    => bind($reference,c11.sema.lvalue(c11.syntax.Subscript($array,$index),$env),
+        c11.sema.contextual(c11.sema.object_read(arg($reference,0),$reference),$expected));
+effect base.lower(base.Typed(c11.types.Pointer($element),Offset($pointer,$index)),$env)
+    => mlir.op("llvm.getelementptr",[base.lower($pointer,$env),base.lower($index,$env)],["!llvm.ptr"],
+        [RawAttr("elem_type",types.repr(arg(arg($pointer,0),0))),RawAttr("rawConstantIndices","array<i32: -2147483648>")],[]);
+// C pointer subtraction yields ptrdiff_t.  LLVM pointers are byte-addressed,
+// so subtract their integer addresses and divide by the complete element
+// size; the common char-pointer case is left as the raw byte delta.
+effect base.lower(base.Typed(c11.types.IntType(5,64,0),PointerDifference($left_type,$right_type,$left,$right)),$env)
+    => bind($left_value,mlir.op("llvm.ptrtoint",[base.lower(base.Typed(c11.types.Pointer($left_type),$left),$env)],["i64"],[],[]),
+        bind($right_value,mlir.op("llvm.ptrtoint",[base.lower(base.Typed(c11.types.Pointer($right_type),$right),$env)],["i64"],[],[]),
+            bind($delta,mlir.op("arith.subi",[$left_value,$right_value],["i64"],[],[]),
+                bind($element,c11.sema.complete_type($left_type,$env),
+                    bind($size,c11.types.bytes($element),choose(eq($size,1),$delta,
+                        mlir.op("arith.divsi",[$delta,mlir.op("arith.constant",[],["i64"],[Attr("value",$size,"i64")],[])],["i64"],[],[])))))));
+effect c11.sema.binary("add",base.Typed(c11.types.Pointer($element),$pointer),base.Typed($index_type,$index))
+    => choose(c11.types.is_integer($index_type),base.Typed(c11.types.Pointer($element),Offset(base.Typed(c11.types.Pointer($element),$pointer),
+        c11.sema.convert(base.Typed($index_type,$index),c11.types.integer("long long")))),fail("C pointer addition requires an integer offset"));
+effect c11.sema.binary("sub",base.Typed(c11.types.Pointer($element),$pointer),base.Typed($index_type,$index))
+    => choose(c11.types.is_integer($index_type),base.Typed(c11.types.Pointer($element),Offset(base.Typed(c11.types.Pointer($element),$pointer),
+        c11.sema.unary_promoted("-",c11.sema.convert(base.Typed($index_type,$index),c11.types.integer("long long"))))),
+        c11.sema.pointer_subtract($element,$pointer,$index_type,$index));
+effect c11.sema.pointer_subtract($left_type,$left, c11.types.Pointer($right_type),$right)
+    when and(not(eq(c11.types.unqualified($left_type),control.Void())),
+        and(not(eq(c11.types.unqualified($right_type),control.Void())),
+            c11.types.pointer_compatible(c11.types.unqualified($left_type),c11.types.unqualified($right_type))))
+    => base.Typed(c11.types.integer("long long"),PointerDifference($left_type,$right_type,$left,$right));
+effect[fallback] c11.sema.pointer_subtract($left_type,$left,$right_type,$right)
+    => fail("C pointer subtraction requires compatible pointers or an integer offset");
+effect c11.sema.lvalue(c11.syntax.Member($value,$field),$env)
+    => bind($reference,c11.sema.lvalue($value,$env),c11.objects.field_reference(c11.objects.complete_reference($reference,$env),$field));
+effect c11.objects.complete_reference(c11.sema.IndirectReference($type,$pointer),$env)
+    => c11.sema.IndirectReference(c11.sema.complete_type($type,$env),$pointer);
+effect[fallback] c11.objects.complete_reference($reference,$env) => $reference;
+effect c11.objects.field_reference($reference,$field) => bind([$offset,$type],one_field(field_paths(c11.types.unqualified(arg($reference,0)),$field),$field),
+    bind($qualified,c11.types.qualify($type,c11.types.qualifiers(arg($reference,0))),
+        c11.sema.IndirectReference($qualified,base.Typed(c11.types.Pointer($qualified),ByteAddress($reference,$offset)))));
+effect aggregate_layout(c11.types.Record($name,$fields)) => c11.types.record_layout($fields);
+effect aggregate_layout(c11.types.Union($name,$fields)) => c11.types.union_layout($fields);
+effect field_paths($type,$wanted) => bind(layout.Object($bytes,$alignment,$offsets),aggregate_layout($type),
+    bind(Search($name,$found,$remaining),list.fold("c11.objects.search_member",aggregate_fields($type),Search($wanted,[],list.cursor($offsets))),$found));
+effect search_member(Search($wanted,$found,$offsets),c11.types.Field($name,$type)) => bind($offset,list.cursor.head($offsets),
+    Search($wanted,list.concat($found,member_paths($name,$type,$wanted,$offset)),list.cursor.tail($offsets)));
+effect member_paths($wanted,$type,$wanted,$offset) => [[$offset,$type]];
+effect member_paths("",$type,$wanted,$offset) when not(eq($wanted,"")) => bind(PathShift($out,$base),
+    list.fold("c11.objects.shift_path",field_paths($type,$wanted),PathShift([],$offset)),list.reverse($out));
+effect[fallback] member_paths($name,$type,$wanted,$offset) => [];
+effect shift_path(PathShift($out,$base),[$offset,$type]) => PathShift(list.prepend([add($base,$offset),$type],$out),$base);
+effect one_field([[$offset,$type]],$name) => [$offset,$type];
+effect one_field([],$name) => fail(concat("unknown C aggregate member: ",$name));
+effect[fallback] one_field($paths,$name) => fail(concat("ambiguous C aggregate member: ",$name));
+effect c11.objects.field($wanted,[],$index) => fail(concat("unknown C record member: ",$wanted));
+effect c11.objects.field($wanted,$fields,$index) when lt(0,size($fields)) => bind(c11.types.Field($name,$type),list.head($fields),
+    choose(eq($name,$wanted),[$index,$type],c11.objects.field($wanted,list.tail($fields),add($index,1))));
+effect base.check(c11.syntax.Member($value,$field),$env,$expected)
+    => bind($reference,c11.sema.lvalue(c11.syntax.Member($value,$field),$env),
+        c11.sema.contextual(c11.sema.object_read(arg($reference,0),$reference),$expected));
+effect c11.sema.object_type(c11.syntax.Member($value,$field),$env) => arg(c11.sema.lvalue(c11.syntax.Member($value,$field),$env),0);
+effect c11.sema.object_type(c11.syntax.Subscript($value,$index),$env) => arg(c11.sema.lvalue(c11.syntax.Subscript($value,$index),$env),0);
+effect c11.sema.object_type(c11.syntax.Dereference($value),$env) => arg(c11.sema.lvalue(c11.syntax.Dereference($value),$env),0);
+effect base.lower(base.Typed($type,FieldAddress($reference,$index)),$env)
+    => mlir.op("llvm.getelementptr",[c11.sema.reference_pointer($reference,$env)],["!llvm.ptr"],
+        [RawAttr("elem_type",types.repr(arg($reference,0))),RawAttr("rawConstantIndices",concat("array<i32: 0, ",concat(text($index),">")))],[]);
+effect base.lower(base.Typed($type,ByteAddress($reference,0)),$env) => c11.sema.reference_pointer($reference,$env);
+effect base.lower(base.Typed($type,ByteAddress($reference,$offset)),$env) when not(eq($offset,0))
+    => mlir.op("llvm.getelementptr",[c11.sema.reference_pointer($reference,$env),base.lower(base.Typed(types.Signed(64),base.Integer($offset)),$env)],
+        ["!llvm.ptr"],[RawAttr("elem_type","i8"),RawAttr("rawConstantIndices","array<i32: -2147483648>")],[]);
+
+effect base.check(c11.syntax.Address(c11.syntax.Subscript($array,$index)),$env,$expected)
+    => bind($reference,c11.sema.lvalue(c11.syntax.Subscript($array,$index),$env),
+        c11.sema.contextual(base.Typed(c11.types.Pointer(arg($reference,0)),ReferenceAddress($reference)),$expected));
+effect base.check(c11.syntax.Address(c11.syntax.Member($value,$field)),$env,$expected)
+    => bind($reference,c11.sema.lvalue(c11.syntax.Member($value,$field),$env),
+        c11.sema.contextual(base.Typed(c11.types.Pointer(arg($reference,0)),ReferenceAddress($reference)),$expected));
+effect base.lower(base.Typed($type,ReferenceAddress($reference)),$env) => c11.sema.reference_pointer($reference,$env);
+
+effect c11.sema.constant_initializer(c11.syntax.Initializer($values),c11.types.Array($count,$element),$env)
+    => bind(ConstantContext($out,$scope),list.fold("c11.objects.constant_value",$values,ConstantContext([],$env)),
+        base.Typed(c11.types.Array($count,$element),Packed(c11.objects.constant_array(list.reverse($out),$count,c11.types.unqualified($element)))));
+effect c11.objects.constant_value(ConstantContext($out,$env),$value) => ConstantContext(list.prepend(c11.sema.initializer_constant($value,$env),$out),$env);

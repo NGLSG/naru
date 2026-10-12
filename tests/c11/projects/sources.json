@@ -1,0 +1,46 @@
+[
+  {
+    "name": "tinyexpr",
+    "repository": "https://github.com/codeplea/tinyexpr",
+    "commit": "7ab30db449a359e8af77fbb062ab2ec7ee686d62",
+    "files": [
+      {
+        "file": "tinyexpr.c",
+        "sha256": "ae8a179cf65f9ea1c6ce050b867f370f236a12b263677578ead802d143eab7ac",
+        "url": "https://raw.githubusercontent.com/codeplea/tinyexpr/7ab30db449a359e8af77fbb062ab2ec7ee686d62/tinyexpr.c"
+      },
+      {
+        "file": "tinyexpr.h",
+        "sha256": "6644032507c078167a7ec6e134b6f5bd2147f4d96d955923285dac8c6feb16d8",
+        "url": "https://raw.githubusercontent.com/codeplea/tinyexpr/7ab30db449a359e8af77fbb062ab2ec7ee686d62/tinyexpr.h"
+      },
+      {
+        "file": "LICENSE",
+        "sha256": "aceec33bbb71b99e691681f24fb92f61de7ac6240ca81075863c58ad76d882c9",
+        "url": "https://raw.githubusercontent.com/codeplea/tinyexpr/7ab30db449a359e8af77fbb062ab2ec7ee686d62/LICENSE"
+      }
+    ]
+  },
+  {
+    "name": "cjson",
+    "repository": "https://github.com/DaveGamble/cJSON",
+    "commit": "6d9f2443ab071f86e5d9b43025a40929ec41c46c",
+    "files": [
+      {
+        "file": "cJSON.c",
+        "sha256": "607e756460fa0de37d20a7a9181f2de29c97bfb7ce5a0e6c2f548243836cd852",
+        "url": "https://raw.githubusercontent.com/DaveGamble/cJSON/6d9f2443ab071f86e5d9b43025a40929ec41c46c/cJSON.c"
+      },
+      {
+        "file": "cJSON.h",
+        "sha256": "25b0145150d500498e4d209cec69c18c42cf818bffcc54690be3b895a2a16dee",
+        "url": "https://raw.githubusercontent.com/DaveGamble/cJSON/6d9f2443ab071f86e5d9b43025a40929ec41c46c/cJSON.h"
+      },
+      {
+        "file": "LICENSE",
+        "sha256": "a36dda207c36db5818729c54e7ad4e8b0c6fba847491ba64f372c1a2037b6d5c",
+        "url": "https://raw.githubusercontent.com/DaveGamble/cJSON/6d9f2443ab071f86e5d9b43025a40929ec41c46c/LICENSE"
+      }
+    ]
+  }
+]

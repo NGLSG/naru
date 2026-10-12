@@ -1,0 +1,34 @@
+mod storage_tests;
+use storage;
+
+syntax item `storage_test $case:int` => Test($case);
+effect emit(Test($case)) => mlir.op("llvm.func",[],[],
+    [Attr("sym_name","main"),RawAttr("function_type","!llvm.func<i32 ()>")],
+    [mlir.region(mlir.op("llvm.return",[check($case)],[],[],[]))]);
+effect scalar($bits) => storage.Scalar(storage.integer_type($bits),$bits,$bits,"integer");
+effect array($bits,$count) => storage.Aggregate(concat("!llvm.array<",concat(text($count),concat(" x i",concat(text($bits),">")))),
+    mul($bits,$count),parts($bits,$count,0));
+effect parts($bits,$count,$index) when eq($index,$count) => [];
+effect parts($bits,$count,$index) when lt($index,$count) => list.prepend([mul($bits,$index),$index,scalar($bits)],parts($bits,$count,add($index,1)));
+effect aggregate($shape,$values) => bind(Packing($result,$repr,$bits,$index),
+    list.fold("storage_tests.put",$values,Packing(mlir.op("llvm.mlir.zero",[],[storage.repr($shape)],[],[]),storage.repr($shape),
+        arg(arg(list.head(arg($shape,2)),2),1),0)),$result);
+effect put(Packing($value,$repr,$bits,$index),$number) => Packing(mlir.op("llvm.insertvalue",[$value,storage.integer($number,$bits)],[$repr],
+    [storage.position($index)],[]),$repr,$bits,add($index,1));
+effect expect($value,$bits,$expected) => mlir.op("llvm.select",[
+    mlir.op("llvm.icmp",[$value,storage.integer($expected,$bits)],["i1"],[Attr("predicate",0,"i64")],[]),
+    storage.integer(42,32),storage.integer(1,32)],["i32"],[],[]);
+effect check(0) => expect(storage.reinterpret(storage.integer(42,16),scalar(16),scalar(64)),64,42);
+effect check(1) => expect(storage.reinterpret(storage.integer(1234605615003729962,64),scalar(64),scalar(32)),32,42);
+effect check(2) => bind($shape,array(16,4),expect(storage.pack(storage.reinterpret(storage.integer(2814775537958922,64),scalar(64),$shape),$shape),64,2814775537958922));
+effect check(3) => bind($shape,array(8,4),expect(storage.reinterpret(aggregate($shape,[10,11,12,9]),$shape,scalar(32)),32,151784202));
+effect check(4) => bind($repr,"!llvm.struct<(i8, i32)>",bind($shape,storage.Aggregate($repr,64,[[0,0,scalar(8)],[32,1,scalar(32)]]),
+    bind($value,mlir.op("llvm.insertvalue",[mlir.op("llvm.insertvalue",[mlir.op("llvm.mlir.zero",[],[$repr],[],[]),storage.integer(2,8)],[$repr],[storage.position(0)],[]),
+        storage.integer(40,32)],[$repr],[storage.position(1)],[]),expect(storage.reinterpret($value,$shape,scalar(64)),64,171798691842))));
+effect check(5) => bind($source,array(32,3),bind($dest,array(32,2),expect(storage.pack(storage.reinterpret(aggregate($source,[20,22,100]),$source,$dest),$dest),64,94489280532)));
+effect check(6) => bind($dest,array(32,3),expect(storage.pack(storage.reinterpret(storage.integer(42,32),scalar(32),$dest),$dest),96,42));
+effect check(7) => storage.reinterpret(aggregate(array(8,2),[20,22]),storage.Aggregate("!llvm.array<2 x i8>",16,[[8,0,scalar(8)],[0,1,scalar(8)]]),scalar(16));
+effect check(8) => storage.reinterpret(aggregate(array(8,2),[20,22]),storage.Aggregate("!llvm.array<2 x i8>",16,[[0,0,scalar(8)],[4,1,scalar(8)]]),scalar(16));
+effect check(9) => storage.reinterpret(aggregate(array(8,2),[20,22]),storage.Aggregate("!llvm.array<2 x i8>",16,[[0,0,scalar(8)],[12,1,scalar(8)]]),scalar(16));
+effect check(10) => storage.reinterpret(storage.integer(42,32),scalar(32),storage.Aggregate("!llvm.array<1 x i32>",32,[[8,0,scalar(32)]]));
+effect check(11) => storage.reinterpret(storage.integer(42,32),scalar(32),storage.Aggregate("!llvm.array<1 x i32>",1048577,[[0,0,scalar(32)]]));

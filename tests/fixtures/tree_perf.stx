@@ -1,0 +1,19 @@
+mod tree_perf;
+use tree;
+
+effect range([$index,$count]) => choose(lt($index,$count),[1,[add($index,1),$count],[$index]],[0,[$index,$count],[]]);
+effect bump($node,$ignored) when eq(term.kind($node),2) => add($node,1);
+effect[fallback] bump($node,$ignored) => $node;
+effect sum($total,$value) => add($total,$value);
+effect wide($count) => bind($result,tree.rewrite(term("wide",list.unfold("tree_perf.range",[0,$count],1000000)),"tree_perf.bump",0),
+    [size($result),list.fold("tree_perf.sum",term.children($result),0)]);
+effect wrap($node,$ignored) => Nested($node);
+effect count($total,$node) => add($total,1);
+effect deep($count) => tree.fold(tree.rewrite(list.fold("tree_perf.wrap",list.unfold("tree_perf.range",[0,$count],1000000),Leaf()),
+    "tree_perf.bump",0),"tree_perf.count",0);
+// Each iteration replaces the entire scratch list. Only the final one escapes.
+effect scratch($count,$width) => bind([$done,$limit,$size,$values],
+    rule.iterate("tree_perf.scratch_step",[0,$count,$width,[]],1000000),[$done,size($values)]);
+effect scratch_step([$index,$count,$width,$old]) => choose(lt($index,$count),
+    [1,[add($index,1),$count,$width,list.unfold("tree_perf.range",[0,$width],1000000)]],
+    [0,[$index,$count,$width,$old]]);

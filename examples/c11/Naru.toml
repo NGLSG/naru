@@ -1,0 +1,31 @@
+[package]
+name = "c11-demo"
+version = "0.1.0"
+entry = "main.c"
+
+[dependencies]
+std = { path = "../../dialects", package = "naru-stdlib", version = "^0.2.0" }
+
+[language]
+dialects = ["std/c11"]
+frontend = "c11.frontend"
+entry = "c11.item"
+relation = "c11.emit_program"
+unit = "program"
+
+[frontend]
+include_paths = "."
+
+[backend]
+target = "exe"
+opt_level = 2
+
+[link]
+runtime = "crt-static"
+
+[build]
+output_dir = "target"
+
+[limits]
+rule_steps = 100000000
+parse_steps = 100000000

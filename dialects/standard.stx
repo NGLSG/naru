@@ -1,0 +1,45 @@
+mod standard;
+use base;
+use ownership;
+use resources;
+use loops;
+use unless;
+use shapes;
+use records;
+use generics;
+use traits;
+use variants;
+use patterns;
+use control;
+use affine;
+use arrays;
+use defer;
+use externc;
+use functions;
+use closures;
+use operators;
+
+// The aggregate also provides an explicit phase facade for mixed programs.
+// Loading packages is compositional; phase order remains a language decision.
+// Base functions are checked as one group so forward calls and recursion keep
+// base.analyze_program's whole-program environment.
+effect analyze($items)
+    => list.concat(base.analyze_program(base.prepare_module(standard.base_items($items))), standard.analyze_nonbase($items));
+effect analyze_nonbase([]) => [];
+effect analyze_nonbase($items) when lt(0, size($items))
+    => standard.analyze_nonbase_item(list.head($items), list.tail($items));
+effect analyze_nonbase_item(ownership.Program($body), $rest)
+    => list.prepend(ownership.analyze(ownership.Program($body)), standard.analyze_nonbase($rest));
+effect analyze_nonbase_item(resources.Program($steps), $rest)
+    => list.prepend(resources.analyze(resources.Program($steps)), standard.analyze_nonbase($rest));
+effect[fallback] analyze_nonbase_item($item, $rest) => standard.analyze_nonbase($rest);
+
+effect base_items([]) => [];
+effect base_items($items) when lt(0, size($items))
+    => standard.base_item(list.head($items), list.tail($items));
+effect base_item(ownership.Program($body), $rest) => standard.base_items($rest);
+effect base_item(resources.Program($steps), $rest) => standard.base_items($rest);
+effect[fallback] base_item($item, $rest) => list.prepend($item, standard.base_items($rest));
+
+effect emit_program($items)
+    => seq(standard.analyze_nonbase($items), base.emit_program(standard.base_items($items)));

@@ -1,0 +1,2 @@
+mod a;
+effect run(X()) => AResult();

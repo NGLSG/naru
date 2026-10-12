@@ -1,0 +1,3 @@
+mod quoted_use;
+"use" common;
+fn main() -> i32 { return 42; }

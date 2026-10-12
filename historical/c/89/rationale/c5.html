@@ -1,0 +1,530 @@
+<html><head>
+<title>3.5 Declarations</title>
+<link rel="made" rev="made" href="mailto:jutta@cs.tu-berlin.de">
+</head>
+<body>
+<a href="c4.html">3.4 Constant Expressions</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-5">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c6.html">3.6 Statements</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+<hr>
+<h1><a name="3-5">3.5</a>&#160;<tt> </tt><a name="declarations-3-5">Declarations</a></h1>
+
+<p>
+The Committee decided that empty declarations are invalid
+(except for a special case with <a name="tags-3-5">tags</a>, see <a href="#3-5-2-3">&#167;3.5.2.3</a>,
+and the case of <a name="enumerations-3-5">enumerations</a> such as
+<code>enum</code> <code>{zero,one};</code>,
+see <a href="#3-5-2-2">&#167;3.5.2.2</a>).&#160;<tt> </tt>
+While many seemingly silly constructs are tolerated
+in other parts of the language
+in the interest of facilitating the
+<a name="machine-generation-of-C-3-5">machine generation of C</a>,
+empty declarations were considered sufficiently easy to avoid.&#160;<tt> </tt>
+<p>
+The practice of placing the storage class specifier other than
+first in a declaration has been branded as <a name="obsolescent"><i>obsolescent</i></a>.&#160;<tt> </tt>
+(See <a href="c9.html#3-9-3">&#167;3.9.3</a>.)&#160;<tt> </tt>
+The Committee feels it desirable to rule out such constructs as
+<pre>        enum { aaa, aab,
+           /* etc */
+        zzy, zzz } typedef a2z;
+</pre>in some future standard.&#160;<tt> </tt>
+<p>
+<h2><a name="3-5-1">3.5.1</a>&#160;<tt> </tt>Storage-class specifiers</h2>
+<p>
+Because the address of a <a name="register-3-5-1"><code>register</code></a> variable cannot be taken,
+objects of storage class <code>register</code>
+effectively exist in a space distinct from other objects.&#160;<tt> </tt>
+(Functions occupy yet a third address space).&#160;<tt> </tt>
+This makes them candidates for optimal placement,
+the usual reason for declaring registers,
+but it also makes them candidates for more aggressive <a name="optimization-3-5-1">optimization</a>.&#160;<tt> </tt>
+<p>
+The practice of representing register variables as wider types
+(as when <code>register char</code> is quietly changed to <code>register int</code>)&#160;<tt> </tt>
+is no longer acceptable.&#160;<tt> </tt>
+<p>
+<h2><a name="3-5-2">3.5.2</a>&#160;<tt> </tt>Type specifiers</h2>
+
+<p>
+Several new type specifiers have been added:
+<a name="signed-3-5-2"><code>signed</code></a>,
+
+<a name="enum-3-5-2"><code>enum</code></a>,
+and
+<a name="void-3-5-2"><code>void</code></a>.&#160;<tt> </tt>
+<code>long float</code> has been retired and
+<a name="long-double-3-5-2"><code>long double</code></a> has been added,
+along with a plethora of integer types.&#160;<tt> </tt>
+The Committee's reasons for each of these additions, and the one deletion,
+are given in section <a href="c1.html#3-1-2-5">&#167;3.1.2.5</a> of this document.&#160;<tt> </tt>
+<p>
+<h2><a name="3-5-2-1">3.5.2.1</a>&#160;<tt> </tt>Structure and union specifiers</h2>
+<p>
+Three types of <a name="bit-fields-3-5-2-1">bit fields</a> are now defined:
+``plain'' <code>int</code> calls for
+<a name="implementation-defined"><i>implementation-defined</i></a> 
+signedness (as in the Base Document),
+<code>signed int</code> calls for assuredly signed fields,
+and
+<code>unsigned int</code> calls for unsigned fields.&#160;<tt> </tt>
+The old constraints on bit fields crossing
+<i>word</i> boundaries have been relaxed,
+since so many properties of bit fields are implementation
+dependent anyway.&#160;<tt> </tt>
+<p>
+The layout of <a name="structures-3-5-2-1">structures</a> is determined only to a limited extent:
+<ul><li>no hole may occur at the beginning;
+<li>members occupy increasing storage addresses;
+and
+<li>if necessary,
+	a hole is placed on the end to make the structure big enough
+	to pack tightly into arrays and maintain proper alignment.&#160;<tt> </tt>
+</ul>Since some existing implementations,
+in the interest of enhanced access time,
+leave internal holes larger than absolutely necessary,
+it is not clear that a portable
+deterministic method can be given for
+traversing a structure field by field.&#160;<tt> </tt>
+<p>
+To clarify what is meant by the notion that
+``all the fields of a union occupy the same storage,''&#160;<tt> </tt>
+the Standard specifies that a pointer to a union,
+when suitably cast, points to each member (or, in the case of
+a bit-field
+member, to the storage unit containing the bit field).&#160;<tt> </tt>
+<p>
+<h2><a name="3-5-2-2">3.5.2.2</a>&#160;<tt> </tt>Enumeration specifiers</h2>
+
+<p>
+<h2><a name="3-5-2-3">3.5.2.3</a>&#160;<tt> </tt>Tags</h2>
+
+<p>
+As with all block structured languages that also permit forward references,
+C has a problem with structure and union tags.&#160;<tt> </tt>
+If one wants to declare, within a block, two mutually referencing
+structures, one must write something like:
+<p>
+<pre>        struct x { struct y *p; /*...*/ };
+        struct y { struct x *q; /*...*/ };
+</pre>But if <code>struct</code> <code>y</code> is already defined in a containing block,
+the first field of <code>struct</code> <code>x</code>
+will refer to the older declaration.&#160;<tt> </tt>
+<p>
+Thus special semantics has been given to the form:
+<pre>        struct y;
+</pre>It now hides the outer declaration of <code>y</code>,
+and ``opens'' a new instance in the current block.&#160;<tt> </tt>
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>The empty declaration <code>struct</code> <code>x;</code> is no longer innocuous.&#160;<tt> </tt>
+</ul><h2><a name="3-5-3">3.5.3</a>&#160;<tt> </tt>Type qualifiers</h2>  
+<p>
+The Committee has added to C two <em> type qualifiers</em>:
+<code>const</code> and <code>volatile</code>.&#160;<tt> </tt>
+Individually and in combination they specify the assumptions a
+compiler can and must make when accessing an object through an lvalue.&#160;<tt> </tt>
+<p>
+The syntax and semantics of <code>const</code> were adapted from C++;
+the concept itself has appeared in other languages.&#160;<tt> </tt>
+<code>volatile</code> is an invention of the Committee;
+it follows the syntactic model of <code>const</code>.&#160;<tt> </tt>
+<p>
+Type qualifiers were introduced in part to provide greater control
+over optimization.&#160;<tt> </tt>
+Several important optimization techniques are based on the
+principle of ``cacheing'':
+under certain circumstances the compiler can remember the last value
+accessed (read or written) from a location,
+and use this retained value the next time that location is read.&#160;<tt> </tt>
+(The memory, or ``cache'', is typically a hardware register.)&#160;<tt> </tt>
+If this memory is a machine register, for instance,
+the code can be smaller and faster using the register rather than accessing
+external memory.&#160;<tt> </tt>
+<p>
+The basic qualifiers can be characterized by the restrictions
+they impose on access and cacheing:
+<dl>    <dt><code>const</code><dd>
+	No writes through this lvalue.&#160;<tt> </tt>
+	In the absence of this qualifier, writes may occur through this
+	lvalue.&#160;<tt> </tt>
+    <dt><code>volatile</code><dd>
+	No cacheing through this lvalue:
+	each operation in the abstract semantics must be performed.&#160;<tt> </tt>
+	(That is, no cacheing assumptions may be made, since the
+	location is not guaranteed to contain any previous value.)&#160;<tt> </tt>
+	In the absence of this qualifier, the contents of the
+	designated location may be assumed to be unchanged
+	(except for possible aliasing.)&#160;<tt> </tt>
+</dl><p>
+A translator design with no cacheing optimizations can effectively
+ignore the type qualifiers, except insofar as they affect assignment
+compatibility.&#160;<tt> </tt>
+<p>
+It would have been possible, of course,
+to specify a <code>nonconst</code> keyword instead of <code>const</code>,
+or <code>nonvolatile</code> instead of <code>volatile</code>.&#160;<tt> </tt>
+The senses of these concepts in the Standard were
+chosen to assure that
+the default, unqualified, case was the most common,
+and
+that it corresponded most clearly to traditional practice in the
+use of lvalue expressions.&#160;<tt> </tt>
+<p>
+
+Four combinations of the two qualifiers is possible;
+each defines a useful set of lvalue properties.&#160;<tt> </tt>
+The next several paragraphs describe typical uses of these qualifiers.&#160;<tt> </tt>
+<p>
+The translator may assume, for an unqualified lvalue,
+that it may read or write the referenced object,
+that the value of this object cannot be changed except by explicitly
+programmed actions in the current thread of control,
+but that other lvalue expressions could reference the same object.&#160;<tt> </tt>
+<p>
+<code>const</code> is specified in such a way that an implementation is at
+liberty to put <code>const</code> objects in read-only storage,
+and is encouraged to diagnose obvious attempts to modify them,
+but is not required to track down all
+the subtle ways that such checking can be subverted.&#160;<tt> </tt>
+If a function parameter is declared <code>const</code>,
+then the referenced object is not changed (through that lvalue)&#160;<tt> </tt>
+in the body of the function --- the parameter is read-only.&#160;<tt> </tt>
+<p>
+A static <code>volatile</code> object is an appropriate model for a
+memory-mapped I/O register.&#160;<tt> </tt>
+Implementors of C translators should take into account relevant hardware
+details on the target systems when implementing accesses to volatile
+objects.&#160;<tt> </tt>
+For instance, the hardware logic of a system may require that a
+two-byte memory-mapped register not be accessed with byte operations;
+a compiler for such a system would have to assure that no such
+instructions were generated, even if the source code only accesses one
+byte of the register.&#160;<tt> </tt>
+Whether read-modify-write instructions can be used on such device
+registers must also be considered.&#160;<tt> </tt>
+Whatever decisions are adopted on such issues must be documented,
+as volatile access is implementation-defined.&#160;<tt> </tt>
+A <code>volatile</code> object is an appropriate model for a variable shared
+among multiple processes.&#160;<tt> </tt>
+<p>
+A static <code>const</code> <code>volatile</code> object appropriately models
+a memory-mapped input port, such as a real-time clock.&#160;<tt> </tt>
+Similarly, a <code>const</code> <code>volatile</code> object models a variable which
+can be altered by another process but not by this one.&#160;<tt> </tt>
+<p>
+
+<p>
+
+Although the type qualifiers are formally
+treated as defining new types
+they actually serve as modifiers of declarators.&#160;<tt> </tt>
+Thus the declarations
+<pre>        const struct s {int a,b;} x;
+        struct s  y;
+</pre>declare <code>x</code> as a <code>const</code> object, but not <code>y</code>.&#160;<tt> </tt>
+The <code>const</code> property can be associated with the aggregate type
+by means of a type definition:
+<pre>        typedef const struct s {int a,b;} stype;
+        stype x;
+        stype y;
+</pre>In these declarations the <code>const</code> property is associated with the
+declarator <code>stype</code>, so <code>x</code> and <code>y</code> are both <code>const</code> objects.&#160;<tt> </tt>
+<p>
+The Committee considered
+making <code>const</code> and <code>volatile</code> storage classes,
+but this would have ruled out any number of desirable constructs,
+such as <code>const</code> members
+of structures and variable pointers to <code>const</code> types.&#160;<tt> </tt>
+<p>
+
+<p>
+A cast of a value to a qualified type has no effect;  the qualification
+(<code>volatile</code>, say) can have no effect on the access since it has occurred
+prior to the cast.  If it is necessary to access a non-volatile object
+using volatile semantics, the technique is to cast the address of the
+object to the appropriate pointer-to-qualified type, then dereference
+that pointer.&#160;<tt> </tt>
+<p>
+<p>
+<h2><a name="3-5-4">3.5.4</a>&#160;<tt> </tt>Declarators</h2>
+<p>
+The function prototype syntax was adapted from <a name="C-43-43-3-5-4">C++</a>.&#160;<tt> </tt>
+(See <a href="c3.html#3-3-2-2">&#167;3.3.2.2</a> and <a href="#3-5-4-3">&#167;3.5.4.3</a>)&#160;<tt> </tt>
+<p>
+Some current implementations have a limit of six
+<a name="type-modifier-3-5-4">type modifiers</a>
+(<i>function returning</i>,
+<i>array of</i>,
+<i>pointer to</i>),
+the limit used in Ritchie's original compiler.&#160;<tt> </tt>
+This limit has been raised to twelve since the original limit
+has proven insufficient in some cases;
+in particular, it did not allow for <a name="FORTRAN-3-5-4">FORTRAN</a>-to-C translation,
+since FORTRAN allows for seven subscripts.&#160;<tt> </tt>
+(Some users have reported using nine or ten levels, particularly
+in <a name="machine-generation-of-C-3-5-4">machine-generated C</a> code.)&#160;<tt> </tt>
+<p>
+<h2><a name="3-5-4-1">3.5.4.1</a>&#160;<tt> </tt>Pointer declarators</h2>
+<p>
+A pointer declarator may have its own type qualifiers,
+to specify the attributes of the pointer itself,
+as opposed to those of the reference type.&#160;<tt> </tt>
+The construct is adapted from <a name="C-43-43-3-5-4-1">C++</a>.&#160;<tt> </tt>
+<p>
+<code>const</code> <code>int</code> <code>*</code> means <i>(variable) pointer to constant </i><code>int</code>,
+and <code>int</code> <code>*</code> <code>const</code> means <i>constant pointer to (variable) </i><code>int</code>,
+just as in C++, from which these constructs were adopted.&#160;<tt> </tt>
+(And <i>mutatis mutandis</i> for the other type qualifiers.)&#160;<tt> </tt>
+As with other aspects of C type declarators,
+judicious use of <a name="typedef-3-5-4-1"><code>typedef</code></a> statements can clarify the code.&#160;<tt> </tt>
+<p>
+<h2><a name="3-5-4-2">3.5.4.2</a>&#160;<tt> </tt>Array declarators</h2>
+<p>
+The concept of <a name="composite-types"><i>composite types</i></a> (<a href="c1.html#3-1-2-6">&#167;3.1.2.6</a>)&#160;<tt> </tt>
+was introduced to provide for
+the accretion of information from incomplete declarations,
+such as array declarations with missing size,
+and function declarations with missing prototype (argument declarations).&#160;<tt> </tt>
+Type declarators are therefore said to specify <a name="compatible-types"><i>compatible types</i></a>
+if they agree except for the fact that
+one provides less information of this sort than the other.&#160;<tt> </tt>
+<p>
+The declaration of 0-length arrays is invalid, under the
+general principle of not providing for 0-length objects.&#160;<tt> </tt>
+The only common use of this construct has been in the declaration
+of dynamically allocated variable-size arrays, such as
+<pre>        struct segment {
+            short int	count;
+            char	c[N];
+        };
+</pre><pre>        struct segment * new_segment( const int length )
+        {
+            struct segment * result;
+            result = malloc( sizeof segment + (length-N) );
+            result-&gt;count = length;
+            return result;
+        }
+</pre>In such usage, <code>N</code> would be <code>0</code> and <code>(length-N)</code> would be written
+as <code>length</code>.  But this paradigm works just as well, as written,
+if <code>N</code> is <code>1</code>. <a name="offsetof-3-5-4-2">(Note,</a> by the by, an alternate way of
+specifying the size of <code>result</code>:
+<pre>            result = malloc( offsetof(struct segment,c) + length );
+</pre>This illustrates one of the uses of the <code>offsetof</code> macro.)&#160;<tt> </tt>
+<p>
+<p>
+<h2><a name="3-5-4-3">3.5.4.3</a>&#160;<tt> </tt>Function declarators (including prototypes)</h2>
+
+<p>
+The <a name="function-prototypes-3-5-4-3">function prototype</a>
+mechanism is one of the most useful additions to the C language.&#160;<tt> </tt>
+The feature, of course, has precedent in many of the Algol-derived
+languages of the past 25 years.&#160;<tt> </tt>
+The particular form adopted in the Standard is based in large
+part upon <a name="C-43-43-3-5-4-3">C++</a>.&#160;<tt> </tt>
+<p>
+Function prototypes provide a powerful
+translation-time error detection capability.&#160;<tt> </tt>
+In traditional C practice without prototypes,
+it is extremely difficult for the translator to
+detect errors (wrong number or type of arguments)&#160;<tt> </tt>
+in calls to functions declared in another source file.&#160;<tt> </tt>
+Detection of such errors has either occurred at runtime,
+or through the use of auxiliary software tools.&#160;<tt> </tt>
+<p>
+In function calls not in the scope of a function prototype,
+integral arguments have the
+<a name="integral-widening-conversions"><i>integral widening conversions</i></a> applied and
+<code>float</code> arguments are widened to <code>double</code>.&#160;<tt> </tt>
+It is thus impossible in such a call to pass an unconverted
+<code>char</code> or <code>float</code> argument.&#160;<tt> </tt>
+Function prototypes give the programmer
+explicit control over the function argument type conversions,
+so that the
+often inappropriate and sometimes inefficient default widening rules
+for arguments can be suppressed by the implementation.&#160;<tt> </tt>
+Modifications of function interfaces
+are easier in cases where the actual arguments
+are still assignment compatible with the new formal parameter type ---
+only the function definition and its prototype need to be rewritten
+in this case;
+no function calls need be rewritten.&#160;<tt> </tt>
+<p>
+Allowing an optional identifier to appear in a function prototype
+serves two purposes:
+<ul><li>the programmer can associate a meaningful name
+	with each argument position for documentation purposes,
+and
+<li>a function declarator and a function prototype can use the same syntax.&#160;<tt> </tt>
+	The consistent syntax makes it easier for new users of C
+	to learn the language.&#160;<tt> </tt>
+	Automatic generation of function prototype declarators
+	from function definitions is also facilitated.&#160;<tt> </tt>
+</ul>Optimizers can also take advantage of function prototype information.&#160;<tt> </tt>
+Consider this example:
+<pre>        extern int compare(const char * string1,
+                           const char * string2) ;
+        
+        void func2(int x)
+        {
+                char * str1, * str2 ;
+                    /* ... */
+                x = compare(str1, str2) ;
+                    /* ... */
+        }
+</pre>The optimizer knows that the pointers passed to
+<code>compare</code>
+are not used to assign
+new values to any objects that the pointers reference.&#160;<tt> </tt>
+Hence the optimizer can make less conservative assumptions about
+the side effects of
+<code>compare</code>
+than would otherwise be necessary.&#160;<tt> </tt>
+<p>
+The Standard requires that calls to functions taking a variable
+number of arguments must occur in the presence of a prototype
+(using the trailing ellipsis notation <code>,...</code>).&#160;<tt> </tt>
+An implementation may thus assume that all other functions are
+called with a fixed argument list,
+and may therefore use possibly more efficient calling sequences.&#160;<tt> </tt>
+Programs using old-style headers in which the number of arguments
+in the calls and the definition differ may not work in implementations
+which take advantage of such optimizations.&#160;<tt> </tt>
+This is not a Quiet Change, strictly speaking, since the program
+does not conform to the Standard.  A word of warning is in order,
+however, since the style is not uncommon in extant code, and since
+a conforming translator is not required to diagnose such mismatches
+when they occur in separate translation units.&#160;<tt> </tt>
+Such trouble spots can be made manifest
+(assuming an implementation provides reasonable diagnostics)&#160;<tt> </tt>
+by providing new-style
+function declarations in the translation units with
+the non-matching calls.  Programmers who currently rely on being
+able to omit trailing arguments are advised to recode using the
+<code>&lt;stdarg.h&gt;</code> paradigm.
+<p>
+Function prototypes may be used to define function types as
+well:
+<pre>        typedef  double (*d_binop) (double A, double B);
+
+        struct d_funct {
+            d_binop        f1;
+            int            (*f2)(double, double);
+        };
+</pre>The structure <code>d_funct</code> has two fields, both of which hold pointers
+to functions taking two double arguments;  the function types differ
+in their return type.
+<p>
+<!-- The section number was wrong, 3.5.4, in the original. -->
+<h2><a name="3-5-5">3.5.5</a>&#160;<tt> </tt>Type names</h2>
+<p>
+Empty parentheses within a type name are always taken as meaning
+<i>function with unspecified arguments</i>
+and never as (unnecessary)&#160;<tt> </tt>
+parentheses around the elided identifier.&#160;<tt> </tt>
+This specification avoids an ambiguity by fiat.&#160;<tt> </tt>
+<p>
+<h2><a name="3-5-6">3.5.6</a>&#160;<tt> </tt>Type definitions</h2>
+<p>
+A <a name="typedef-3-5-6"><code>typedef</code></a> may only be redeclared in an inner block with a declaration
+that explicitly contains a type name.&#160;<tt> </tt>
+This rule avoids the ambiguity about whether to take the
+<code>typedef</code> as the type name or the candidate for redeclaration.&#160;<tt> </tt>
+<p>
+Some implementations of C
+have allowed type specifiers to be added to a type defined using
+<code>typedef</code>.&#160;<tt> </tt>
+Thus
+<pre>        typedef short int small ;
+        unsigned small x ;
+</pre>would give <code>x</code> the type <code>unsigned short int</code>.&#160;<tt> </tt>
+The Committee decided that since this interpretation may be
+difficult to provide in many implementations,
+and since it defeats much of the utility of
+<code>typedef</code>
+as a data abstraction mechanism,
+such type modifications are invalid.&#160;<tt> </tt>
+This decision is incorporated in the rules of <a href="#3-5-2">&#167;3.5.2</a>.&#160;<tt> </tt>
+<p>
+A proposed <code>typeof</code>
+operator was rejected on the grounds of insufficient utility.&#160;<tt> </tt>
+<p>
+<h2><a name="3-5-7">3.5.7</a>&#160;<tt> </tt>Initialization</h2>
+<p>
+An implementation might conceivably have codes for
+floating zero and/or null pointer other than all bits zero.&#160;<tt> </tt>
+In such a case, the implementation must fill out an incomplete
+initializer with the various appropriate representations of zero;
+it may not just fill the area with zero bytes.&#160;<tt> </tt>
+<p>
+The Committee considered proposals
+for permitting automatic aggregate initializers
+to consist of a brace-enclosed
+series of arbitrary (execute-time) expressions, instead
+of just those usable for a translate-time static initializer.&#160;<tt> </tt>
+However, cases like this were troubling:
+<pre>        int x[2] = { f(x[1]), g(x[0]) };
+</pre>Rather than determine a set of rules which would avoid pathological
+cases and yet not seem too arbitrary,
+the Committee elected to permit only static initializers.&#160;<tt> </tt>
+Consequently, an implementation may choose to build a hidden static aggregate,
+using the same machinery as for other aggregate initializers, then
+copy that aggregate to the automatic variable upon block entry.&#160;<tt> </tt>
+<p>
+A structure expression,
+such as a call to a function returning the appropriate structure type,
+is permitted as an automatic structure initializer,
+since the usage seems unproblematic.&#160;<tt> </tt>
+<p>
+For programmer convenience,
+even though it is a minor irregularity in initializer semantics,
+the trailing null character
+in a string literal need not initialize an array element,
+as in:
+<pre>        char mesg[5] = &quot;help!&quot; ;
+</pre>(Some widely used implementations provide precedent.)&#160;<tt> </tt>
+<p>
+The Base Document allows
+a trailing comma in an initializer at the end of an initializer-list.&#160;<tt> </tt>
+The Standard has retained this syntax,
+since it provides flexibility in adding or deleting members from
+an initializer list,
+and simplifies <a name="machine-generation-of-C-3-5-7">machine generation</a>
+of such lists.&#160;<tt> </tt>
+<p>
+Various implementations have parsed aggregate initializers with
+partially elided braces differently.&#160;<tt> </tt>
+The Standard has reaffirmed the (top-down) parse described in the Base Document.&#160;<tt> </tt>
+Although the construct is allowed, and its parse well defined,
+the Committee urges programmers to avoid partially elided initializers:
+such initializations can be quite confusing to read.&#160;<tt> </tt>
+<p>
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>Code which relies on a bottom-up parse of aggregate initializers 
+with partially elided braces  will not yield the expected initialized object.&#160;<tt> </tt>
+</ul>
+The Committee has adopted the rule
+(already used successfully in some implementations)&#160;<tt> </tt>
+that the first member of the union is the candidate for initialization.&#160;<tt> </tt>
+Other notations for union initialization were considered,
+but none seemed of sufficient merit to outweigh the lack of prior art.&#160;<tt> </tt>
+<p>
+This rule has a parallel with the initialization of structures.&#160;<tt> </tt>
+Members of structures are initialized in the sequence in which they
+are declared.&#160;<tt> </tt>
+The same can now be said of unions, with the significant difference
+that only one union member (the first) can be initialized.&#160;<tt> </tt>
+<hr>
+<a href="c4.html">3.4 Constant Expressions</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-5">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c6.html">3.6 Statements</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+</body></html>

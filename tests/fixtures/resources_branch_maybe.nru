@@ -1,0 +1,5 @@
+check {
+    own value: i32;
+    if ready { move value; } else { touch value; };
+    touch value;
+}

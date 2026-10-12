@@ -1,0 +1,317 @@
+mod c11.scopes;
+use c11.syntax;
+use c11.declarators;
+use c11.types;
+use c11.layout;
+use c11.lex;
+use c11.sema;
+use base;
+use tree;
+
+// Grouping keeps original rows and coordinates. It is a rule-library parser
+// driver: selected fragments still use the ordinary contextual grammar.
+effect c11.scopes.parse($rows) => bind($nodes,c11.scopes.groups($rows),bind(FileState($context,$items),
+    list.fold("c11.scopes.file_part",c11.scopes.file_parts($nodes),FileState(env.empty(),[])),list.flatten(list.reverse($items))));
+effect c11.scopes.groups($rows) => bind($stack,list.fold("c11.scopes.group_row",$rows,[Frame([],[])]),
+    choose(eq(size($stack),1),list.reverse(arg(list.head($stack),1)),fail("unclosed C delimiter")));
+effect c11.scopes.group_row($stack,$row) => c11.scopes.group_spelling($stack,$row,c11.lex.spelling($row));
+effect c11.scopes.group_spelling($stack,$row,$raw) when or(eq($raw,"("),or(eq($raw,"["),eq($raw,"{")))
+    => list.prepend(Frame($row,[]),$stack);
+effect c11.scopes.group_spelling($stack,$row,$raw) when or(eq($raw,")"),or(eq($raw,"]"),eq($raw,"}")))
+    => choose(lt(1,size($stack)),bind(Frame($open,$children),list.head($stack),
+        choose(eq(c11.scopes.close_of(c11.lex.spelling($open)),$raw),c11.scopes.push_node(list.tail($stack),Group($open,list.reverse($children),$row)),
+            c11.lex.error($row,"mismatched C delimiter"))),c11.lex.error($row,"unexpected C closing delimiter"));
+effect[fallback] c11.scopes.group_spelling($stack,$row,$raw) => c11.scopes.push_node($stack,Token($row));
+effect c11.scopes.push_node($stack,$node) => bind(Frame($open,$children),list.head($stack),
+    list.prepend(Frame($open,list.prepend($node,$children)),list.tail($stack)));
+effect c11.scopes.close_of("(") => ")";
+effect c11.scopes.close_of("[") => "]";
+effect c11.scopes.close_of("{") => "}";
+effect c11.scopes.raw(Token($row)) => c11.lex.spelling($row);
+effect c11.scopes.raw(Group($open,$children,$close)) => c11.lex.spelling($open);
+effect c11.scopes.rows($nodes) => list.flatten(list.map("c11.scopes.node_rows",$nodes));
+effect c11.scopes.node_rows(Token($row)) => [$row];
+effect c11.scopes.node_rows(Group($open,$children,$close)) => list.concat([$open],list.concat(c11.scopes.rows($children),[$close]));
+effect c11.scopes.first_row(Token($row)) => $row;
+effect c11.scopes.first_row(Group($open,$children,$close)) => $open;
+effect c11.scopes.expression($nodes,$category,$context)
+    => bind($items,source.parse_tokens(c11.scopes.rows($nodes),$category,$context,"c11.scopes.identity_commit"),
+        choose(eq(size($items),1),list.head($items),fail("C fragment requires exactly one grammatical item")));
+effect c11.scopes.identity_commit($context,$item) => [$context,[$item]];
+syntax c11.statement `$name:ident` when env.contains(syntax.context(),StatementKey($name)) => env.get(syntax.context(),StatementKey($name));
+effect c11.scopes.synthetic($at,$name) => Token(c11.lex.made(1,$name,$at));
+
+// File items end at a top-level semicolon, function body, or MSVC pack item.
+effect c11.scopes.file_parts($nodes) => bind(Parts($out,$current),list.fold("c11.scopes.file_split",$nodes,Parts([],[])),
+    choose(eq(size($current),0),list.reverse($out),fail("unterminated C file declaration")));
+effect c11.scopes.file_split(Parts($out,$current),$node) => choose(eq(c11.scopes.raw($node),";"),
+    Parts(list.prepend(FileDeclaration(list.reverse(list.prepend($node,$current))),$out),[]),
+    choose(and(eq(c11.scopes.raw($node),"{"),c11.scopes.function_body_prefix($current)),
+        Parts(list.prepend(FileFunction(list.reverse($current),$node),$out),[]),
+        choose(and(eq(c11.scopes.raw($node),"("),c11.scopes.pack_prefix($current)),
+            Parts(list.prepend(FileDeclaration(list.reverse(list.prepend($node,$current))),$out),[]),
+            Parts($out,list.prepend($node,$current)))));
+effect c11.scopes.function_body_prefix([]) => 0;
+effect c11.scopes.function_body_prefix($current) when lt(0,size($current)) => and(eq(c11.scopes.raw(list.head($current)),"("),
+    not(list.fold("c11.scopes.has_assignment",$current,0)));
+effect c11.scopes.has_assignment($found,$node) => or($found,eq(c11.scopes.raw($node),"="));
+effect c11.scopes.pack_prefix([Token($row)]) => eq(c11.lex.spelling($row),"__pragma");
+effect[fallback] c11.scopes.pack_prefix($current) => 0;
+effect c11.scopes.file_part(FileState($context,$items),FileDeclaration($nodes))
+    => bind(Rewritten($rewritten,$scope),c11.scopes.parameter_groups($nodes,$context),
+        bind(CommittedItems($next,$chunk),rule.iterate("c11.scopes.parse_file_item",FileInput(c11.scopes.rows($rewritten),$scope,[]),1000000),
+            FileState($next,list.prepend($chunk,$items))));
+// A declaration fragment can contain an existing extension item. Returning
+// the committed scope is explicit rather than leaking parser-global state.
+effect c11.scopes.parse_file_item(FileInput($rows,$context,$out))
+    => bind($items,source.parse_tokens($rows,"c11.item",$context,"c11.scopes.capture_commit"),
+        bind(Capture($next,$chunks),list.head($items),[0,CommittedItems($next,list.flatten($chunks))]));
+effect c11.scopes.capture_commit($context,$item) => bind([$next,$items],c11.scopes.commit($context,$item),[$next,[Capture($next,[$items])]]);
+effect c11.scopes.commit($context,$item) => bind([$next,$items],c11.syntax.commit($context,$item),
+    [list.fold("c11.scopes.file_binding",$items,$next),$items]);
+effect c11.scopes.file_binding($context,c11.syntax.Global($name,$type,$value)) => c11.scopes.ordinary_file($context,$name);
+effect c11.scopes.file_binding($context,c11.syntax.ExternalGlobal($name,$type)) => c11.scopes.ordinary_file($context,$name);
+effect c11.scopes.file_binding($context,c11.syntax.Prototype($name,$params,$result,$variadic)) => c11.scopes.ordinary_file($context,$name);
+effect c11.scopes.file_binding($context,c11.syntax.Function($name,$params,$result,$body)) => c11.scopes.ordinary_file($context,$name);
+effect c11.scopes.file_binding($context,c11.syntax.VariadicFunction($name,$params,$result,$body)) => c11.scopes.ordinary_file($context,$name);
+effect c11.scopes.file_binding($context,c11.syntax.Internal($item)) => c11.scopes.file_binding($context,$item);
+effect c11.scopes.file_binding($context,c11.syntax.NoInline($item)) => c11.scopes.file_binding($context,$item);
+effect c11.scopes.file_binding($context,c11.syntax.HeaderInline($item)) => c11.scopes.file_binding($context,$item);
+effect[fallback] c11.scopes.file_binding($context,$item) => $context;
+effect c11.scopes.ordinary_file($context,$name) => choose(c11.syntax.typedef_visible($context,$name),
+    fail(concat("C ordinary identifier conflicts with typedef: ",$name)),env.put($context,$name,c11.syntax.OrdinaryName()));
+effect c11.scopes.file_part(FileState($context,$items),FileFunction($header,Group($open,$body,$close)))
+    => bind(Rewritten($head,$scope),c11.scopes.parameter_groups($header,$context),
+        bind($empty,c11.scopes.synthetic($open,text(symbol("scope.block"))),
+        bind($probe,c11.scopes.expression(list.concat($head,[$empty]),"c11.item",env.put($scope,BlockKey(c11.scopes.raw($empty)),base.End())),
+        bind($params,tree.fold($probe,"c11.scopes.function_parameters",[]),
+        bind($block,c11.scopes.block($body,list.fold("c11.scopes.parameter_binding",$params,$scope),c11.scopes.parameter_names($params)),
+        bind($item,c11.scopes.expression(list.concat($head,[$empty]),"c11.item",env.put($scope,BlockKey(c11.scopes.raw($empty)),$block)),
+        bind([$next,$chunk],c11.scopes.commit($scope,$item),FileState($next,list.prepend($chunk,$items)))))))));
+effect c11.scopes.function_parameters($previous,c11.syntax.Function($name,$params,$result,$body)) => $params;
+effect c11.scopes.function_parameters($previous,c11.syntax.VariadicFunction($name,$params,$result,$body)) => $params;
+effect[fallback] c11.scopes.function_parameters($previous,$node) => $previous;
+syntax c11.block `$name:ident` when env.contains(syntax.context(),BlockKey($name)) => env.get(syntax.context(),BlockKey($name));
+
+// Each parameter list has its own prototype scope. A declared parameter
+// hides a typedef for subsequent parameters but never leaks out of the list.
+syntax c11.parameters `$name:ident` when env.contains(syntax.context(),ParametersKey($name)) => env.get(syntax.context(),ParametersKey($name));
+effect c11.scopes.parameter_groups($nodes,$context) => bind(ParameterWalk($out,$scope,$previous,$initializer),
+    list.fold("c11.scopes.parameter_group",$nodes,ParameterWalk([],$context,NoPrevious(),0)),Rewritten(list.reverse($out),$scope));
+effect c11.scopes.parameter_group(ParameterWalk($out,$context,$previous,$initializer),Group($open,$children,$close))
+    => c11.scopes.parameter_group_kind($out,$context,$initializer,$open,$children,$close,
+        c11.scopes.group_kind($previous,$open,$children,$context,$initializer));
+// Annotation and expression groups are opaque only to this declarator walk.
+// Their complete original rows still reach the selected language grammar;
+// this neither accepts unknown annotations nor discards their arguments.
+effect c11.scopes.group_kind($previous,$open,$children,$context,$initializer)
+    => choose(or($initializer,not(eq(c11.lex.spelling($open),"("))),OpaqueGroup(),
+        choose(or(c11.scopes.annotation_prefix($previous),c11.scopes.expression_prefix($previous)),OpaqueGroup(),
+            choose(c11.scopes.parameter_prefix($previous,$children,$context),ParameterGroup(),DeclaratorGroup())));
+effect c11.scopes.annotation_prefix(Token($row)) => text.contains(" __declspec __attribute__ __attribute __pragma ",concat(" ",concat(c11.lex.spelling($row)," ")));
+effect[fallback] c11.scopes.annotation_prefix($previous) => 0;
+effect c11.scopes.expression_prefix(Token($row)) => text.contains(" sizeof _Alignas _Alignof _Generic _Static_assert _Atomic __alignof __alignof__ typeof __typeof __typeof__ ",concat(" ",concat(c11.lex.spelling($row)," ")));
+effect[fallback] c11.scopes.expression_prefix($previous) => 0;
+effect c11.scopes.parameter_group_kind($out,$context,$initializer,$open,$children,$close,OpaqueGroup())
+    => ParameterWalk(list.prepend(Group($open,$children,$close),$out),$context,Group($open,$children,$close),$initializer);
+effect c11.scopes.parameter_group_kind($out,$context,$initializer,$open,$children,$close,ParameterGroup())
+    => bind($params,c11.scopes.parameters($children,$context),bind($name,text(symbol("scope.parameters")),
+        ParameterWalk(list.prepend(Group($open,[c11.scopes.synthetic($open,$name)],$close),$out),env.put($context,ParametersKey($name),$params),Group($open,$children,$close),0)));
+effect c11.scopes.parameter_group_kind($out,$context,$initializer,$open,$children,$close,DeclaratorGroup())
+    => bind(Rewritten($nodes,$scope),c11.scopes.parameter_groups($children,$context),
+        ParameterWalk(list.prepend(Group($open,$nodes,$close),$out),$scope,Group($open,$children,$close),0));
+effect c11.scopes.parameter_group(ParameterWalk($out,$context,$previous,$initializer),Token($row))
+    => ParameterWalk(list.prepend(Token($row),$out),$context,Token($row),
+        choose(eq(c11.lex.spelling($row),"="),1,choose(eq(c11.lex.spelling($row),","),0,$initializer)));
+effect c11.scopes.parameter_prefix($previous,$children,$context) => and(c11.scopes.declarator_tail($previous,$context),
+    choose(eq(size($children),0),1,not(eq(c11.scopes.raw(list.head($children)),"*"))));
+effect c11.scopes.declarator_tail(Token($row),$context) => and(eq(c11.lex.kind($row),1),
+    and(not(c11.syntax.typedef_visible($context,c11.lex.spelling($row))),
+        not(or(c11.scopes.annotation_prefix(Token($row)),c11.scopes.expression_prefix(Token($row))))));
+effect c11.scopes.declarator_tail(Group($open,$children,$close),$context) => choose(and(eq(c11.lex.spelling($open),"("),lt(0,size($children))),
+    or(eq(c11.scopes.raw(list.head($children)),"*"),choose(eq(size($children),1),c11.scopes.declarator_tail(list.head($children),$context),0)),0);
+effect[fallback] c11.scopes.declarator_tail($node,$context) => 0;
+effect c11.scopes.parameters([],$context) => c11.declarators.Parameters([],0,0);
+effect c11.scopes.parameters($nodes,$context) when lt(0,size($nodes)) => bind(ParameterState($scope,$params,$seen,$variadic),
+    list.fold("c11.scopes.parameter",c11.scopes.comma_parts($nodes),ParameterState($context,[],env.empty(),0)),
+        choose($variadic,c11.declarators.Parameters(list.reverse($params),1,1),c11.declarators.parameters(list.reverse($params))));
+effect c11.scopes.parameter(ParameterState($context,$params,$seen,0),[Token($row)]) when eq(c11.lex.spelling($row),"...")
+    => choose(lt(0,size($params)),ParameterState($context,$params,$seen,1),fail("C variadic prototype requires a named parameter"));
+effect c11.scopes.parameter(ParameterState($context,$params,$seen,0),$nodes) when not(and(eq(size($nodes),1),eq(c11.scopes.raw(list.head($nodes)),"...")))
+    => bind(Rewritten($parts,$scope),c11.scopes.parameter_groups($nodes,$context),bind($param,c11.scopes.expression($parts,"c11.param",$scope),
+        ParameterState(c11.scopes.parameter_binding($scope,$param),list.prepend($param,$params),c11.scopes.add_parameter_name($seen,$param),0)));
+effect c11.scopes.parameter(ParameterState($context,$params,$seen,1),$nodes) => fail("C ellipsis must be the last parameter");
+effect c11.scopes.parameter_binding($context,base.Param("",$type)) => $context;
+effect c11.scopes.parameter_binding($context,base.Param($name,$type)) when not(eq($name,"")) => env.put($context,$name,c11.syntax.OrdinaryName());
+effect c11.scopes.parameter_names($params) => list.fold("c11.scopes.add_parameter_name",$params,env.empty());
+effect c11.scopes.add_parameter_name($seen,base.Param("",$type)) => $seen;
+effect c11.scopes.add_parameter_name($seen,base.Param($name,$type)) when not(eq($name,""))
+    => choose(env.contains($seen,$name),fail(concat("duplicate C parameter: ",$name)),env.put($seen,$name,OrdinaryDeclaration()));
+effect c11.scopes.comma_parts($nodes) => bind(Parts($out,$current),list.fold("c11.scopes.comma_split",$nodes,Parts([],[])),
+    list.reverse(list.prepend(list.reverse($current),$out)));
+effect c11.scopes.comma_split(Parts($out,$current),$node) => choose(eq(c11.scopes.raw($node),","),
+    Parts(list.prepend(list.reverse($current),$out),[]),Parts($out,list.prepend($node,$current)));
+
+// Statements are segmented structurally, then parsed by the existing rules.
+// The continuation of a declaration receives its new immutable scope.
+effect c11.scopes.block($nodes,$context,$seen) => bind(BlockState($rest,$scope,$names,$out),
+    rule.iterate("c11.scopes.block_step",BlockState($nodes,$context,$seen,[]),1000000),
+        list.fold("c11.scopes.chain",$out,base.End()));
+effect c11.scopes.chain($tail,$head) => c11.syntax.append($head,$tail);
+effect c11.scopes.block_step(BlockState([],$context,$seen,$out)) => [0,BlockState([],$context,$seen,$out)];
+effect c11.scopes.block_step(BlockState($nodes,$context,$seen,$out)) when lt(0,size($nodes))
+    => bind([$statement,$rest],c11.scopes.take_statement($nodes),
+        bind(LocalResult($value,$scope,$names),c11.scopes.local_item($statement,$context,$seen),
+            [1,BlockState($rest,$scope,$names,list.prepend($value,$out))]));
+effect c11.scopes.take_statement($nodes) => c11.scopes.take_statement_kind($nodes,c11.scopes.raw(list.head($nodes)));
+effect c11.scopes.take_statement_kind($nodes,"{") => [[list.head($nodes)],list.tail($nodes)];
+effect c11.scopes.take_statement_kind($nodes,$word) when or(eq($word,"if"),or(eq($word,"while"),or(eq($word,"for"),eq($word,"switch"))))
+    => choose(and(lt(1,size($nodes)),eq(c11.scopes.raw(list.head(list.tail($nodes))),"(")),
+        bind([$body,$rest],c11.scopes.take_statement(list.tail(list.tail($nodes))),
+            c11.scopes.conditional_tail($word,list.concat([list.head($nodes),list.head(list.tail($nodes))],$body),$rest)),
+        fail("C control statement requires a parenthesized header"));
+effect c11.scopes.conditional_tail("if",$prefix,$rest) => choose(choose(eq(size($rest),0),0,eq(c11.scopes.raw(list.head($rest)),"else")),
+    bind([$body,$tail],c11.scopes.take_statement(list.tail($rest)),[list.concat($prefix,list.concat([list.head($rest)],$body)),$tail]),[$prefix,$rest]);
+effect[fallback] c11.scopes.conditional_tail($word,$prefix,$rest) => [$prefix,$rest];
+effect c11.scopes.take_statement_kind($nodes,"do") => bind([$body,$rest],c11.scopes.take_statement(list.tail($nodes)),
+    bind([$test,$tail],c11.scopes.take_simple($rest),[list.concat([list.head($nodes)],list.concat($body,$test)),$tail]));
+effect[fallback] c11.scopes.take_statement_kind($nodes,$word) => choose(c11.scopes.labeled_prefix($nodes),
+    bind([$prefix,$tail],c11.scopes.label_prefix($nodes),bind([$body,$rest],c11.scopes.take_statement($tail),[list.concat($prefix,$body),$rest])),c11.scopes.take_simple($nodes));
+effect c11.scopes.labeled_prefix($nodes) => or(or(eq(c11.scopes.raw(list.head($nodes)),"case"),eq(c11.scopes.raw(list.head($nodes)),"default")),
+    choose(lt(1,size($nodes)),eq(c11.scopes.raw(list.head(list.tail($nodes))),":"),0));
+effect c11.scopes.label_prefix($nodes) => bind(LabelTaking($rest,$out,$ternary,$done),
+    rule.iterate("c11.scopes.label_step",LabelTaking($nodes,[],0,0),1000000),
+        choose($done,[list.reverse($out),$rest],fail("C label requires a colon")));
+effect c11.scopes.label_step(LabelTaking([],$out,$ternary,$done)) => [0,LabelTaking([],$out,$ternary,$done)];
+effect c11.scopes.label_step(LabelTaking($nodes,$out,$ternary,$done)) when lt(0,size($nodes))
+    => bind($node,list.head($nodes),choose(and(eq(c11.scopes.raw($node),":"),eq($ternary,0)),
+        [0,LabelTaking(list.tail($nodes),list.prepend($node,$out),0,1)],
+        [1,LabelTaking(list.tail($nodes),list.prepend($node,$out),
+            choose(eq(c11.scopes.raw($node),"?"),add($ternary,1),choose(eq(c11.scopes.raw($node),":"),sub($ternary,1),$ternary)),0)]));
+effect c11.scopes.take_simple($nodes) => bind(Taking($rest,$out,$done),rule.iterate("c11.scopes.take_step",Taking($nodes,[],0),1000000),
+    choose($done,[list.reverse($out),$rest],fail("unterminated C statement")));
+effect c11.scopes.take_step(Taking([],$out,$done)) => [0,Taking([],$out,$done)];
+effect c11.scopes.take_step(Taking($nodes,$out,$done)) when lt(0,size($nodes))
+    => bind($node,list.head($nodes),choose(eq(c11.scopes.raw($node),";"),[0,Taking(list.tail($nodes),list.prepend($node,$out),1)],
+        [1,Taking(list.tail($nodes),list.prepend($node,$out),0)]));
+effect c11.scopes.local_item([Group($open,$nodes,$close)],$context,$seen)
+    => LocalResult(c11.syntax.Scope(c11.scopes.block($nodes,$context,env.empty()),base.End()),$context,$seen);
+effect[fallback] c11.scopes.local_item($nodes,$context,$seen)
+    => choose(c11.scopes.declaration_start(c11.scopes.raw(list.head($nodes)),$context),c11.scopes.local_declaration($nodes,$context,$seen),
+        LocalResult(c11.scopes.statement($nodes,$context),$context,$seen));
+effect c11.scopes.declaration_start($word,$context) => or(c11.syntax.typedef_visible($context,$word),
+    text.contains(" typedef extern static const volatile void _Bool char short int long float double signed unsigned struct union enum _Alignas __int8 __int16 __int32 __int64 ",concat(" ",concat($word," "))));
+effect c11.scopes.nested_blocks($nodes,$context) => bind(Rewritten($out,$scope),
+    list.fold("c11.scopes.nested_block",$nodes,Rewritten([],$context)),Rewritten(list.reverse($out),$scope));
+effect c11.scopes.nested_block(Rewritten($out,$context),Group($open,$nodes,$close)) when eq(c11.lex.spelling($open),"{")
+    => bind($name,text(symbol("scope.block")),Rewritten(list.prepend(c11.scopes.synthetic($open,$name),$out),
+        env.put($context,BlockKey($name),c11.scopes.block($nodes,$context,env.empty()))));
+effect[fallback] c11.scopes.nested_block(Rewritten($out,$context),$node) => Rewritten(list.prepend($node,$out),$context);
+
+effect c11.scopes.statement([Group($open,$nodes,$close)],$context) when eq(c11.lex.spelling($open),"{")
+    => c11.syntax.Scope(c11.scopes.block($nodes,$context,env.empty()),base.End());
+effect[fallback] c11.scopes.statement($nodes,$context) => c11.scopes.statement_kind($nodes,$context,c11.scopes.raw(list.head($nodes)));
+effect c11.scopes.statement_kind($nodes,$context,"for")
+    => bind(Group($open,$header,$close),list.head(list.tail($nodes)),
+        bind($clauses,c11.scopes.semicolon_parts($header),choose(eq(size($clauses),3),
+            bind(LocalResult($init,$scope,$names),c11.scopes.for_initializer(arg($clauses,0),$context),
+                c11.syntax.For($init,c11.scopes.for_condition(arg($clauses,1),$scope),c11.scopes.for_step(arg($clauses,2),$scope),
+                    c11.scopes.statement(list.tail(list.tail($nodes)),$scope),base.End())),fail("C for requires three clauses"))));
+effect c11.scopes.for_initializer([Token($row)],$context) when eq(c11.lex.spelling($row),";") => LocalResult(base.End(),$context,env.empty());
+effect[fallback] c11.scopes.for_initializer($nodes,$context) => choose(c11.scopes.declaration_start(c11.scopes.raw(list.head($nodes)),$context),
+    c11.scopes.local_declaration_mode($nodes,$context,env.empty(),1),LocalResult(c11.scopes.expression($nodes,"c11.for_init",$context),$context,env.empty()));
+effect c11.scopes.for_condition([Token($row)],$context) when eq(c11.lex.spelling($row),";") => c11.syntax.Literal("1");
+effect[fallback] c11.scopes.for_condition($nodes,$context) => c11.scopes.expression(list.reverse(list.tail(list.reverse($nodes))),"c11.sequence",$context);
+effect c11.scopes.for_step([],$context) => c11.syntax.Literal("0");
+effect c11.scopes.for_step($nodes,$context) when lt(0,size($nodes)) => c11.scopes.expression($nodes,"c11.sequence",$context);
+effect c11.scopes.semicolon_parts($nodes) => bind(Parts($out,$current),list.fold("c11.scopes.semicolon_split",$nodes,Parts([],[])),
+    list.reverse(list.prepend(list.reverse($current),$out)));
+effect c11.scopes.semicolon_split(Parts($out,$current),$node) => choose(eq(c11.scopes.raw($node),";"),
+    Parts(list.prepend(list.reverse(list.prepend($node,$current)),$out),[]),Parts($out,list.prepend($node,$current)));
+effect c11.scopes.statement_kind($nodes,$context,$word) when or(eq($word,"if"),or(eq($word,"while"),eq($word,"switch")))
+    => bind([$body,$rest],c11.scopes.take_statement(list.tail(list.tail($nodes))),
+        bind([$placeholder,$scope],c11.scopes.statement_placeholder($body,$context),
+            c11.scopes.control_statement($word,[list.head($nodes),list.head(list.tail($nodes)),$placeholder],$rest,$scope)));
+effect c11.scopes.control_statement("if",$prefix,$rest,$context) => choose(eq(size($rest),0),c11.scopes.expression($prefix,"c11.statement",$context),
+    bind([$placeholder,$scope],c11.scopes.statement_placeholder(list.tail($rest),$context),
+        c11.scopes.expression(list.concat($prefix,[list.head($rest),$placeholder]),"c11.statement",$scope)));
+effect[fallback] c11.scopes.control_statement($word,$prefix,$rest,$context) => choose(eq(size($rest),0),c11.scopes.expression($prefix,"c11.statement",$context),fail("unexpected C control statement suffix"));
+effect c11.scopes.statement_kind($nodes,$context,"do") => bind([$body,$rest],c11.scopes.take_statement(list.tail($nodes)),
+    bind([$placeholder,$scope],c11.scopes.statement_placeholder($body,$context),c11.scopes.expression(list.concat([list.head($nodes),$placeholder],$rest),"c11.statement",$scope)));
+effect[fallback] c11.scopes.statement_kind($nodes,$context,$word) => choose(c11.scopes.labeled_prefix($nodes),
+    bind([$prefix,$body],c11.scopes.label_prefix($nodes),bind([$placeholder,$scope],c11.scopes.statement_placeholder($body,$context),
+        c11.scopes.expression(list.concat($prefix,[$placeholder]),"c11.statement",$scope))),c11.scopes.expression($nodes,"c11.statement",$context));
+effect c11.scopes.statement_placeholder($nodes,$context) => bind($name,text(symbol("scope.statement")),
+    [c11.scopes.synthetic(c11.scopes.first_row(list.head($nodes)),$name),env.put($context,StatementKey($name),c11.scopes.statement($nodes,$context))]);
+
+syntax c11.scope_header `$spec:c11.specifiers $decl:c11.declarator` => c11.scopes.resolved_header($spec,$decl);
+// Preserve the complete declaration policy in Header and LocalDeclarations.
+// A dialect can compose specifier wrappers through these three relations.
+// Object annotations run after each declarator has composed pointer/array
+// binding, so _Alignas belongs to the object and not its element/pointee.
+effect c11.scopes.resolved_header($spec,$decl)
+    => Header($spec,c11.declarators.resolve($decl,c11.scopes.declaration_base($spec)));
+effect c11.scopes.declaration_base(c11.syntax.Specifiers($base,$storage,$inline)) => c11.syntax.record_base($base);
+effect c11.scopes.declaration_base(c11.layout.AlignedSpec($spec,$alignment)) => c11.scopes.declaration_base($spec);
+effect c11.scopes.declaration_storage(c11.syntax.Specifiers($base,$storage,$inline)) => $storage;
+effect c11.scopes.declaration_storage(c11.layout.AlignedSpec($spec,$alignment)) => c11.scopes.declaration_storage($spec);
+effect c11.scopes.declaration_type($resolved,c11.syntax.Specifiers($base,$storage,$inline)) => $resolved;
+effect c11.scopes.declaration_type($resolved,c11.layout.AlignedSpec($spec,$alignment))
+    => bind(c11.declarators.Resolved($name,$type),c11.scopes.declaration_type($resolved,$spec),
+        bind($valid,c11.scopes.alignment_subject($type,c11.scopes.declaration_storage($spec)),
+            c11.declarators.Resolved($name,c11.layout.align_type($type,$alignment))));
+effect c11.scopes.alignment_subject($type,"typedef") => fail("C alignment specifier cannot apply to a typedef");
+effect c11.scopes.alignment_subject($type,"register") => fail("C alignment specifier cannot apply to a register object");
+effect c11.scopes.alignment_subject($type,$storage) when not(or(eq($storage,"typedef"),eq($storage,"register"))) => c11.scopes.aligned_object($type);
+effect c11.scopes.aligned_object(c11.types.FunctionType($result,$params,$variadic,$prototype)) => fail("C alignment specifier cannot apply to a function declaration");
+effect c11.scopes.aligned_object(c11.types.AlignedType($type,$alignment)) => c11.scopes.aligned_object($type);
+effect[fallback] c11.scopes.aligned_object($type) => 1;
+syntax c11.scope_declarator `$decl:c11.declarator` => c11.declarators.resolve($decl,env.get(syntax.context(),DeclaratorBaseKey()));
+effect c11.scopes.local_declaration($nodes,$context,$seen)
+    => c11.scopes.local_declaration_mode($nodes,$context,$seen,0);
+effect c11.scopes.local_declaration_mode($nodes,$context,$seen,$for)
+    => bind($parts,c11.scopes.comma_parts(list.reverse(list.tail(list.reverse($nodes)))),
+        bind([$header,$initializer],c11.scopes.split_initializer(list.head($parts)),
+        bind(Rewritten($rewritten,$parse_scope),c11.scopes.parameter_groups($header,$context),
+        bind(Header($spec,$decl),c11.scopes.expression($rewritten,"c11.scope_header",$parse_scope),
+        bind(LocalDeclarations($scope,$names,$base,$storage,$out,$mode),
+            c11.scopes.declare_local($decl,$initializer,$spec,$parse_scope,$seen,[],$for),
+        bind(LocalDeclarations($next,$final_seen,$type,$class,$values,$final_mode),
+            list.fold("c11.scopes.other_local",list.tail($parts),LocalDeclarations($scope,$names,$base,$storage,$out,$mode)),
+            LocalResult(list.fold("c11.scopes.chain",$values,base.End()),$next,$final_seen)))))));
+effect c11.scopes.split_initializer($nodes) => bind(InitialSplit($before,$after,$found),list.fold("c11.scopes.initial_split",$nodes,InitialSplit([],[],0)),
+    [list.reverse($before),choose($found,list.reverse($after),[]) ]);
+effect c11.scopes.initial_split(InitialSplit($before,$after,0),$node) => choose(eq(c11.scopes.raw($node),"="),InitialSplit($before,$after,1),InitialSplit(list.prepend($node,$before),$after,0));
+effect c11.scopes.initial_split(InitialSplit($before,$after,1),$node) => InitialSplit($before,list.prepend($node,$after),1);
+effect c11.scopes.declare_local($resolved,$initializer,$spec,$context,$seen,$out,$for)
+    => c11.scopes.local_resolved(c11.scopes.declaration_type($resolved,$spec),$initializer,$spec,
+        c11.scopes.declaration_storage($spec),$context,$seen,$out,$for);
+effect c11.scopes.other_local(LocalDeclarations($context,$seen,$spec,$storage,$out,$for),$nodes)
+    => bind([$header,$initializer],c11.scopes.split_initializer($nodes),bind(Rewritten($rewritten,$scope),c11.scopes.parameter_groups($header,$context),
+        c11.scopes.declare_local(c11.scopes.expression($rewritten,"c11.scope_declarator",env.put($scope,DeclaratorBaseKey(),c11.scopes.declaration_base($spec))),
+        $initializer,$spec,$scope,$seen,$out,$for)));
+effect c11.scopes.local_resolved(c11.declarators.Resolved($name,$type),$initializer,$base,"typedef",$context,$seen,$out,$for)
+    => choose($for,fail("C for initializer declaration requires automatic objects"),
+        choose(eq(size($initializer),0),bind($names,c11.scopes.typedef_local($seen,$name,$type),
+        LocalDeclarations(env.put($context,$name,$type),$names,$base,"typedef",list.prepend(LocalTypedef($name,$type,base.End()),$out),$for)),
+        fail("C typedef cannot have an initializer")));
+effect c11.scopes.local_resolved(c11.declarators.Resolved($name,$type),$initializer,$base,$storage,$context,$seen,$out,$for) when not(eq($storage,"typedef"))
+    => bind($valid,c11.scopes.for_declaration_constraints($storage,$type,$for),
+        choose(env.contains($seen,$name),fail(concat("duplicate C local declaration: ",$name)),
+        bind($scope,env.put($context,$name,c11.syntax.OrdinaryName()),
+            bind($value,choose(eq(size($initializer),0),c11.syntax.Uninitialized(),c11.scopes.expression($initializer,"c11.initializer",$scope)),
+                LocalDeclarations($scope,env.put($seen,$name,OrdinaryDeclaration()),$base,$storage,
+                    list.prepend(c11.syntax.local_declaration($name,c11.syntax.initialized_type($type,$value),$value,$storage,base.End()),$out),$for)))));
+effect c11.scopes.for_declaration_constraints($storage,$type,0) => 1;
+effect c11.scopes.for_declaration_constraints($storage,$type,1) => choose(eq($storage,"none"),c11.scopes.for_object($type),
+    fail("C for initializer declaration requires automatic objects"));
+effect c11.scopes.for_object(c11.types.FunctionType($result,$params,$variadic,$prototype)) => fail("C for initializer cannot declare a function");
+effect c11.scopes.for_object(c11.types.AlignedType($type,$alignment)) => c11.scopes.for_object($type);
+effect[fallback] c11.scopes.for_object($type) => 1;
+effect c11.scopes.typedef_local($seen,$name,$type) => choose(env.contains($seen,$name),
+    choose(eq(env.get($seen,$name),TypedefDeclaration($type)),$seen,fail(concat("incompatible C local typedef declaration: ",$name))),
+    env.put($seen,$name,TypedefDeclaration($type)));
+effect c11.syntax.append(LocalTypedef($name,$type,$rest),$next) => LocalTypedef($name,$type,c11.syntax.append($rest,$next));
+effect base.check_body(LocalTypedef($name,$type,$next),$env,$result) => base.check_body($next,env.put($env,$name,TypeNameBinding($type)),$result);
+effect c11.sema.named_read(TypeNameBinding($type),$name) => fail(concat("C typedef name is not an expression: ",$name));
+effect c11.sema.for_continues(LocalTypedef($name,$type,$next),$step) => LocalTypedef($name,$type,c11.sema.for_continues($next,$step));

@@ -1,0 +1,9 @@
+{
+  "passed": 155,
+  "total": 155,
+  "failures": [],
+  "dynamic_aot_types": false,
+  "dynamic_aot_rules": false,
+  "dynamic_aot_resources": false,
+  "dynamic_aot_custom_types": false
+}

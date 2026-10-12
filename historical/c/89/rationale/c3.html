@@ -1,0 +1,751 @@
+<html><head>
+<title>3.3 Expressions</title>
+<link rel="made" rev="made" href="mailto:jutta@cs.tu-berlin.de">
+</head>
+<body>
+<a href="c2.html">3.2 Conversions</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-3">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c4.html">3.4 Constant Expressions</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+<hr>
+<h1><a name="3-3">3.3</a>&#160;<tt> </tt><a name="expressions-3-3">Expressions</a></h1>
+
+<p>
+Several closely-related topics are involved in
+the precise specification of expression evaluation:
+<i>precedence</i>,
+<i>associativity</i>,
+<i>grouping</i>,
+<a name="sequence-points"><i>sequence points</i></a>,
+<a name="agreement-points"><i>agreement points</i></a>,
+<a name="order-of-evaluation"><i>order of evaluation</i></a>,
+and
+<a name="interleaving"><i>interleaving</i></a>.&#160;<tt> </tt>
+The latter three terms are discussed in <a href="b.html#2-1-2-3">&#167;2.1.2.3</a>.&#160;<tt> </tt>
+<p>
+The rules of
+<a name="precedence"><i>precedence</i></a>
+are encoded into the
+syntactic rules for each operator.&#160;<tt> </tt>
+For example, the syntax for
+<i>additive-expression</i>
+includes the rule
+<ul>    <i>additive-expression </i><code>+</code><i> multiplicative-expression</i>
+</ul>which implies that
+<code>a+b*c</code>
+parses as
+<code>a+(b*c)</code>.&#160;<tt> </tt>
+The rules of
+<a name="associativity"><i>associativity</i></a>
+are similarly encoded into the syntactic rules.&#160;<tt> </tt>
+For example, the syntax for
+<i>assignment-expression</i>
+includes the rule
+<ul>    <i>unary-expression assignment-operator assignment-expression</i>
+</ul>which implies that
+<code>a=b=c</code>
+parses as
+<code>a=(b=c)</code>.&#160;<tt> </tt>
+<p>
+With rules of precedence and associativity thus embodied in the
+syntax rules, the Standard specifies, in general, the
+<a name="grouping"><i>grouping</i></a>
+(association of operands with operators) in an expression.&#160;<tt> </tt>
+<p>
+The Base Document describes C as a language in which the operands
+of successive identical commutative associative operators can
+be regrouped.&#160;<tt> </tt>
+The Committee has decided to remove this license from the Standard,
+thus bringing C into accord with most other major high-level languages.&#160;<tt> </tt>
+<p>
+This change was motivated primarily by the desire to
+make C more suitable for floating point programming.&#160;<tt> </tt>
+Floating point arithmetic does not obey many of the mathematical
+rules that real arithmetic does.&#160;<tt> </tt>
+For instance, the two expressions
+<code>(a+b)+c</code> and <code>a+(b+c)</code>
+may well yield different results:
+suppose that <code>b</code> is greater than 0,
+<code>a</code> equals <code>-b</code>, and <code>c</code> is positive but substantially
+smaller than <code>b</code>.&#160;<tt> </tt>
+(That is, suppose <code>c/b</code> is less than <code>DBL_EPSILON</code>.)&#160;<tt> </tt>
+Then <code>(a+b)+c</code> is <code>0+c</code>, or <code>c</code>,
+while <code>a+(b+c)</code> equals <code>a+b</code>, or <code>0</code>.&#160;<tt> </tt>
+That is to say, floating point addition (and multiplication)&#160;<tt> </tt>
+is not associative.&#160;<tt> </tt>
+<p>
+<a name="FORTRAN-to-C-translation-3-3">The</a> Base Document's rule imposes a high cost on translation of
+numerical code to C.&#160;<tt> </tt>
+Much numerical code is written in
+FORTRAN,
+which does provide a no-regrouping guarantee;  
+indeed, this is the normal semantic interpretation in most high-level
+languages other than C.&#160;<tt> </tt>
+The Base Document's advice, ``rewrite using explicit temporaries,''&#160;<tt> </tt>
+is burdensome to those with tens or hundreds of thousands 
+of lines of code to convert,
+a conversion which in most other respects could be done automatically.&#160;<tt> </tt>
+<p>
+Elimination of the regrouping rule does not in fact prohibit
+much regrouping of integer expressions.&#160;<tt> </tt>
+The bitwise logical operators can be arbitrarily regrouped,
+since any regrouping gives the same result <a href="b.html#as-if" name="as-if-3-3"><i>as if</i></a> the expression
+had not been regrouped.&#160;<tt> </tt>
+This is also true of integer addition and multiplication in implementations
+with twos-complement arithmetic and silent wraparound on overflow.&#160;<tt> </tt>
+Indeed, in any implementation, regroupings which do not introduce
+overflows behave <a href="b.html#as-if"><i>as if</i></a> no regrouping
+had occurred.&#160;<tt> </tt>
+(Results may also differ in such an implementation if the expression
+as written results in overflows:  in such a case the behavior is
+undefined, so any regrouping couldn't be any worse.)&#160;<tt> </tt>
+<p>
+<p>
+
+The types of <a name="lvalues-3-3">lvalues</a> that may be used to access an
+object have been restricted so that an optimizer is not required
+to make worst-case <a name="aliasing-3-3">aliasing</a> assumptions.&#160;<tt> </tt>
+<p>
+In practice, aliasing arises with the use of pointers.&#160;<tt> </tt>
+A contrived example to illustrate the issues is
+<pre>        int a;
+
+        void f(int * b)
+        {
+            a = 1;
+            *b = 2;
+            g(a);
+        }
+</pre>It is tempting to generate the call to <code>g</code> as if the source expression
+were <code>g(1)</code>, but <code>b</code> might point to <code>a</code>, so this optimization
+is not safe.&#160;<tt> </tt>
+On the other hand, consider
+<pre>        int a;
+        void f( double * b )
+        {
+            a = 1;
+            *b = 2.0;
+            g(a);
+        }
+</pre>Again the optimization is incorrect only if <code>b</code> points to <code>a</code>.&#160;<tt> </tt>
+However, this would only have come about if the address of <code>a</code>
+were somewhere cast to <code>(double*)</code>.&#160;<tt> </tt>
+The Committee has decided that such dubious possibilities need not be
+allowed for.&#160;<tt> </tt>
+<p>
+In principle, then, aliasing only need be allowed for when the lvalues
+all have the same type.&#160;<tt> </tt>
+In practice, the Committee has recognized certain prevalent exceptions:
+<ul><li>The lvalue types may differ in signedness.&#160;<tt> </tt>
+	In the common range, a signed integral type and its unsigned
+	variant have the same representation;
+	it was felt that an appreciable body of existing code is
+	not ``strictly typed'' in this area.&#160;<tt> </tt>
+<li>Character pointer types are often used in the bytewise 
+	manipulation of objects;  a byte stored through such a
+	character pointer may well end up in an object of any type.&#160;<tt> </tt>
+<li>A qualified version of the object's type, though
+	formally a different type, provides the same interpretation
+	of the value of the object.&#160;<tt> </tt>
+</ul>Structure and union types also have problematic aliasing properties:
+<pre>        struct fi{ float f; int i;};
+
+        void f( struct fi * fip, int * ip )
+        {
+            static struct fi a = {2.0, 1};
+            *ip = 2;
+            *fip = a;
+            g(*ip);
+
+            *fip = a;
+            *ip = 2;
+            g(fip-&gt;i);
+        }
+</pre>It is not safe to optimize the first call to <code>g</code> as <code>g(2)</code>,
+or the second as <code>g(1)</code>, since the call to <code>f</code> could quite legitimately
+have been 
+<pre>        struct fi  x;
+        f( &amp;x, &amp;x.i );
+</pre>These observations explain the other exception to the same-type
+principle.&#160;<tt> </tt>
+<p>
+<p>
+<h2><a name="3-3-1">3.3.1</a>&#160;<tt> </tt>Primary expressions</h2>
+<p>
+A <a name="primary-expression-3-3-1">primary expression</a> may be <code>void</code>
+(parenthesized call to a function returning <code>void</code>),
+a function designator (identifier or parenthesized function designator),
+an lvalue (identifier or parenthesized lvalue),
+or simply a value expression.&#160;<tt> </tt>
+Constraints ensure that a <code>void</code> primary expression is no part
+of a further expression,
+except that a void expression may be cast to void,
+may be the second or third operand of a conditional operator,
+or may be an operand of a comma operator.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-2">3.3.2</a>&#160;<tt> </tt>Postfix operators</h2>
+<p>
+<h2><a name="3-3-2-1">3.3.2.1</a>&#160;<tt> </tt>Array subscripting</h2>
+<p>
+The Committee found no reason to disallow the symmetry that permits
+<code>a[i]</code> to be written as <code>i[a]</code>.&#160;<tt> </tt>
+<p>
+The syntax and semantics of multidimensional arrays follow
+logically from the definition of arrays and the subscripting
+operation.  The material in the Standard on multidimensional arrays
+introduces no new language features, but clarifies the C treatment
+of this important abstract data type.
+<p>
+<h2><a name="3-3-2-2">3.3.2.2</a>&#160;<tt> </tt>Function calls</h2>
+
+<p>
+Pointers to functions may be used either as <code>(*pf)()</code> or as <code>pf()</code>.&#160;<tt> </tt>
+The latter construct, not sanctioned in the Base Document,
+appears in some present versions of C, is unambiguous, invalidates
+no old code, and can be an important shorthand.&#160;<tt> </tt>
+The shorthand is useful for packages that present only one external name,
+which designates a structure full of pointers to objects and functions:
+member functions can be called as
+<code>graphics.open(file)</code>
+instead of
+<code>(*graphics.open)(file)</code>.&#160;<tt> </tt>
+<p>
+The treatment of function designators can lead to some curious,
+but valid, syntactic forms.&#160;<tt> </tt>
+Given the declarations:
+<pre>        int f(), (*pf)();
+</pre>then all of the following expressions are valid function calls:
+<pre>        (&amp;f)(); f(); (*f)(); (**f)(); (***f)();
+        pf();   (*pf)(); (**pf)(); (***pf)();
+</pre>The first expression on each line was discussed in the previous paragraph.&#160;<tt> </tt>
+The second is conventional usage.&#160;<tt> </tt>
+All subsequent expressions take advantage of the implicit conversion
+of a function designator to a pointer value, in nearly all expression
+contexts.&#160;<tt> </tt>
+The Committee saw no real harm in allowing these forms;
+outlawing forms like <code>(*f)()</code>,
+while still permitting <code>*a</code> (for <code>int a[]</code>),
+simply seemed more trouble than it was worth.&#160;<tt> </tt>
+<p>
+<p>
+
+The rule for implicit declaration of functions has been retained, but
+various past ambiguities have been resolved
+by describing this usage in terms of
+a corresponding explicit declaration.&#160;<tt> </tt>
+<p>
+For compatibility with past practice,
+all <a name="argument-promotion-3-3-2-2">argument promotions</a>
+occur as described in the Base Document
+in the absence of a prototype declaration,
+including the (not always desirable) promotion of
+<code>float</code> to <code>double</code>.&#160;<tt> </tt>
+A prototype gives the implementor explicit license to pass a <code>float</code>
+as a <code>float</code> rather than a <code>double</code>,
+or a <code>char</code> as a <code>char</code> rather than an <code>int</code>,
+or an argument in a special register, etc.&#160;<tt> </tt>
+If the definition of a function in the presence of a prototype
+would cause the function to expect other than the default promotion types,
+then clearly the calls to this function must be made in the
+presence of a compatible prototype.&#160;<tt> </tt>
+<p>
+To clarify this and other relationships between function calls
+and function definitions,
+the Standard describes an equivalence between a function call or
+definition which does occur in the presence of a prototype
+and one that does not.&#160;<tt> </tt>
+<p>
+Thus a prototyped function with no ``narrow'' types
+and no variable argument list must be callable in the absence of a prototype,
+since the types actually passed in a call are equivalent to the
+explicit function definition prototype.&#160;<tt> </tt>
+This constraint is necessary to retain compatibility with past usage
+of library functions.&#160;<tt> </tt>
+(See <a href="d1.html#4-1-3">&#167;4.1.3</a>.)&#160;<tt> </tt>
+<p>
+This provision constrains the latitude of an implementor
+because the parameter passing conventions of prototype and non-prototype
+function calls must be the same for functions accepting a fixed number of
+arguments.&#160;<tt> </tt>
+Implementations in environments where efficient function calling
+mechanisms are available must, in effect,
+use the efficient calling sequence either in all
+``fixed argument list'' calls or in none.&#160;<tt> </tt>
+Since efficient calling sequences often do not allow for variable
+argument functions,
+the fixed part of a variable argument list may be passed
+in a completely different fashion than in a fixed argument list with
+the same number and type of arguments.&#160;<tt> </tt>
+<p>
+The existing practice of omitting trailing parameters in a call
+if it is known that the parameters will not be used
+has consistently been discouraged.&#160;<tt> </tt>
+Since omission of such parameters creates an inequivalence between
+the call and the declaration,
+the behavior in such cases is undefined,
+and a maximally portable program will avoid this usage.&#160;<tt> </tt>
+Hence an implementation is free to implement a function calling
+mechanism for fixed argument lists
+which would (perhaps fatally) fail if the wrong number or type
+of arguments were to be provided.&#160;<tt> </tt>
+<p>
+<a name="undefined-behavior-3-3-2-2">Strictly speaking then,</a>
+calls to <code>printf</code> are obliged to be in the scope of a prototype
+(as by <code>#include &lt;stdio.h&gt;</code>),
+but implementations are not obliged to fail on such a lapse.&#160;<tt> </tt>
+(The behavior is <i>undefined</i>).
+<p>
+<h2><a name="3-3-2-3">3.3.2.3</a>&#160;<tt> </tt>Structure and union members</h2>
+<p>
+Since the language now permits structure parameters,
+structure assignment
+and
+functions returning structures,
+the concept of a <i>structure expression</i> is now part of the C language.&#160;<tt> </tt>
+A structure value can be produced by an assignment, by a function call,
+by a comma operator expression
+or by a conditional operator expression:
+<pre>        s1 = (s2 = s3)
+        sf(x)
+        (x, s1)
+        x ? s1 : s2
+</pre>In these cases, the result is <i>not</i> an <a name="lvalue-3-3-2-3">lvalue</a>;
+hence it cannot be assigned to nor can its address be taken.&#160;<tt> </tt>
+<p>
+Similarly, <code>x.y</code> is an lvalue only if <code>x</code> is an lvalue.&#160;<tt> </tt>
+Thus none of the following valid expressions are lvalues:
+<pre>        sf(3).a
+        (s1=s2).a
+        ((i==6)?s1:s2).a
+        (x,s1).a
+</pre>Even when <code>x.y</code> is an lvalue, it may not be modifiable:
+<pre>        const struct S s1;
+        s1.a = 3;          /* invalid */
+</pre><p>
+The Standard requires that an implementation diagnose a
+<a name="constraint-error"><i>constraint error</i></a>
+in the case that the member of a structure or union
+designated by the identifier following a member selection operator
+(<code>.</code> or <code>-&gt;</code>)&#160;<tt> </tt>
+does not appear in the type of the structure or union designated by
+the first operand.&#160;<tt> </tt>
+The Base Document is unclear on this point.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-2-4">3.3.2.4</a>&#160;<tt> </tt>Postfix increment and decrement operators</h2>
+<p>
+The Committee has not endorsed the practice in some implementations
+of considering post-increment and post-decrement operator expressions
+to be <a name="lvalues-3-3-2-4">lvalues</a>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-3">3.3.3</a>&#160;<tt> </tt>Unary operators</h2>
+<p>
+<h2><a name="3-3-3-1">3.3.3.1</a>&#160;<tt> </tt>Prefix increment and decrement operators</h2>
+<p>
+See <a href="#3-3-2-4">&#167;3.3.2.4</a>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-3-2">3.3.3.2</a>&#160;<tt> </tt>Address and indirection operators</h2>
+<p>
+Some implementations have not allowed the <code>&amp;</code> operator
+to be applied to an array or a function.&#160;<tt> </tt>
+(The construct was permitted in early versions of C, then later made optional.)&#160;<tt> </tt>
+The Committee has endorsed the construct
+since it is unambiguous,
+and since <a name="data-abstraction-3-3-3-2">data abstraction</a> is enhanced by allowing
+the important <code>&amp;</code> operator to apply uniformly to any addressable entity.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-3-3">3.3.3.3</a>&#160;<tt> </tt>Unary arithmetic operators</h2>
+<p>
+Unary plus was adopted by the Committee from several implementations,
+for symmetry with unary minus.&#160;<tt> </tt>
+<p>
+<p>
+The bitwise complement operator <code>~</code>,
+and the other bitwise operators,
+have now been defined arithmetically for unsigned operands.&#160;<tt> </tt>
+Such operations are well-defined because of the restriction of integral
+representations to ``<a name="binary-numeration-systems-3-3-3-3">binary numeration systems</a>.''&#160;<tt> </tt>
+(See <a href="c1.html#3-1-2-5">&#167;3.1.2.5</a>.)&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-3-4">3.3.3.4</a>&#160;<tt> </tt>The <a name="sizeof-3-3-3-4"><code>sizeof</code></a> operator</h2>
+
+<p>
+It is fundamental to the correct usage of functions such as
+<code>malloc</code> and <code>fread</code> that <code>sizeof</code> <code>(char)</code> be exactly one.&#160;<tt> </tt>
+In practice, this means that a <a name="byte"><i>byte</i></a>
+in C terms is the smallest unit of storage,
+even if this unit is 36 bits wide;
+and all objects are comprised of an integral number of these smallest units.&#160;<tt> </tt>
+(See <a href="a.html#1-6">&#167;1.6</a>.)&#160;<tt> </tt>
+<p>
+The Standard, like the Base Document,
+defines the result of the
+<code>sizeof</code>
+operator to be a constant of an unsigned integral type.&#160;<tt> </tt>
+Common implementations, and common usage,
+have often presumed that the resulting type is <code>int</code>.&#160;<tt> </tt>
+Old code that depends on this behavior has
+never been portable to implementations that define
+the result to be a type other than <code>int</code>.&#160;<tt> </tt>
+The Committee did not feel it was proper to change the language to protect
+incorrect code.&#160;<tt> </tt>
+<p>
+The type of <code>sizeof</code>,
+whatever it is, is published
+(in the library header <a name="-60stddef-46h-62-3-3-3-4"><code>&lt;stddef.h&gt;</code></a>)&#160;<tt> </tt>
+as <a name="size-95t-3-3-3-4"><code>size_t</code></a>,
+since it is useful for the programmer to be able to refer to this
+type.&#160;<tt> </tt>
+This requirement implicitly restricts <code>size_t</code>
+to be a synonym for an existing unsigned integer type,
+thus quashing any notion that the largest
+declarable object might be too big to span even with an
+<code>unsigned long</code>.&#160;<tt> </tt>
+This also restricts the maximum number of
+elements that may be declared in an array,
+since for any array <code>a</code> of <code>N</code> elements,
+<pre>        N == sizeof(a)/sizeof(a[0])
+</pre>Thus <code>size_t</code> is also a convenient type for array sizes,
+and is so used in several library functions.&#160;<tt> </tt>
+(See <a href="d9.html#4-9-8-1">&#167;4.9.8.1</a>, <a href="d9.html#4-9-8-2">&#167;4.9.8.2</a>, <a href="d10.html#4-10-3-1">&#167;4.10.3.1</a>, etc.)&#160;<tt> </tt>
+<p>
+
+The Standard specifies that the argument to
+<code>sizeof</code>
+can be any value except a bit field,
+a void expression,
+or a function designator.&#160;<tt> </tt>
+This generality allows for interesting environmental enquiries;
+given the declarations
+<pre>        int  *p, *q;
+</pre>these expressions determine the size of the type used for ...&#160;<tt> </tt>
+<pre>        sizeof(F(x))    /* ... F's return value */
+        sizeof(p-q)     /* ... pointer difference */
+</pre>(The last type is of course available as
+<a name="ptrdiff-95t-3-3-3-4"><code>ptrdiff_t</code></a>
+in <code>&lt;stddef.h&gt;</code>.)&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-4">3.3.4</a>&#160;<tt> </tt>Cast operators</h2>
+<p>
+A <code>(void)</code> cast is explicitly permitted,
+more for documentation than for utility.&#160;<tt> </tt>
+<p>
+
+Nothing portable can be said about casting integers to pointers,
+or vice versa, since the two are now incommensurate.&#160;<tt> </tt>
+<p>
+The definition of these conversions adopted in the Standard
+resembles that in the Base Document,
+but with several significant differences.&#160;<tt> </tt>
+The Base Document required that a pointer successfully converted to an integer
+must be guaranteed to be convertible back to the same pointer.&#160;<tt> </tt>
+This integer-to-pointer conversion is now specified as
+<i>implementation-defined</i>.&#160;<tt> </tt>
+While a high-quality
+implementation would preserve the same address value whenever possible,
+it was considered impractical to require that the identical representation
+be preserved.&#160;<tt> </tt>
+The Committee noted that,
+on some current machine implementations,
+identical representations are required for efficient code generation
+for pointer comparisons and arithmetic operations.&#160;<tt> </tt>
+<p>
+The conversion of the integer constant 0 to a pointer is defined similarly
+to the Base Document.&#160;<tt> </tt>
+The resulting pointer must not address any object,
+must appear to be equal to an integer value of 0,
+and
+may be assigned to or compared for equality with any other pointer.&#160;<tt> </tt>
+This definition does not necessarily imply a representation by a
+bit pattern of all zeros:
+an implementation could, for instance, use some address which causes
+a hardware trap when dereferenced.&#160;<tt> </tt>
+<p>
+
+The type <code>char</code> must have the least strict alignment of any type,
+so <code>char *</code> has often been used as a portable type for representing arbitrary
+object pointers.&#160;<tt> </tt>
+This usage creates an unfortunate confusion between the ideas of
+<i>arbitrary pointer</i>
+and
+<i>character or string pointer</i>.&#160;<tt> </tt>
+The new type <a name="void--42-3-3-4"><code>void *</code></a>,
+which has the same representation as <code>char *</code>,
+is therefore preferable for arbitrary pointers.&#160;<tt> </tt>
+<p>
+
+It is possible to cast a pointer of some qualified type (<a href="c5.html#3-5-3">&#167;3.5.3</a>)&#160;<tt> </tt>
+to an unqualified version of that type.&#160;<tt> </tt>
+Since the qualifier defines some special access or aliasing property,
+however, any dereference of the cast pointer results in 
+<a name="undefined-behavior"><i>undefined behavior</i></a>.&#160;<tt> </tt>
+<p>
+
+The Standard (<a href="c2.html#3-2-1-4">&#167;3.2.1.4</a>) requires that a cast of one floating point type
+to another (e.g., <code>double</code> to <code>float</code>)&#160;<tt> </tt>
+results in an actual conversion.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-5">3.3.5</a>&#160;<tt> </tt>Multiplicative operators</h2>
+<p>
+There was considerable sentiment for giving more portable semantics
+to division (and hence remainder) by specifying some way of giving
+less machine dependent results for negative operands.&#160;<tt> </tt>
+Few Committee members wanted to require this by default,
+lest existing fast code be gravely slowed.&#160;<tt> </tt>
+One suggestion was to make <code>signed int</code> a type distinct from plain
+<code>int</code>,
+and require better-defined semantics for <code>signed int</code>
+division and remainder.&#160;<tt> </tt>
+This suggestion was opposed on the grounds that effectively adding several
+types would have consequences out of proportion to the benefit
+to be obtained; the Committee twice rejected this approach.&#160;<tt> </tt>
+Instead the Committee has adopted new library functions
+<a name="div-3-3-5"><code>div</code></a> and <a name="ldiv-3-3-5"><code>ldiv</code></a>
+which produce integral quotient and remainder
+with well-defined sign semantics.&#160;<tt> </tt>
+(See <a href="d10.html#4-10-6-2">&#167;4.10.6.2</a>, <a href="d10.html#4-10-6-3">&#167;4.10.6.3</a>.)&#160;<tt> </tt>
+<p>
+The Committee rejected extending the <code>%</code> operator
+to work on floating types;
+such usage would duplicate the facility provided by
+<a name="fmod-3-3-5"><code>fmod</code></a>.&#160;<tt> </tt>
+(See <a href="d5.html#4-5-6-4">&#167;4.5.6.5</a>.)
+<!-- The section reference is one off in the original document, jd-->
+<p>
+<h2><a name="3-3-6">3.3.6</a>&#160;<tt> </tt>Additive operators</h2>
+<p>
+As with the <a name="sizeof-3-3-6"><code>sizeof</code></a> operator,
+implementations have taken different approaches in defining a type for
+the difference between two pointers (see <a href="#3-3-3-4">&#167;3.3.3.4</a>).&#160;<tt> </tt>
+It is important that this type be signed,
+in order to obtain proper algebraic ordering
+when dealing with pointers within the same array.&#160;<tt> </tt>
+However,
+the magnitude of a pointer difference can be as large
+as the size of the largest object that can be declared.&#160;<tt> </tt>
+(And since that is an unsigned type, the difference between two
+pointers may cause an overflow.)&#160;<tt> </tt>
+<p>
+The type of <i>pointer minus </i><a name="pointer-subtraction-3-3-6"><i>pointer</i></a>
+is defined to be <code>int</code> in K&amp;R.&#160;<tt> </tt>
+The Standard defines the result of this operation to be a signed integer,
+the size of which is implementation-defined.&#160;<tt> </tt>
+The type is published as <a name="ptrdiff-95t-3-3-6"><code>ptrdiff_t</code></a>,
+in the standard header <a name="-60stddef-46h-62-3-3-6"><code>&lt;stddef.h&gt;</code></a>.&#160;<tt> </tt>
+Old code recompiled by a conforming compiler may no longer work
+if the implementation defines the result of such an
+operation to be a type other than <code>int</code>
+and if the program depended on the result to be of type <code>int</code>.&#160;<tt> </tt>
+This behavior was considered by the Committee to be correctable.&#160;<tt> </tt>
+Overflow was considered not to break old code since it was undefined by K&amp;R.&#160;<tt> </tt>
+Mismatch of types between actual and formal argument
+declarations is correctable by including a properly defined function
+prototype in the scope of the function invocation.&#160;<tt> </tt>
+<p>
+An important endorsement of widespread practice is the requirement
+that a pointer can always be incremented to
+<i>just past</i> the end of an array, with no fear of overflow or wraparound:
+<pre>        SOMETYPE array[SPAN];
+        /* ... */
+        for (p = &amp;array[0]; p &lt; &amp;array[SPAN]; p++)
+</pre>This stipulation merely requires that every object be followed by one
+byte whose address is representable.&#160;<tt> </tt>
+That byte can be the first byte of the next object declared
+for all but the last object located in a contiguous segment of memory.&#160;<tt> </tt>
+(In the example, the address
+<code>&amp;array[SPAN]</code>
+must address a byte following the highest element of <code>array</code>.)&#160;<tt> </tt>
+Since the pointer expression <code>p+1</code>
+need not (and should not) be dereferenced,
+it is unnecessary to leave room for a complete object of size
+<code>sizeof(*p)</code>.&#160;<tt> </tt>
+<p>
+In the case of <code>p-1</code>, on the other hand,
+an entire object <i>would</i> have to be allocated
+prior to the array of objects that <code>p</code> traverses,
+so decrement loops that run off the bottom of an array may fail.&#160;<tt> </tt>
+This restriction allows segmented architectures, for instance,
+to place objects at the start of a range of addressable memory.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-7">3.3.7</a>&#160;<tt> </tt>Bitwise shift operators</h2>
+<p>
+See <a href="#3-3-3-3">&#167;3.3.3.3</a> for a discussion of the arithmetic definition of
+these operators.&#160;<tt> </tt>
+<p>
+The description of shift operators in K&amp;R suggests that shifting by a
+<code>long</code>
+count should force the left operand to be widened to
+<code>long</code>
+before being shifted.&#160;<tt> </tt>
+A more intuitive practice, endorsed by the Committee, is that the type
+of the shift count has no bearing on the type of the result.&#160;<tt> </tt>
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>Shifting by a <code>long</code> count no longer coerces the shifted operand to <code>long</code>.&#160;<tt> </tt>
+</ul>
+The Committee has affirmed the freedom in implementation granted
+by the Base Document in not
+requiring the signed right shift operation to sign extend,
+since such a requirement might slow down fast code
+and since the usefulness of sign extended shifts is marginal.&#160;<tt> </tt>
+(Shifting a negative twos-complement integer arithmetically right one place
+is <i>not</i> the same as dividing by two!)&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-8">3.3.8</a>&#160;<tt> </tt>Relational operators</h2>
+<p>
+For an explanation of why the pointer comparison of the object pointer <code>P</code>
+with the pointer expression <code>P+1</code>
+is always safe, see Rationale <a href="#3-3-6">&#167;3.3.6</a>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-9">3.3.9</a>&#160;<tt> </tt>Equality operators</h2>
+<p>
+The Committee considered, on more than one occasion,
+permitting comparison of structures for equality.&#160;<tt> </tt>
+Such proposals foundered on the problem of holes in structures.&#160;<tt> </tt>
+A byte-wise comparison of two structures would require that
+the holes assuredly be set to zero so that all holes would compare
+equal,
+a difficult task for automatic or dynamically allocated variables.&#160;<tt> </tt>
+(The possibility of union-type elements in a structure
+raises insuperable problems with this approach.)&#160;<tt> </tt>
+Otherwise the implementation would have to be prepared to break
+a structure comparison into an arbitrary number of member comparisons;
+a seemingly simple expression could thus expand into a substantial
+stretch of code, which is contrary to the
+<a name="spirit-of-C"><i>spirit of C</i></a>.&#160;<tt> </tt>
+<p>
+In pointer comparisons,
+one of the operands may be of type <a name="void--42-3-3-9"><code>void *</code></a>.&#160;<tt> </tt>
+In particular, this allows <a name="NULL-3-3-9"><code>NULL</code></a>,
+which can be defined as <code>(void</code> <code>*)0</code>,
+to be compared to any object pointer.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-10">3.3.10</a>&#160;<tt> </tt>Bitwise AND operator</h2>
+See <a href="#3-3-3-3">&#167;3.3.3.3</a> for a discussion of the arithmetic definition of
+the bitwise operators.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-11">3.3.11</a>&#160;<tt> </tt>Bitwise exclusive OR operator</h2>
+See <a href="#3-3-3-3">&#167;3.3.3.3</a>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-12">3.3.12</a>&#160;<tt> </tt>Bitwise inclusive OR operator</h2>
+See <a href="#3-3-3-3">&#167;3.3.3.3</a>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-13">3.3.13</a>&#160;<tt> </tt>Logical AND operator</h2>
+<p>
+<h2><a name="3-3-14">3.3.14</a>&#160;<tt> </tt>Logical OR operator</h2>
+<p>
+<h2><a name="3-3-15">3.3.15</a>&#160;<tt> </tt>Conditional operator</h2>
+<p>
+The syntactic restrictions on the middle operand of the conditional operator
+have been relaxed to include more than just
+<i>logical-OR-expression</i>:
+several extant implementations have adopted this practice.&#160;<tt> </tt>
+<p>
+The type of a conditional operator expression can be <code>void</code>,
+a structure, or a union;
+most other operators do not deal with such types.&#160;<tt> </tt>
+The rules for balancing type between pointer and integer have,
+however, been tightened, since now only the constant 0 can portably
+be coerced to pointer.&#160;<tt> </tt>
+<p>
+The Standard allows one of the second or third operands to be
+of type <a name="void--42-3-3-15"><code>void *</code></a>, if the other is a pointer type.&#160;<tt> </tt>
+Since the result of such a conditional expression is <code>void</code> <code>*</code>,
+an appropriate cast must be used.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-16">3.3.16</a>&#160;<tt> </tt>Assignment operators</h2>
+<p>
+Certain syntactic forms of assignment operators have been discontinued,
+and others tightened up (see <a href="c1.html#3-1-5">&#167;3.1.5</a>).&#160;<tt> </tt>
+<p>
+The storage assignment need not take place until the next sequence point.&#160;<tt> </tt>
+(A restriction in earlier drafts that the storage take place before
+the value of the expression is used has been removed.)&#160;<tt> </tt>
+As a consequence, a straightforward syntactic test for
+ambiguous expressions can be stated.&#160;<tt> </tt>
+Some definitions:
+A <a name="side-effect"><i>side effect</i></a> is a storage to any data object,
+or a read of a volatile object.&#160;<tt> </tt>
+An <a name="ambiguous-expression"><i>ambiguous expression</i></a> is one whose value depends upon the
+order in which side effects are evaluated.&#160;<tt> </tt>
+A <a name="pure-function"><i>pure function</i></a> is one with no side effects;
+an impure function is any other.&#160;<tt> </tt>
+A <a name="sequenced-expression"><i>sequenced expression</i></a> is one whose major operator
+defines a sequence point: comma, <code>&amp;&amp;</code>, <code>||</code>, or conditional operator;
+an <a name="unsequenced-expression"><i>unsequenced expression</i></a> is any other.&#160;<tt> </tt>
+We can then say that an unsequenced expression is ambiguous
+if more than one operand invokes any impure function,
+or if more than one operand contains an lvalue referencing the
+same object and one or more operands specify a side-effect to
+that object.&#160;<tt> </tt>
+Further, any expression containing an ambiguous expression
+is ambiguous.&#160;<tt> </tt>
+<p>
+The optimization rules for factoring out assignments can also
+be stated.&#160;<tt> </tt>
+Let <code>X(i,S)</code> be an expression which contains no impure functions
+or sequenced operators, and suppose that <code>X</code> contains a storage
+<code>S(i)</code> to <code>i</code>.&#160;<tt> </tt>
+The storage expressions, and related expressions, are
+<pre>        S(i):      Sval(i):       Snew(i):
+        ++i        i+1            i+1
+        i++        i              i+1
+        --i        i-1            i-1
+        i--        i              i-1
+        i = y      y              y
+        i op= y    i op y         i op y
+</pre>Then <code>X(i,S)</code> can be replaced by either 
+<pre>        (T = i, i = Snew(i), X(T,Sval))
+</pre>or
+<pre>        (T = X(i,Sval), i = Snew(i), T)
+</pre>provided that neither <code>i</code> nor <code>y</code> have side effects themselves.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-16-1">3.3.16.1</a>&#160;<tt> </tt>Simple assignment</h2>
+<p>
+Structure assignment has been added: its use was foreshadowed
+even in K&amp;R, and many existing implementations already support it.&#160;<tt> </tt>
+<p>
+The rules for type compatibility in assignment also apply to argument
+compatibility between actual argument expressions and their corresponding
+argument types in a function prototype.&#160;<tt> </tt>
+<p>
+An implementation need not correctly perform an assignment
+between overlapping operands.&#160;<tt> </tt>
+Overlapping operands occur most naturally in a union,
+where assigning one field to another is often desirable
+to effect a type conversion in place;
+the assignment may well work properly in all simple cases,
+but it is not maximally portable.&#160;<tt> </tt>
+Maximally portable code should use a temporary variable as an intermediate
+in such an assignment.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-16-2">3.3.16.2</a>&#160;<tt> </tt>Compound assignment</h2>
+<p>
+The importance of requiring that the left operand 
+<a name="lvalue-3-3-16-2">lvalue</a> be evaluated only once
+is not a question of efficiency,
+although that is one compelling reason for using 
+the compound assignment operators.&#160;<tt> </tt>
+Rather, it is to assure that any side effects of evaluating the left
+operand are predictable.&#160;<tt> </tt>
+<p>
+<h2><a name="3-3-17">3.3.17</a>&#160;<tt> </tt>Comma operator</h2>
+<p>
+The left operand of a comma operator may be <code>void</code>,
+since only the right-hand operator is relevant to the type of
+the expression.&#160;<tt> </tt>
+<p>
+The example in the Standard clarifies that commas separating arguments
+``bind'' tighter than the comma operator in expressions.&#160;<tt> </tt>
+<hr>
+<a href="c2.html">3.2 Conversions</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-3">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c4.html">3.4 Constant Expressions</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+</body></html>

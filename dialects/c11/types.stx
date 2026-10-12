@@ -1,0 +1,201 @@
+mod c11.types;
+use types;
+use base;
+use control;
+use numbers;
+use layout;
+
+// Explicit first target policy: Windows x86-64 LLP64. Rank is retained even
+// when int and long share a width. Other targets can supply different facts.
+effect c11.types.integer("char") => PlainChar();
+effect c11.types.integer("signed char") => IntType(1,8,0);
+effect c11.types.integer("unsigned char") => IntType(1,8,1);
+effect c11.types.integer("short") => IntType(2,16,0);
+effect c11.types.integer("unsigned short") => IntType(2,16,1);
+effect c11.types.integer("int") => IntType(3,32,0);
+effect c11.types.integer("unsigned int") => IntType(3,32,1);
+effect c11.types.integer("long") => IntType(4,32,0);
+effect c11.types.integer("unsigned long") => IntType(4,32,1);
+effect c11.types.integer("long long") => IntType(5,64,0);
+effect c11.types.integer("unsigned long long") => IntType(5,64,1);
+effect c11.types.size_type() => IntType(5,64,1);
+effect c11.types.floating("float") => FloatType(1,"f32");
+effect c11.types.floating("double") => FloatType(2,"f64");
+effect c11.types.floating("long double") => FloatType(3,"f64");
+effect c11.types.storage(IntType($rank,$width,0)) => types.Signed($width);
+effect c11.types.storage(IntType($rank,$width,1)) => types.Unsigned($width);
+effect c11.types.storage(FloatType($rank,$format)) => types.Real($format);
+effect c11.types.storage(CBool()) => types.Unsigned(8);
+effect c11.types.storage(PlainChar()) => types.Signed(8);
+effect types.repr(IntType($rank,$width,$unsigned)) => concat("i",text($width));
+effect types.repr(FloatType($rank,$format)) => $format;
+effect types.repr(CBool()) => "i8";
+// Object alignment is metadata on the declared object.  The value type and
+// ABI representation remain those of the wrapped C type so expressions and
+// calls do not acquire a spurious nominal type.
+effect types.repr(AlignedType($type,$alignment)) => types.repr($type);
+// Function descriptors are composed by declarator rules. Functions decay to
+// pointers as values; an incomplete array is valid only where it can complete
+// from a declaration/initializer or adjust to a parameter pointer.
+effect c11.types.function_parameters(FunctionType($result,$params,$variadic,$prototype)) => $params;
+effect c11.types.incomplete_element(IncompleteArray($element)) => $element;
+effect types.repr(IncompleteArray($element)) => fail("incomplete C array has no object representation");
+effect c11.types.bytes(IncompleteArray($element)) => fail("sizeof requires a complete C array");
+effect types.repr(PlainChar()) => "i8";
+effect types.repr(Pointer($element)) => "!llvm.ptr";
+effect types.repr(Qualified($type,$const,$volatile,$restrict)) => types.repr($type);
+effect types.repr(Array($count,$element)) => seq(types.extent($count),concat("!llvm.array<",concat(text($count),concat(" x ",concat(types.repr($element),">")))));
+effect types.repr(Record($name,$fields)) => concat("!llvm.struct<(",concat(types.join(list.map("c11.types.field_repr",$fields)),")>"));
+effect types.repr(Union($name,$fields)) => union_repr(Union($name,$fields));
+effect types.repr(FlexibleArray($element)) => concat("!llvm.array<0 x ",concat(types.repr($element),">"));
+effect c11.types.field_repr(Field($name,$type)) => types.repr($type);
+effect c11.types.field_type(Field($name,$type)) => $type;
+effect c11.types.unqualified(Qualified($type,$const,$volatile,$restrict)) => c11.types.unqualified($type);
+effect c11.types.unqualified(AlignedType($type,$alignment)) => c11.types.unqualified($type);
+effect[fallback] c11.types.unqualified($type) => $type;
+effect c11.types.qualifiers(Qualified($type,$const,$volatile,$restrict)) => bind([$c,$v,$r],c11.types.qualifiers($type),[or($c,$const),or($v,$volatile),or($r,$restrict)]);
+effect c11.types.qualifiers(AlignedType($type,$alignment)) => c11.types.qualifiers($type);
+effect[fallback] c11.types.qualifiers($type) => [0,0,0];
+effect c11.types.qualify($type,[$const,$volatile,$restrict]) => choose(or($const,or($volatile,$restrict)),Qualified($type,$const,$volatile,$restrict),$type);
+// Only the immediate pointed-to qualifiers may be added implicitly. Comparing
+// the remaining type recursively prevents the unsafe T** -> const T** case.
+effect c11.types.pointer_assignment($from,$to) => bind([$fc,$fv,$fr],c11.types.qualifiers($from),bind([$tc,$tv,$tr],c11.types.qualifiers($to),
+    and(and(or(not($fc),$tc),or(not($fv),$tv)),c11.types.pointer_compatible(c11.types.unqualified($from),c11.types.unqualified($to)))));
+effect[fallback] c11.types.pointer_compatible($a,$b) => or(eq($a,$b),
+    or(and(eq($a,control.Void()),c11.types.object_pointer_target($b)),
+       and(eq($b,control.Void()),c11.types.object_pointer_target($a))));
+effect c11.types.object_pointer_target(FunctionType($result,$params,$variadic,$prototype)) => 0;
+effect[fallback] c11.types.object_pointer_target($type) => 1;
+effect c11.types.pointer_compatible(Record($a,$fields),RecordName($b)) => eq($a,$b);
+effect c11.types.pointer_compatible(RecordName($a),Record($b,$fields)) => eq($a,$b);
+effect c11.types.pointer_compatible(Union($a,$fields),UnionName($b)) => eq($a,$b);
+effect c11.types.pointer_compatible(UnionName($a),Union($b,$fields)) => eq($a,$b);
+effect c11.types.promotion(IntType($rank,$width,$unsigned)) => choose(lt($rank,3),c11.types.integer("int"),IntType($rank,$width,$unsigned));
+effect c11.types.promotion(CBool()) => c11.types.integer("int");
+effect c11.types.promotion(PlainChar()) => c11.types.integer("int");
+effect c11.types.promotion(FloatType($rank,$format)) => FloatType($rank,$format);
+effect c11.types.promotion(Pointer($element)) => Pointer($element);
+effect c11.types.usual($a,$b) => c11.types.common(c11.types.promotion(c11.types.unqualified($a)),c11.types.promotion(c11.types.unqualified($b)));
+effect c11.types.common(IntType($ar,$aw,$au),IntType($br,$bw,$bu))
+    => choose(eq($au,$bu),choose(lt($ar,$br),IntType($br,$bw,$bu),IntType($ar,$aw,$au)),
+        choose($au,c11.types.mixed(IntType($br,$bw,0),IntType($ar,$aw,1)),c11.types.mixed(IntType($ar,$aw,0),IntType($br,$bw,1))));
+effect c11.types.mixed(IntType($sr,$sw,0),IntType($ur,$uw,1)) => choose(not(lt($ur,$sr)),IntType($ur,$uw,1),
+    choose(lt($uw,$sw),IntType($sr,$sw,0),IntType($sr,$sw,1)));
+effect c11.types.common(FloatType($ar,$af),FloatType($br,$bf)) => choose(lt($ar,$br),FloatType($br,$bf),FloatType($ar,$af));
+effect c11.types.common(FloatType($rank,$format),IntType($ir,$iw,$iu)) => FloatType($rank,$format);
+effect c11.types.common(IntType($ir,$iw,$iu),FloatType($rank,$format)) => FloatType($rank,$format);
+effect c11.types.common(Pointer($left),Pointer($right))
+    => bind($a,c11.types.unqualified($left),bind($b,c11.types.unqualified($right),
+        choose(c11.types.pointer_compatible($a,$b),
+            Pointer(c11.types.qualify(choose(or(eq($a,control.Void()),eq($b,control.Void())),
+                control.Void(),$a),c11.types.merge_qualifiers($left,$right))),
+            fail("conditional C pointers require compatible pointed-to types"))));
+effect c11.types.merge_qualifiers($left,$right)
+    => bind([$ac,$av,$ar],c11.types.qualifiers($left),bind([$bc,$bv,$br],c11.types.qualifiers($right),
+        [or($ac,$bc),or($av,$bv),or($ar,$br)]));
+effect c11.types.default_argument(FloatType(1,"f32")) => c11.types.floating("double");
+effect c11.types.default_argument(Pointer($element)) => Pointer($element);
+effect base.predicate($operation,CBool()) => base.predicate($operation,types.Unsigned(8));
+effect base.predicate($operation,PlainChar()) => base.predicate($operation,types.Signed(8));
+effect[fallback] c11.types.default_argument($type) => c11.types.promotion($type);
+effect c11.types.is_integer(IntType($rank,$width,$unsigned)) => 1;
+effect c11.types.is_integer(CBool()) => 1;
+effect c11.types.is_integer(PlainChar()) => 1;
+effect[fallback] c11.types.is_integer($type) => 0;
+effect c11.types.is_arithmetic(IntType($rank,$width,$unsigned)) => 1;
+effect c11.types.is_arithmetic(FloatType($rank,$format)) => 1;
+effect c11.types.is_arithmetic(CBool()) => 1;
+effect c11.types.is_arithmetic(PlainChar()) => 1;
+effect[fallback] c11.types.is_arithmetic($type) => 0;
+effect c11.types.bytes(IntType($rank,$width,$unsigned)) => int.div($width,8);
+effect c11.types.bytes(FloatType($rank,"f32")) => 4;
+effect c11.types.bytes(FloatType($rank,"f64")) => 8;
+effect c11.types.bytes(CBool()) => 1;
+effect c11.types.bytes(PlainChar()) => 1;
+effect c11.types.bytes(Pointer($element)) => 8;
+effect c11.types.bytes(Qualified($type,$const,$volatile,$restrict)) => c11.types.bytes($type);
+effect c11.types.bytes(AlignedType($type,$alignment)) => c11.types.bytes($type);
+effect c11.types.bytes(Array($count,$element)) => mul($count,c11.types.bytes($element));
+effect c11.types.bytes(Record($name,$fields)) => arg(record_layout($fields),0);
+effect c11.types.bytes(Union($name,$fields)) => arg(union_layout($fields),0);
+effect c11.types.bytes(FlexibleArray($element)) => 0;
+effect c11.types.sizeof(FlexibleArray($element)) => fail("sizeof requires a complete C array");
+effect c11.types.sizeof(Qualified($type,$const,$volatile,$restrict)) => c11.types.sizeof($type);
+effect c11.types.sizeof(AlignedType($type,$alignment)) => c11.types.sizeof($type);
+effect[fallback] c11.types.sizeof($type) => c11.types.bytes($type);
+effect c11.types.alignment(Array($count,$element)) => c11.types.alignment($element);
+effect c11.types.alignment(Record($name,$fields)) => arg(record_layout($fields),1);
+effect c11.types.alignment(Union($name,$fields)) => arg(union_layout($fields),1);
+effect c11.types.alignment(FlexibleArray($element)) => c11.types.alignment($element);
+effect c11.types.alignment(Qualified($type,$const,$volatile,$restrict)) => c11.types.alignment($type);
+effect c11.types.alignment(AlignedType($type,$alignment)) => c11.types.alignment($type);
+effect[fallback] c11.types.alignment($type) => c11.types.bytes($type);
+effect c11.types.record_layout($fields) => layout.sequential(list.map("c11.types.field_layout",$fields));
+effect c11.types.union_layout($fields) => layout.overlap(list.map("c11.types.field_layout",$fields));
+effect c11.types.field_layout(Field($name,$type)) => [c11.types.bytes($type),c11.types.alignment($type)];
+effect c11.types.round_up($value,$alignment) => layout.round_up($value,$alignment);
+// Integer storage units retain the union's target size/alignment and provide
+// pointer-sized relocation slots at every naturally aligned pointer offset.
+// A language member is independent of this physical representation.
+effect union_anchor($fields) => bind(Anchor($type,$alignment),list.fold("c11.types.anchor_member",$fields,Anchor(PlainChar(),1)),$type);
+effect anchor_member(Anchor($current,$alignment),Field($name,$type)) => choose(lt($alignment,c11.types.alignment($type)),
+    Anchor($type,c11.types.alignment($type)),Anchor($current,$alignment));
+effect union_unit($fields) => bind($alignment,arg(c11.types.union_layout($fields),1),
+    choose(lt(4,$alignment),8,choose(lt(2,$alignment),4,choose(lt(1,$alignment),2,1))));
+effect union_repr(Union($name,$fields)) => bind($unit,union_unit($fields),
+    concat("!llvm.array<",concat(text(int.div(c11.types.bytes(Union($name,$fields)),$unit)),concat(" x i",concat(text(mul($unit,8)),">")))));
+effect[fallback] c11.types.bytes($type)
+    => fail("sizeof requires a complete supported C object type");
+
+// C integer constants select a candidate list before any contextual conversion.
+effect c11.types.literal($raw) => choose(c11.types.real_spelling(text.lower($raw)),c11.types.real_literal(text.lower($raw)),c11.types.integer_literal(text.lower($raw)));
+// Hexadecimal digits can contain `e`; their exponent marker is `p`.
+effect c11.types.real_spelling($raw) => or(text.contains($raw,"."),
+    choose(text.starts($raw,"0x"),text.contains($raw,"p"),text.contains($raw,"e")));
+effect c11.types.integer_literal($raw) => bind([$digits,$suffix],c11.types.suffix($raw,text.len($raw)),
+    bind($value,int.parse(c11.types.octal($digits)),base.Typed(c11.types.first_fit($value,c11.types.candidates($digits,$suffix)),base.Integer($value))));
+effect[fallback] c11.types.suffix($raw,$end) => choose(and(lt(0,$end),text.contains("ul",text.slice($raw,sub($end,1),$end))),c11.types.suffix($raw,sub($end,1)),
+    [text.slice($raw,0,$end),text.slice($raw,$end,text.len($raw))]);
+effect c11.types.octal($digits) => choose(and(lt(1,text.len($digits)),and(text.starts($digits,"0"),not(text.starts($digits,"0x")))),concat("0o",text.slice($digits,1,text.len($digits))),$digits);
+effect c11.types.decimal($digits) => not(and(lt(1,text.len($digits)),text.starts($digits,"0")));
+effect c11.types.candidates($digits,"") => choose(c11.types.decimal($digits),[c11.types.integer("int"),c11.types.integer("long"),c11.types.integer("long long")],
+    [c11.types.integer("int"),c11.types.integer("unsigned int"),c11.types.integer("long"),c11.types.integer("unsigned long"),c11.types.integer("long long"),c11.types.integer("unsigned long long")]);
+effect c11.types.candidates($digits,"u") => [c11.types.integer("unsigned int"),c11.types.integer("unsigned long"),c11.types.integer("unsigned long long")];
+effect c11.types.candidates($digits,"l") => choose(c11.types.decimal($digits),[c11.types.integer("long"),c11.types.integer("long long")],
+    [c11.types.integer("long"),c11.types.integer("unsigned long"),c11.types.integer("long long"),c11.types.integer("unsigned long long")]);
+effect c11.types.candidates($digits,"ll") => choose(c11.types.decimal($digits),[c11.types.integer("long long")],[c11.types.integer("long long"),c11.types.integer("unsigned long long")]);
+effect c11.types.candidates($digits,"ul") => [c11.types.integer("unsigned long"),c11.types.integer("unsigned long long")];
+effect c11.types.candidates($digits,"lu") => [c11.types.integer("unsigned long"),c11.types.integer("unsigned long long")];
+effect c11.types.candidates($digits,"ull") => [c11.types.integer("unsigned long long")];
+effect c11.types.candidates($digits,"llu") => [c11.types.integer("unsigned long long")];
+effect[fallback] c11.types.candidates($digits,$suffix) => fail("invalid C integer constant suffix");
+effect c11.types.first_fit($value,[]) => fail("C integer constant exceeds supported target integer types");
+effect c11.types.first_fit($value,$types) when lt(0,size($types)) => bind(IntType($rank,$width,$unsigned),list.head($types),
+    choose(int.fits($value,$width,not($unsigned)),IntType($rank,$width,$unsigned),c11.types.first_fit($value,list.tail($types))));
+effect c11.types.real_literal($raw) => bind($last,text.slice($raw,sub(text.len($raw),1),text.len($raw)),
+    bind($descriptor,choose(eq($last,"f"),c11.types.floating("float"),choose(eq($last,"l"),c11.types.floating("long double"),c11.types.floating("double"))),
+        bind($spelling,choose(or(eq($last,"f"),eq($last,"l")),text.slice($raw,0,sub(text.len($raw),1)),$raw),
+            base.Typed($descriptor,base.Floating(numbers.real($spelling,c11.types.storage($descriptor)))))));
+effect c11.types.floating_zero($type) => base.Typed($type,base.Floating(numbers.real("0.0",c11.types.storage($type))));
+effect c11.types.character($raw) => bind($decoded,text.unquote($raw),choose(eq(text.len($decoded),1),
+    base.Typed(c11.types.integer("int"),base.Integer(text.byte($decoded,0))),fail("wide and multicharacter C constants are not implemented")));
+
+effect base.opcode($operation,IntType($rank,$width,$unsigned)) => base.opcode($operation,c11.types.storage(IntType($rank,$width,$unsigned)));
+effect base.opcode($operation,FloatType($rank,$format)) => base.opcode($operation,c11.types.storage(FloatType($rank,$format)));
+effect base.predicate($operation,IntType($rank,$width,$unsigned)) => base.predicate($operation,c11.types.storage(IntType($rank,$width,$unsigned)));
+effect base.predicate($operation,FloatType($rank,$format)) => base.predicate($operation,c11.types.storage(FloatType($rank,$format)));
+effect c11.types.cast($from,$to) when and(c11.types.is_arithmetic($from),c11.types.is_arithmetic($to)) => c11.types.cast_storage(c11.types.storage($from),c11.types.storage($to));
+effect c11.types.cast(Pointer($from),Pointer($to)) => "identity";
+effect c11.types.cast_storage(types.Signed($from),types.Signed($to)) => base.integer_cast($from,$to,"arith.extsi");
+effect c11.types.cast_storage(types.Signed($from),types.Unsigned($to)) => base.integer_cast($from,$to,"arith.extsi");
+effect c11.types.cast_storage(types.Unsigned($from),types.Signed($to)) => base.integer_cast($from,$to,"arith.extui");
+effect c11.types.cast_storage(types.Unsigned($from),types.Unsigned($to)) => base.integer_cast($from,$to,"arith.extui");
+effect c11.types.cast_storage(types.Signed($from),types.Real($to)) => "arith.sitofp";
+effect c11.types.cast_storage(types.Unsigned($from),types.Real($to)) => "arith.uitofp";
+effect c11.types.cast_storage(types.Real($from),types.Signed($to)) => "arith.fptosi";
+effect c11.types.cast_storage(types.Real($from),types.Unsigned($to)) => "arith.fptoui";
+effect c11.types.cast_storage(types.Real($from),types.Real($to)) => choose(eq($from,$to),"identity",choose(eq($to,"f32"),"arith.truncf","arith.extf"));
+
+effect c11.types.pointer_compatible(FunctionType($ar,$ap,$av,$ax),FunctionType($br,$bp,$bv,$bx))
+    => and(eq($ar,$br),and(eq($av,$bv),eq(list.map("c11.types.signature_parameter",$ap),list.map("c11.types.signature_parameter",$bp))));
+effect c11.types.signature_parameter(base.Param($name,$type)) => c11.types.unqualified($type);

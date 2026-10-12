@@ -1,0 +1,127 @@
+<html><head>
+<title>3.7 External definitions</title>
+<link rel="made" rev="made" href="mailto:jutta@cs.tu-berlin.de">
+</head>
+<body>
+<a href="c6.html">3.6 Statements</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-7">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c8.html">3.8 Preprocessing directives</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+<hr>
+<p>
+<h1><a name="3-7">3.7</a>&#160;<tt> </tt>External definitions</h1>
+<p>
+<h2><a name="3-7-1">3.7.1</a>&#160;<tt> </tt>Function definitions</h2>
+<p>
+A <a name="function-definition"><i>function definition</i></a> may have its old form
+(and say nothing about arguments on calls),
+or it may be introduced by a <a name="prototype"><i>prototype</i></a>
+(which affects argument checking and coercion on subsequent calls).&#160;<tt> </tt>
+(See also <a href="c1.html#3-1-2-2">&#167;3.1.2.2</a>.)&#160;<tt> </tt>
+<p>
+
+To avoid a nasty ambiguity,
+the Standard bans the use of <code>typedef</code> names as formal parameters.&#160;<tt> </tt>
+For instance, in translating the text
+<pre>        int f(size_t, a_t, b_t, c_t, d_t, e_t, f_t, g_t,
+              h_t, i_t, j_t, k_t, l_t, m_t, n_t, o_t,
+              p_t, q_t, r_t, s_t)
+</pre>the translator determines that the construct can only be a prototype declaration
+as soon as it scans the first <code>size_t</code> and following comma.&#160;<tt> </tt>
+In the absence of this rule, it might be necessary to see
+the token following the
+right parenthesis that closes the parameter list,
+which would require a sizeable look-ahead,
+before deciding whether the text under scrutiny is a prototype declaration
+or an old-style function header definition.&#160;<tt> </tt>
+<p>
+
+An argument list must be explicitly present in the declarator;
+it cannot be inherited from a <a name="typedef-3-7-1"><code>typedef</code></a> (see <a href="c5.html#3-5-4-3">&#167;3.5.4.3</a>).&#160;<tt> </tt>
+That is to say, given the definition
+<pre>        typedef int p(int q, int r);
+</pre>the following fragment is invalid:
+<pre>        p funk 			/* weird */
+        { return q + r ; }
+</pre><p>
+
+Some current implementations rewrite the type of a
+(for instance)&#160;<tt> </tt>
+<code>char</code> parameter as if it were declared <code>int</code>,
+since the argument is known to be passed as an <code>int</code>
+(in the absence of prototypes).&#160;<tt> </tt>
+The Standard requires, however, that the received argument be converted
+<a name="as-if"><i>as if</i></a> by assignment upon function entry.&#160;<tt> </tt>
+Type rewriting is thus no longer permissible.&#160;<tt> </tt>
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>Functions that depend on <code>char</code> or <code>short</code>
+parameter types being widened to <code>int</code>,
+or <code>float</code> to <code>double</code>, may behave differently.&#160;<tt> </tt>
+</ul>
+Notes for implementors:
+the assignment conversion for argument passing
+often requires no executable code.&#160;<tt> </tt>
+In most twos-complement machines, a <code>short</code> or <code>char</code>
+is a contiguous subset of the bytes comprising the <code>int</code>
+actually passed (for even the most unusual byte orderings),
+so that assignment conversion can be
+effected by adjusting the address of the
+argument (if necessary) .&#160;<tt> </tt>
+<p>
+For an argument declared <code>float</code>, however,
+an explicit conversion must usually be performed from the
+<code>double</code> actually passed to the <code>float</code> desired.&#160;<tt> </tt>
+Not many implementations can subset the bytes of a <code>double</code>
+to get a <code>float</code>.&#160;<tt> </tt>
+(Even those that apparently permit simple truncation often get the wrong
+answer on certain negative numbers.)&#160;<tt> </tt>
+<p>
+
+Some current implementations permit an argument to be masked by a declaration
+of the same identifier in the outermost block of a function.&#160;<tt> </tt>
+This usage is almost always an erroneous attempt
+by a novice C programmer to declare the argument;
+it is rarely the result of a deliberate attempt to render the argument
+unreachable.&#160;<tt> </tt>
+The Committee decided, therefore,
+that arguments are effectively declared in the outermost block,
+and hence cannot be quietly redeclared in that block.&#160;<tt> </tt>
+<p>
+
+The Committee considered it important
+that a function taking a variable number of arguments,
+such as <code>printf</code>,
+be expressible portably in C.&#160;<tt> </tt>
+Hence, the Committee devoted much time to exploring methods of traversing
+variable argument lists.&#160;<tt> </tt>
+One proposal was to require arguments to be passed as a
+``brick''&#160;<tt> </tt>
+(i.e., a contiguous area of memory),
+the layout of which would be sufficiently well specified
+that a portable method of traversing the brick could be determined.&#160;<tt> </tt>
+<p>
+Several diverse implementations,
+however,
+can implement argument passing more efficiently if the arguments
+are not required to be contiguous.&#160;<tt> </tt>
+Thus, the Committee decided to hide the implementation details
+of determining the location of successive elements of an argument list
+behind a standard set of macros (see <a href="d8.html#4-8">&#167;4.8</a>).&#160;<tt> </tt>
+<p>
+<h2><a name="3-7-2">3.7.2</a>&#160;<tt> </tt>External object definitions</h2>
+<p>
+See <a href="c1.html#3-1-2-2">&#167;3.1.2.2</a>.&#160;<tt> </tt>
+<hr>
+<a href="c6.html">3.6 Statements</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-7">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c8.html">3.8 Preprocessing directives</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+</body></html>

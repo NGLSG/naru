@@ -1,0 +1,20 @@
+mod operator_extension;
+use base;
+use operators;
+use types;
+use records;
+
+syntax operator_symbol `@` => "@";
+syntax expr[55,left] `$a:expr @ $b:expr` => operators.OperatorExpression("@", [$a, $b]);
+effect operators.extension("@", $hints, $environment)
+    => operators.Candidate([Signed(32), Signed(32)], Signed(32), operators.FunctionTarget("combine"));
+// This effect runs at compilation time and returns ordinary checked terms.
+effect operators.extension("+", [Signed(32), Unsigned(8)], $environment)
+    => operators.Candidate([Signed(32), Unsigned(8)], Signed(32), operators.RuleTarget("operator_extension.mixed"));
+effect mixed([$a, $b], $environment)
+    => base.Typed(Signed(32), base.Binary("add", $a, base.Typed(Signed(32), base.Converted($b))));
+// A new type-directed meaning for the already installed '+' syntax.
+effect operators.extension("+", [Record($name, $fields), Signed(32)], $environment) when eq($name, "Point")
+    => operators.Candidate([Record($name, $fields), Signed(32)], Record($name, $fields), operators.FunctionTarget("translate"));
+effect claims("yes") => "dynamic";
+effect[fallback] claims($value) => "fallback";

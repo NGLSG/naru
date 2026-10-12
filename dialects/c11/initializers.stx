@@ -1,0 +1,352 @@
+// Composable C11 initializer facts.
+//
+// The core C11 object rules deliberately only know how to fill one flat
+// sequence.  This layer adds the recursive syntax and the missing aggregate
+// facts without teaching the parser or the MLIR backend about C syntax.  A
+// nested initializer is represented by the same Initializer term at every
+// depth, so existing array/record conversion and zero-fill rules continue to
+// compose.
+mod c11.initializers;
+use base;
+use c11.syntax;
+use c11.types;
+use c11.sema;
+use c11.objects;
+use externc;
+
+// Unsized initialized objects gain their bound before declarations enter the
+// semantic environment, so sizeof and later references see the completed type.
+effect c11.syntax.initialized_type(c11.types.IncompleteArray($element),c11.syntax.Initializer($values))
+    => c11.types.Array(size($values),$element);
+effect c11.syntax.initialized_type(c11.types.IncompleteArray($element),DesignatedInitializer($values))
+    => bind(Extent($next,$maximum),list.fold("c11.initializers.extent_step",$values,Extent(0,0)),
+        c11.types.Array($maximum,$element));
+effect c11.syntax.initialized_type(c11.types.Qualified($type,$const,$volatile,$restrict),$value)
+    => c11.types.Qualified(c11.syntax.initialized_type($type,$value),$const,$volatile,$restrict);
+effect c11.syntax.initialized_type(c11.types.AlignedType($type,$alignment),$value)
+    => c11.types.AlignedType(c11.syntax.initialized_type($type,$value),$alignment);
+effect extent_step(Extent($next,$maximum),DesignatedIndex($index,$value))
+    => bind(base.Typed($type,base.Integer($number)),c11.sema.integer_constant_value($index,syntax.context()),
+        choose(and(c11.types.is_integer($type),not(lt($number,0))),extent_add(add($number,1),$maximum),
+            fail("C array designator requires a nonnegative integer constant")));
+effect extent_step(Extent($next,$maximum),DesignatedMember($name,$value))
+    => fail("record designator used in an array initializer");
+effect[fallback] extent_step(Extent($next,$maximum),$value) => extent_add(add($next,1),$maximum);
+effect extent_add($next,$maximum) => Extent($next,choose(lt($maximum,$next),$next,$maximum));
+
+// C11 compound literals are primary expressions.  They deliberately reuse
+// the recursive initializer category so a compound literal and a declaration
+// initializer have identical designated/nested semantics.
+syntax c11.expr[100,left] `($type:c11.type) { $values:c11.initializer_values }`
+    => bind($initializer,c11.syntax.make_initializer($values),
+        c11.syntax.CompoundLiteral(c11.syntax.initialized_type($type,$initializer),$initializer));
+syntax c11.expr[100,left] `($type:c11.type) { $values:c11.initializer_values, }`
+    => bind($initializer,c11.syntax.make_initializer($values),
+        c11.syntax.CompoundLiteral(c11.syntax.initialized_type($type,$initializer),$initializer));
+
+// The higher-priority form subsumes the old flat `c11.arguments` form.  It is
+// intentionally recursive: `{ {1, 2}, {3}, }` and `{ 1, 2, }` use one grammar
+// and therefore cannot diverge in later extensions.  The old rules remain as
+// a compatibility fallback for dialects that load this module before a frozen
+// grammar snapshot.
+syntax c11.initializer_values `$value:c11.initializer` => [$value];
+syntax c11.initializer_values `$value:c11.initializer, $rest:c11.initializer_values`
+    => list.prepend($value,$rest);
+
+// Designators are initializer values, rather than expression operators.  This
+// keeps them composable with nested braces: `.field = { 1, 2 }` and
+// `[constant] = { .field = 3 }` use the same recursive category.
+syntax c11.initializer `.$member:ident = $value:c11.initializer`
+    => DesignatedMember($member,$value);
+syntax c11.initializer `[$index:c11.sequence] = $value:c11.initializer`
+    => DesignatedIndex($index,$value);
+
+// The shared brace production calls this hook.  Keeping the representation
+// distinct is essential: the flat object rules remain valid for ordinary
+// initializers while this module can own cursor/duplicate checking for a
+// designated list without equal-priority rule conflicts.
+effect c11.syntax.make_initializer($values) when has_designator($values)
+    => DesignatedInitializer($values);
+effect has_designator([]) => 0;
+effect has_designator($values) when lt(0,size($values))
+    => or(is_designator(list.head($values)),has_designator(list.tail($values)));
+effect is_designator(DesignatedMember($name,$value)) => 1;
+effect is_designator(DesignatedIndex($index,$value)) => 1;
+effect is_designator(c11.syntax.Initializer($values)) => has_designator($values);
+effect is_designator(DesignatedInitializer($values)) => has_designator($values);
+effect[fallback] is_designator($value) => 0;
+
+// Object filling supplies the expected element/member type through this hook;
+// `base.check(..., Any())` cannot infer it for a nested brace term.
+effect c11.objects.initializer_value(c11.syntax.Initializer($values),$type,$env)
+    => c11.sema.initializer(c11.syntax.Initializer($values),$env,$type);
+effect c11.objects.initializer_value(DesignatedInitializer($values),$type,$env)
+    => c11.sema.initializer(DesignatedInitializer($values),$env,$type);
+effect is_braced(c11.syntax.Initializer($values)) => 1;
+effect is_braced(DesignatedInitializer($values)) => 1;
+effect[fallback] is_braced($value) => 0;
+effect c11.objects.initializer_value($value,$type,$env) when not(is_braced($value))
+    => c11.sema.convert_expression($value,$env,c11.types.unqualified($type));
+
+// A compound literal is an lvalue with temporary storage.  Keep the checked
+// aggregate in its reference so every read/address/member operation lowers
+// through the same object path as an ordinary local object.
+effect base.check(c11.syntax.CompoundLiteral($type,$initializer),$env,$expected)
+    => bind($complete,c11.sema.complete_type($type,$env),
+        bind($value,c11.sema.initializer($initializer,$env,$complete),
+            c11.sema.contextual(c11.sema.complete_value(c11.sema.object_read($complete,
+                CompoundReference($complete,$value)),$env),$expected)));
+effect c11.sema.lvalue(c11.syntax.CompoundLiteral($type,$initializer),$env)
+    => bind($complete,c11.sema.complete_type($type,$env),
+        bind($value,c11.sema.initializer($initializer,$env,$complete),
+            CompoundReference($complete,$value)));
+effect base.check(c11.syntax.Address(c11.syntax.CompoundLiteral($type,$initializer)),$env,$expected)
+    => bind($reference,c11.sema.lvalue(c11.syntax.CompoundLiteral($type,$initializer),$env),
+        c11.sema.contextual(base.Typed(c11.types.Pointer(arg($reference,0)),ReferenceAddress($reference)),$expected));
+effect c11.sema.reference_pointer(CompoundReference($type,$value),$env)
+    => bind($slot,c11.sema.allocate($type),
+        seq(mlir.op("llvm.store",[base.lower($value,$env),$slot],[],[],[]),$slot));
+
+// C11 6.7.9p11 permits braces around a scalar initializer.  Aggregate rules
+// below remain more specific; this guarded rule only handles scalar targets.
+effect c11.sema.initializer(Initializer($values),$env,$type)
+    when not(initializer_aggregate_type($type)) => initializer_scalar($values,$env,$type);
+effect initializer_scalar([],$env,$type) => fail("empty scalar C initializer");
+effect initializer_scalar($values,$env,$type) when eq(size($values),1)
+    => c11.objects.initializer_value(list.head($values),$type,$env);
+effect[fallback] initializer_scalar($values,$env,$type)
+    => fail("too many scalar C initializers");
+effect initializer_aggregate_type(c11.types.Array($count,$element)) => 1;
+effect initializer_aggregate_type(c11.types.Record($name,$fields)) => 1;
+effect initializer_aggregate_type(c11.types.Union($name,$fields)) => 1;
+effect initializer_aggregate_type(c11.types.Qualified($type,$const,$volatile,$restrict))
+    => initializer_aggregate_type($type);
+effect[fallback] initializer_aggregate_type($type) => 0;
+
+// A union has one active member.  C permits one initializer for the first
+// member; additional values are diagnosed rather than silently discarded.
+effect c11.sema.initializer(c11.syntax.Initializer($values),$env,c11.types.Union($name,$fields))
+    => base.Typed(c11.types.Union($name,$fields),Packed(union_values($values,$fields,$env)));
+effect union_values([],$fields,$env)
+    => [c11.sema.zero(c11.types.field_type(list.head($fields)))];
+effect union_values($values,$fields,$env) when eq(size($values),1)
+    => bind($type,c11.types.field_type(list.head($fields)),
+        [c11.objects.initializer_value(list.head($values),$type,$env)]);
+effect union_values($values,$fields,$env) when lt(1,size($values))
+    => fail("too many C union initializers");
+effect c11.sema.initializer(DesignatedInitializer($values),$env,c11.types.Union($name,$fields))
+    => base.Typed(c11.types.Union($name,$fields),Packed(union_design_values($values,$fields,$env)));
+effect union_design_values([],$fields,$env) => union_values([],$fields,$env);
+effect union_design_values([DesignatedMember($name,$value)],$fields,$env)
+    => bind([$index,$type],c11.objects.field($name,$fields,0),[c11.objects.initializer_value($value,$type,$env)]);
+effect[fallback] union_design_values($values,$fields,$env) => fail("unsupported C union designated initializer list");
+
+// Designated arrays.  The cursor is advanced after every item, while an
+// explicit index resets it to one past that index.  Assignments are kept in an
+// environment so order is independent and duplicate indices are diagnosed.
+effect c11.sema.initializer(DesignatedInitializer($values),$env,c11.types.Array($count,$element))
+    => bind(ArrayDesign($slots,$next,$limit,$descriptor,$item_env),
+        list.fold("c11.initializers.array_design_step",$values,ArrayDesign(env.empty(),0,$count,$element,$env)),
+        base.Typed(c11.types.Array($count,$element),Packed(array_design_collect($slots,0,$count,$element))));
+effect array_design_step(ArrayDesign($slots,$next,$count,$element,$env),DesignatedIndex($index,$value))
+    => bind(base.Typed($index_type,$index_value),c11.sema.integer_constant_value($index,$env),
+        array_design_index(base.Typed($index_type,$index_value),$value,$slots,$next,$count,$element,$env));
+effect array_design_index(base.Typed($type,base.Integer($index)),$value,$slots,$next,$count,$element,$env)
+    when not(c11.types.is_integer($type)) => fail("C array designator requires an integer constant");
+effect array_design_index(base.Typed($type,base.Integer($index)),$value,$slots,$next,$count,$element,$env)
+    => bind($converted,c11.objects.initializer_value($value,$element,$env),
+        array_design_store(ArrayDesign($slots,$next,$count,$element,$env),$index,$converted));
+effect array_design_step(ArrayDesign($slots,$next,$count,$element,$env),DesignatedMember($name,$value))
+    => fail("record designator used in an array initializer");
+effect array_design_step(ArrayDesign($slots,$next,$count,$element,$env),$value)
+    when and(eq($next,$count),not(is_designator($value))) => fail("too many C array initializers");
+effect array_design_step(ArrayDesign($slots,$next,$count,$element,$env),$value)
+    when and(lt($next,$count),not(is_designator($value)))
+    => bind($converted,c11.objects.initializer_value($value,c11.types.unqualified($element),$env),
+        array_design_store(ArrayDesign($slots,$next,$count,$element,$env),$next,$converted));
+effect array_design_store(ArrayDesign($slots,$next,$count,$element,$env),$index,$value)
+    when lt($index,0) => fail("negative C array initializer index");
+effect array_design_store(ArrayDesign($slots,$next,$count,$element,$env),$index,$value)
+    when not(lt($index,$count)) => fail("C array initializer index is out of bounds");
+effect array_design_store(ArrayDesign($slots,$next,$count,$element,$env),$index,$value)
+    => ArrayDesign(env.put($slots,IndexKey($index),$value),add($index,1),$count,$element,$env);
+effect array_design_collect($slots,$index,$count,$element) when eq($index,$count) => [];
+effect array_design_collect($slots,$index,$count,$element) when lt($index,$count)
+    => list.prepend(choose(env.contains($slots,IndexKey($index)),env.get($slots,IndexKey($index)),c11.sema.zero($element)),
+        array_design_collect($slots,add($index,1),$count,$element));
+
+// Designated records use the same state machine but map keys to member names.
+// A normal value advances to the next declaration-order member; a member
+// designator resumes at the following declaration member.
+effect c11.sema.initializer(DesignatedInitializer($values),$env,c11.types.Record($name,$fields))
+    => bind(RecordDesign($slots,$next,$members,$scope),
+        list.fold("c11.initializers.record_design_step",$values,RecordDesign(env.empty(),0,$fields,$env)),
+        base.Typed(c11.types.Record($name,$fields),Packed(record_design_collect($slots,$fields))));
+effect record_design_step(RecordDesign($slots,$next,$fields,$env),DesignatedIndex($index,$value))
+    => fail("array designator used in a record initializer");
+effect record_design_step(RecordDesign($slots,$next,$fields,$env),DesignatedMember($name,$value))
+    => bind([$field_index,$field_type],c11.objects.field($name,$fields,0),
+        bind($converted,c11.objects.initializer_value($value,$field_type,$env),
+            record_design_store(RecordDesign($slots,$next,$fields,$env),$name,$field_index,$converted)));
+effect record_design_step(RecordDesign($slots,$next,$fields,$env),$value)
+    when and(eq($next,size($fields)),not(is_designator($value))) => fail("too many C record initializers");
+effect record_design_step(RecordDesign($slots,$next,$fields,$env),$value)
+    when and(lt($next,size($fields)),not(is_designator($value)))
+    => bind(c11.types.Field($name,$field_type),record_field_at($fields,$next),
+        bind($converted,c11.objects.initializer_value($value,$field_type,$env),
+            record_design_store(RecordDesign($slots,$next,$fields,$env),$name,$next,$converted)));
+effect record_field_at($fields,0) => list.head($fields);
+effect record_field_at($fields,$index) when lt(0,$index)
+    => record_field_at(list.tail($fields),sub($index,1));
+effect record_design_store(RecordDesign($slots,$next,$fields,$env),$name,$index,$value)
+    => RecordDesign(env.put($slots,MemberKey($name),$value),add($index,1),$fields,$env);
+effect record_design_collect($slots,[]) => [];
+effect record_design_collect($slots,$fields) when lt(0,size($fields))
+    => bind(c11.types.Field($name,$type),list.head($fields),
+        list.prepend(choose(env.contains($slots,MemberKey($name)),env.get($slots,MemberKey($name)),c11.sema.zero($type)),
+            record_design_collect($slots,list.tail($fields))));
+
+// Preserve the environment while walking nested static initializers.  The
+// existing scalar constant relation is intentionally unchanged; this wrapper
+// only appears when a brace initializer occurs inside another initializer.
+effect c11.sema.constant_value(c11.syntax.Initializer($values),$env)
+    => AggregateConstant(constant_values($values,$env));
+effect c11.sema.constant_value(DesignatedInitializer($values),$env)
+    => DesignatedAggregateConstant(constant_values($values,$env));
+effect c11.sema.constant_value(DesignatedIndex($index,$value),$env)
+    => DesignatedConstantIndex(c11.sema.integer_constant_value($index,$env),c11.sema.initializer_constant($value,$env));
+effect c11.sema.constant_value(DesignatedMember($name,$value),$env)
+    => DesignatedConstantMember($name,c11.sema.initializer_constant($value,$env));
+effect constant_values($values,$env)
+    => bind(ConstantValues($out,$scope),
+        list.fold("c11.initializers.constant_value_step",$values,ConstantValues([],$env)),
+        list.reverse($out));
+effect constant_value_step(ConstantValues($out,$env),$value)
+    => ConstantValues(list.prepend(c11.sema.initializer_constant($value,$env),$out),$env);
+
+// Type-directed conversion makes nested aggregates work for both automatic
+// and static objects.  Array conversion reuses the existing bounded fill
+// iterator, retaining its excess-element diagnostic and zero fill policy.
+effect c11.sema.constant_convert($value,c11.types.Qualified($type,$const,$volatile,$restrict))
+    => c11.sema.constant_convert($value,$type);
+effect c11.sema.constant_convert($value,c11.types.AlignedType($type,$alignment))
+    => c11.sema.constant_convert($value,$type);
+effect c11.sema.constant_convert(AggregateConstant($values),c11.types.Array($count,$element))
+    => base.Typed(c11.types.Array($count,$element),
+        Packed(c11.objects.constant_array($values,$count,$element)));
+effect c11.sema.constant_convert(DesignatedAggregateConstant($values),c11.types.Array($count,$element))
+    => base.Typed(c11.types.Array($count,$element),Packed(constant_design_array($values,$count,$element)));
+effect c11.sema.constant_convert(AggregateConstant($values),c11.types.Record($name,$fields))
+    => base.Typed(c11.types.Record($name,$fields),
+        Packed(constant_record_values($values,$fields)));
+effect c11.sema.constant_convert(DesignatedAggregateConstant($values),c11.types.Record($name,$fields))
+    => base.Typed(c11.types.Record($name,$fields),Packed(constant_design_record($values,$fields)));
+effect c11.sema.constant_convert(AggregateConstant($values),c11.types.Union($name,$fields))
+    => base.Typed(c11.types.Union($name,$fields),
+        Packed(constant_union_values($values,$fields)));
+effect c11.sema.constant_convert(DesignatedAggregateConstant($values),c11.types.Union($name,$fields))
+    => base.Typed(c11.types.Union($name,$fields),Packed(constant_design_union($values,$fields)));
+effect c11.sema.constant_convert(AggregateConstant([$value]),$type)
+    when not(initializer_aggregate_type($type)) => c11.sema.constant_convert($value,$type);
+
+effect constant_record_values($values,$fields)
+    => choose(lt(size($fields),size($values)),fail("too many C record initializers"),
+        bind(RecordConstants($out,$remaining,$types),
+            list.fold("c11.initializers.constant_record_step",$fields,RecordConstants([],$values,[])),
+            list.reverse($out)));
+effect constant_record_step(RecordConstants($out,$values,$types),c11.types.Field($name,$type))
+    => RecordConstants(list.prepend(choose(eq(size($values),0),c11.sema.zero($type),
+        c11.sema.constant_convert(list.head($values),$type)),$out),
+        choose(eq(size($values),0),[],list.tail($values)),list.prepend($type,$types));
+
+effect constant_union_values([],$fields)
+    => [c11.sema.zero(c11.types.field_type(list.head($fields)))];
+effect constant_union_values($values,$fields) when eq(size($values),1)
+    => [c11.sema.constant_convert(list.head($values),c11.types.field_type(list.head($fields)))];
+effect constant_union_values($values,$fields) when lt(1,size($values))
+    => fail("too many C union initializers");
+
+// Constant designated folds mirror runtime folds, but values have already
+// passed c11.sema.constant_value and therefore cannot introduce executable IR.
+effect constant_design_array($values,$count,$element)
+    => bind(ConstantDesign($slots,$next,$limit,$item),
+        list.fold("c11.initializers.constant_design_array_step",$values,
+            ConstantDesign(env.empty(),0,$count,$element)),
+        constant_design_array_collect($slots,0,$count,$element));
+effect constant_design_array_step(ConstantDesign($slots,$next,$count,$element),DesignatedConstantIndex(base.Typed($type,base.Integer($index)),$value))
+    when not(c11.types.is_integer($type)) => fail("C array designator requires an integer constant");
+effect constant_design_array_step(ConstantDesign($slots,$next,$count,$element),DesignatedConstantIndex(base.Typed($type,base.Integer($index)),$value))
+    when c11.types.is_integer($type)
+    => constant_design_array_store(ConstantDesign($slots,$next,$count,$element),$index,
+        c11.sema.constant_convert($value,$element));
+effect constant_design_array_step(ConstantDesign($slots,$next,$count,$element),DesignatedConstantMember($name,$value))
+    => fail("record designator used in an array initializer");
+effect constant_design_array_step(ConstantDesign($slots,$next,$count,$element),$value)
+    when and(eq($next,$count),not(is_constant_designator($value))) => fail("too many C array initializers");
+effect constant_design_array_step(ConstantDesign($slots,$next,$count,$element),$value)
+    when and(lt($next,$count),not(is_constant_designator($value)))
+    => constant_design_array_store(ConstantDesign($slots,$next,$count,$element),$next,
+        c11.sema.constant_convert($value,$element));
+effect is_constant_designator(DesignatedConstantIndex($index,$value)) => 1;
+effect is_constant_designator(DesignatedConstantMember($name,$value)) => 1;
+effect[fallback] is_constant_designator($value) => 0;
+effect constant_design_array_store(ConstantDesign($slots,$next,$count,$element),$index,$value)
+    when lt($index,0) => fail("negative C array initializer index");
+effect constant_design_array_store(ConstantDesign($slots,$next,$count,$element),$index,$value)
+    when not(lt($index,$count)) => fail("C array initializer index is out of bounds");
+effect[fallback] constant_design_array_store(ConstantDesign($slots,$next,$count,$element),$index,$value)
+    => ConstantDesign(env.put($slots,IndexKey($index),$value),add($index,1),$count,$element);
+effect constant_design_array_collect($slots,$index,$count,$element) when eq($index,$count) => [];
+effect constant_design_array_collect($slots,$index,$count,$element) when lt($index,$count)
+    => list.prepend(choose(env.contains($slots,IndexKey($index)),env.get($slots,IndexKey($index)),c11.sema.zero($element)),
+        constant_design_array_collect($slots,add($index,1),$count,$element));
+
+effect constant_design_record($values,$fields)
+    => bind(ConstantRecordDesign($slots,$next,$members),
+        list.fold("c11.initializers.constant_design_record_step",$values,
+            ConstantRecordDesign(env.empty(),0,$fields)),
+        constant_design_record_collect($slots,$fields));
+effect constant_design_record_step(ConstantRecordDesign($slots,$next,$fields),DesignatedConstantIndex($index,$value))
+    => fail("array designator used in a record initializer");
+effect constant_design_record_step(ConstantRecordDesign($slots,$next,$fields),DesignatedConstantMember($name,$value))
+    => bind([$field_index,$field_type],c11.objects.field($name,$fields,0),
+        constant_design_record_store(ConstantRecordDesign($slots,$next,$fields),$name,$field_index,
+            c11.sema.constant_convert($value,$field_type)));
+effect constant_design_record_step(ConstantRecordDesign($slots,$next,$fields),$value)
+    when and(eq($next,size($fields)),not(is_constant_designator($value))) => fail("too many C record initializers");
+effect constant_design_record_step(ConstantRecordDesign($slots,$next,$fields),$value)
+    when and(lt($next,size($fields)),not(is_constant_designator($value)))
+    => bind(c11.types.Field($name,$type),record_field_at($fields,$next),
+        constant_design_record_store(ConstantRecordDesign($slots,$next,$fields),$name,$next,
+            c11.sema.constant_convert($value,$type)));
+effect constant_design_record_store(ConstantRecordDesign($slots,$next,$fields),$name,$index,$value)
+    => ConstantRecordDesign(env.put($slots,MemberKey($name),$value),add($index,1),$fields);
+effect constant_design_record_collect($slots,[]) => [];
+effect constant_design_record_collect($slots,$fields) when lt(0,size($fields))
+    => bind(c11.types.Field($name,$type),list.head($fields),
+        list.prepend(choose(env.contains($slots,MemberKey($name)),env.get($slots,MemberKey($name)),c11.sema.zero($type)),
+            constant_design_record_collect($slots,list.tail($fields))));
+effect constant_design_union($values,$fields) when eq(size($values),0)
+    => [c11.sema.zero(c11.types.field_type(list.head($fields)))];
+effect constant_design_union($values,$fields) when eq(size($values),1)
+    => [constant_union_member(list.head($values),$fields)];
+effect constant_design_union($values,$fields) when lt(1,size($values))
+    => fail("too many C union initializers");
+effect constant_union_member(DesignatedConstantMember($name,$value),$fields)
+    => bind([$index,$type],c11.objects.field($name,$fields,0),c11.sema.constant_convert($value,$type));
+effect constant_union_member(DesignatedConstantIndex($index,$value),$fields)
+    => fail("array designator used in a union initializer");
+effect constant_union_member($value,$fields) when not(is_constant_designator($value))
+    => c11.sema.constant_convert($value,c11.types.field_type(list.head($fields)));
+
+// C's scalar initializer conversion is already provided by c11.sema.  This
+// explicit fallback gives a useful diagnostic when a brace appears at scalar
+// depth instead of leaking the generic constant-expression error.
+effect[fallback] c11.sema.constant_convert(AggregateConstant($values),$type)
+    => fail("C aggregate initializer requires an aggregate object type");
+
+
+
+
+
+

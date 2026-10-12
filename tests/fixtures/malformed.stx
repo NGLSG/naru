@@ -1,0 +1,2 @@
+mod malformed;
+syntax item `broken $n:int` => Broken($n;

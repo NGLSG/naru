@@ -1,0 +1,21 @@
+// A type library can grow a solver domain without extending compiler code.
+mod constraints;
+use types;
+effect probe(Owned(Buffer())) => 1;
+effect probe(Shared(Buffer())) => 0;
+effect types.solve_one(IsOwned(Owned($value)), $rest, $substitution) => types.solve($rest, $substitution);
+effect[fallback] types.solve_one(IsOwned($value), $rest, $substitution) => Rejected("resource constraint requires Owned(T)");
+effect types.solve_one(HasField(Record($fields), $name, $field), $rest, $substitution)
+    => solve_field($fields, $name, $field, $rest, $substitution);
+effect solve_field([], $wanted, $expected, $rest, $substitution)
+    => Rejected(concat("record field not found: ", $wanted));
+effect solve_field([Field($name, $field)], $name, $expected, $rest, $substitution)
+    => types.solve_result(logic.unify($field, $expected, $substitution), $rest);
+effect[fallback] solve_field([Field($name, $field)], $wanted, $expected, $rest, $substitution)
+    => Rejected(concat("record field not found: ", $wanted));
+effect solve_field($fields, $wanted, $expected, $rest, $substitution) when lt(1, size($fields))
+    => solve_field_tail(list.head($fields), list.tail($fields), $wanted, $expected, $rest, $substitution);
+effect solve_field_tail(Field($wanted, $field), $tail, $wanted, $expected, $rest, $substitution)
+    => types.solve_result(logic.unify($field, $expected, $substitution), $rest);
+effect[fallback] solve_field_tail($head, $tail, $wanted, $expected, $rest, $substitution)
+    => solve_field($tail, $wanted, $expected, $rest, $substitution);

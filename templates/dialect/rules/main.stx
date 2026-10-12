@@ -1,0 +1,5 @@
+// This grammar is an ordinary library extension, not a compiler keyword.
+mod __MODULE_NAME__;
+use base;
+
+syntax expr `answer` => base.Int(42);

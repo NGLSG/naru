@@ -1,0 +1,5 @@
+// This dialect is registered by backend/native/plugins/device.cpp.
+mod native_device;
+syntax item `native_device $workgroups:int` => Device($workgroups);
+effect emit(Device($workgroups))
+    => mlir.op("naru_native.launch", [], [], [Attr("workgroups", $workgroups, "i32")], []);

@@ -1,0 +1,32 @@
+mod c11;
+use base;
+use types;
+use numbers;
+use pipeline;
+use control;
+use externc;
+use headers;
+use tree;
+use layout;
+use cfg;
+use storage;
+use c11.lex;
+use c11.pp;
+use c11.types;
+use c11.syntax;
+use c11.sema;
+use c11.objects;
+use c11.layout;
+use c11.initializers;
+use c11.enums;
+use c11.flow;
+use c11.msvc;
+use c11.scopes;
+use c11.constants;
+use c11.union_storage;
+
+// Raw source entry. Includes are handled by the rules and may have any suffix.
+effect c11.frontend($path,$source,$options) => c11.scopes.parse(
+    list.map("c11.lex.parser_token",c11.msvc.tokens(c11.pp.preprocess($source,$path,$options))));
+effect c11.analyze($items) => c11.sema.analyze($items);
+effect c11.emit_program($items) => c11.sema.emit_program($items);

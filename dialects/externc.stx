@@ -1,0 +1,295 @@
+mod externc;
+use base;
+use pipeline;
+use types;
+use numbers;
+use tree;
+
+// The C FFI adds *facts*, not special cases to the base compiler:
+//   CChar()                 C char (source spelling: char)
+//   CPtr()                  opaque C pointer (source spelling: ptr)
+//   CPtr(T)                 typed C pointer (source spelling: *T)
+//   ForeignSignature(...)  externally implemented function contract
+//   CStringValue(...)      NUL-terminated string literal with static storage
+//
+// C strings are prepared by this library before function lowering: one
+// immutable UTF-8/NUL LLVM global per distinct literal, then address-of in the
+// using function. No mlir.cstring builtin or C-specific core hook is required.
+// Source text and the lexer reject embedded NULs (including unsupported \0).
+//
+// Pointers below use LLVM opaque-pointer representation (!llvm.ptr).  The
+// target LLVM lowering pipeline must support !llvm.ptr across func.call /
+// func.func.  No pointer arithmetic, dereference, ownership transfer, or
+// native C layout inference is implied by these rules.
+
+// ---------------------------------------------------------------------------
+// New source types. C `char` is a distinct semantic type, represented as i8.
+// Its arithmetic signedness is target-dependent and intentionally not inferred.
+// *T is a type spelling, not a dereference expression.
+// ---------------------------------------------------------------------------
+
+syntax typename `char` => CChar();
+syntax typename `ptr` => CPtr();
+syntax typename `* $element:typename` => CPtr($element);
+
+// Open types.repr relation; qualified calls to types.repr must consult imported
+// extensions when the dialect is frozen.
+effect types.repr(CChar()) => "i8";
+effect types.repr(CPtr()) => "!llvm.ptr";
+effect types.repr(CPtr($element)) => "!llvm.ptr";
+
+// ---------------------------------------------------------------------------
+// Literals: quoted strings are C strings; null is an opaque null pointer.
+// Contextual integer literals can initialize C char without erasing its type.
+// String literals are NOT generic Naru strings; their natural type is *char.
+// ---------------------------------------------------------------------------
+
+syntax expr `$literal:string` => CString($literal);
+syntax expr `null` => CNull();
+
+// Preserve the CChar type instead of silently identifying it with Signed(8).
+// For integer literals, the accepted byte range is 0..255; target-specific
+// interpretation of char as signed/unsigned is deferred to C ABI policy.
+effect base.constant($raw, CChar())
+    => Typed(CChar(), Integer(numbers.integer($raw, Unsigned(8))));
+
+effect base.hint(CString($literal), $environment) => CPtr(CChar());
+effect base.hint(CStringRef($name), $environment) => CPtr(CChar());
+effect base.hint(CNull(), $environment) => CPtr();
+
+// A C string may be used as *char or ptr. Reject reinterpretation as *i32,
+// *f64, etc. unless a caller explicitly introduces its own casting rules.
+effect c_string_type(Any()) => CPtr(CChar());
+effect c_string_type(CPtr(CChar())) => CPtr(CChar());
+effect c_string_type(CPtr()) => CPtr();
+effect[fallback] c_string_type($expected)
+    => fail("C string literal expects *char or ptr");
+
+effect base.check(CString($literal), $environment, $expected)
+    => bind($descriptor, c_string_type($expected),
+        Typed($descriptor, CStringValue($literal)));
+effect base.check(CStringRef($name), $environment, $expected)
+    => bind($descriptor, c_string_type($expected),
+        Typed($descriptor, CStringAddress($name)));
+
+// Null has no intrinsic pointee type, so the expected pointer type wins.
+effect c_null_type(Any()) => CPtr();
+effect c_null_type(CPtr()) => CPtr();
+effect c_null_type(CPtr($element)) => CPtr($element);
+effect[fallback] c_null_type($expected)
+    => fail("null requires a pointer type");
+
+effect base.check(CNull(), $environment, $expected)
+    => bind($descriptor, c_null_type($expected),
+        Typed($descriptor, CNullValue()));
+
+// Module preparation names strings before checking; item emit has no storage phase.
+effect base.lower(Typed($descriptor, CStringValue($literal)), $environment)
+    => fail("C string lowering requires --unit program --relation emit_program");
+effect base.lower(Typed($descriptor, CStringAddress($name)), $environment)
+    => mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"], [RawAttr("global_name", concat("@\"", concat($name, "\"")))], []);
+
+effect base.lower(Typed(CPtr($element), CNullValue()), $environment)
+    => mlir.op("llvm.mlir.zero", [], ["!llvm.ptr"], [], []);
+effect base.lower(Typed(CPtr(), CNullValue()), $environment)
+    => mlir.op("llvm.mlir.zero", [], ["!llvm.ptr"], [], []);
+
+// Raw and typed opaque pointers are bitwise-identical under LLVM opaque ptr.
+// Explicit `as` conversions may therefore reinterpret their pointee tags.
+effect base.cast_opcode(CPtr(), CPtr($to)) => "identity";
+effect base.cast_opcode(CPtr($from), CPtr()) => "identity";
+effect base.cast_opcode(CPtr($from), CPtr($to)) => "identity";
+
+// ---------------------------------------------------------------------------
+// `extern "C"` blocks are declarations, not bodies.  c_decl reuses base's
+// parameters grammar so argument names/types have the usual meaning.
+// ---------------------------------------------------------------------------
+
+syntax c_decl `fn $name:ident() -> $result:typename;`
+    => CDecl($name, [], $result);
+syntax c_decl `fn $name:ident($params:parameters) -> $result:typename;`
+    => CDecl($name, $params, $result);
+
+syntax c_decls `$first:c_decl` => [$first];
+syntax c_decls `$first:c_decl $rest:c_decls`
+    => list.prepend($first, $rest);
+
+syntax item `extern "C" { }` => ExternC([]);
+syntax item `extern "C" { $decls:c_decls }` => ExternC($decls);
+
+// ---------------------------------------------------------------------------
+// C ABI facts.  ptr / *T share the LLVM pointer representation.  Validate
+// the described pointee recursively; do not silently accept arbitrary types.
+// ---------------------------------------------------------------------------
+
+effect c_abi_type(CChar()) => CChar();
+effect c_abi_type(Signed(8)) => Signed(8);
+effect c_abi_type(Signed(16)) => Signed(16);
+effect c_abi_type(Signed(32)) => Signed(32);
+effect c_abi_type(Signed(64)) => Signed(64);
+effect c_abi_type(Unsigned(8)) => Unsigned(8);
+effect c_abi_type(Unsigned(16)) => Unsigned(16);
+effect c_abi_type(Unsigned(32)) => Unsigned(32);
+effect c_abi_type(Unsigned(64)) => Unsigned(64);
+effect c_abi_type(Real("f32")) => Real("f32");
+effect c_abi_type(Real("f64")) => Real("f64");
+effect c_abi_type(CPtr()) => CPtr();
+effect c_abi_type(CPtr($element)) => CPtr(c_abi_type($element));
+effect[fallback] c_abi_type($descriptor)
+    => fail("unsupported extern C ABI type");
+
+effect c_param_type(Param($name, $descriptor))
+    => c_abi_type($descriptor);
+effect c_param_repr(Param($name, $descriptor))
+    => types.repr(c_abi_type($descriptor));
+
+effect c_signature(CDecl($name, $params, $result))
+    => ForeignSignature(
+        "C",
+        list.map("externc.c_param_type", $params),
+        c_abi_type($result)
+    );
+
+// ---------------------------------------------------------------------------
+// Extend the base's declaration environment.  Forward references, signature
+// lookup, and duplicate symbol detection continue to use the base semantics.
+// ---------------------------------------------------------------------------
+
+effect base.declare(ExternC($decls), $rest, $environment)
+    => declarations($rest, c_declarations($decls, $environment));
+
+effect c_declarations([], $environment) => $environment;
+effect c_declarations($decls, $environment) when lt(0, size($decls))
+    => bind(CDecl($name, $params, $result), list.head($decls),
+        choose(
+            env.contains($environment, $name),
+            fail(concat("duplicate function: ", $name)),
+            c_declarations(
+                list.tail($decls),
+                env.put(
+                    $environment,
+                    $name,
+                    c_signature(CDecl($name, $params, $result))
+                )
+            )
+        ));
+
+// Base's Call syntax already knows how to find and type-check declarations.
+// These two new cases supply only the previously absent foreign signature fact.
+effect base.signature_result(ForeignSignature("C", $params, $result))
+    => $result;
+
+effect base.call_checked(
+    $name, $arguments, ForeignSignature("C", $params, $result),
+    $environment, $expected
+) => expect(
+    Typed(
+        $result,
+        ForeignInvoke(
+            "C",
+            $name,
+            check_arguments($arguments, $params, $environment)
+        )
+    ),
+    $expected
+);
+
+// ---------------------------------------------------------------------------
+// Checked declarations + MLIR lowering.
+// ---------------------------------------------------------------------------
+
+effect base.prepare(ExternC($decls), $environment)
+    => CheckedExternC($decls);
+
+effect base.analyze(ExternC($decls))
+    => prepare(ExternC($decls), c_declarations($decls, env.empty()));
+effect base.lower_checked(CheckedExternC($decls))
+    => lower_function(CheckedExternC($decls));
+
+effect base.lower_function(CheckedExternC($decls))
+    => lower_c_decls($decls);
+
+effect lower_c_decls([]) => [];
+effect lower_c_decls($decls) when lt(0, size($decls))
+    => seq(
+        lower_c_decl(list.head($decls)),
+        lower_c_decls(list.tail($decls))
+    );
+
+effect lower_c_decl(CDecl($name, $params, $result))
+    => mlir.op(
+        "func.func",
+        [],
+        [],
+        [
+            Attr("sym_name", $name),
+            Attr("sym_visibility", "private"),
+            RawAttr(
+                "function_type",
+                concat(
+                    concat("(", types.join(list.map("externc.c_param_repr", $params))),
+                    concat(") -> ", types.repr(c_abi_type($result)))
+                )
+            )
+        ],
+        [mlir.region_blocks([])]
+    );
+
+effect base.lower(
+    Typed($result, ForeignInvoke("C", $name, $arguments)),
+    $environment
+) => mlir.op(
+    "func.call",
+    lower_arguments($arguments, $environment),
+    [types.repr($result)],
+    [RawAttr("callee", concat("@", $name))],
+    []
+);
+
+// Hoist and deduplicate source static data using an ordinary open library phase.
+// Traversal keeps unknown constructors intact, so it also handles extension
+// expressions without enumerating every base AST form.
+effect pipeline.steps() => pipeline.Step("strings", ["generics", "records", "defer", "affine"], "externc.prepare_module");
+effect base.signature_params(ForeignSignature($abi,$params,$result)) => $params;
+effect prepare_module($items)
+    => bind([$rewritten, $globals, $pool], externc.rewrite($items, [], env.empty()),
+        list.concat($globals, $rewritten));
+effect rewrite($node,$globals,$pool)
+    => bind([$value,Hoisting($new_globals,$new_pool)],
+        tree.rewrite_with($node,"externc.rewrite_enter","externc.rewrite_leave",0,Hoisting($globals,$pool)),
+        [$value,$new_globals,$new_pool]);
+effect rewrite_enter(CString($literal),$context,Hoisting($globals,$pool))
+    => bind([$value,$new_globals,$new_pool],choose(env.contains($pool, $literal),
+        [CStringRef(env.get($pool, $literal)), $globals, $pool],
+        intern_string($literal, concat(".naru.cstr.", text(size($globals))), $globals, $pool)),
+        tree.Stop($value,Hoisting($new_globals,$new_pool)));
+effect intern_string($literal, $name, $globals, $pool)
+    => [CStringRef($name), list.prepend(CStringGlobal($name, $literal), $globals), env.put($pool, $literal, $name)];
+effect[fallback] rewrite_enter($node,$context,$state) when or(eq(term.kind($node),0),eq(term.kind($node),5))
+    => tree.Descend(term.children($node),$context,$node,$state);
+effect[fallback] rewrite_enter($node,$context,$state) when and(not(eq(term.kind($node),0)),not(eq(term.kind($node),5)))
+    => tree.Stop($node,$state);
+effect[fallback] rewrite_leave($original,$children,$context,$state) => [term.rebuild($original,$children),$state];
+
+effect base.declare(CStringGlobal($name, $literal), $rest, $environment)
+    => declarations($rest, $environment);
+effect base.prepare(CStringGlobal($name, $literal), $environment)
+    => CheckedCStringGlobal($name, $literal);
+effect base.lower_function(CheckedCStringGlobal($name, $literal))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text(add(text.len($literal), 1)), " x i8>"))),
+        RawAttr("linkage", "#llvm.linkage<internal>"), RawAttr("constant", "unit"),
+        RawAttr("value", concat("\"", concat(escape_string($literal, 0, text.len($literal)), "\\00\"")))], [mlir.region_blocks([])]);
+// Balanced traversal keeps the rule call depth logarithmic for long strings.
+effect escape_string($literal, $start, $end) when eq($start, $end) => "";
+effect escape_string($literal, $start, $end) when eq(add($start, 1), $end)
+    => escape_byte(text.slice($literal, $start, $end));
+effect escape_string($literal, $start, $end) when lt(add($start, 1), $end)
+    => bind($middle, int.div(add($start, $end), 2),
+        concat(escape_string($literal, $start, $middle), escape_string($literal, $middle, $end)));
+effect escape_byte("\"") => "\\22";
+effect escape_byte("\\") => "\\5C";
+effect escape_byte("\n") => "\\0A";
+effect escape_byte("\r") => "\\0D";
+effect escape_byte("\t") => "\\09";
+effect[fallback] escape_byte($byte) => $byte;

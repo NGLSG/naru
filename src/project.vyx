@@ -1,0 +1,442 @@
+module naru;
+
+use std.collections;
+use std.string;
+use std.fs;
+
+extern "C" {
+    fn _fullpath(buffer: rawptr, path: rawptr, capacity: i64) -> rawptr;
+    fn calloc(count: i64, size: i64) -> rawptr;
+    fn memcpy(destination: rawptr, source: rawptr, size: i64) -> rawptr;
+    fn free(pointer: rawptr);
+}
+
+public fn naru_contains_nul(text: string) -> bool {
+    var i: i64 = 0;
+    while (i < text.len) {
+        if (str_char_at(text, i) == 0) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+public fn naru_absolute_path(path: string) -> string {
+    if (path.len == 0 || naru_contains_nul(path)) { return ""; }
+    // A Vyx str can be a slice without a trailing NUL. CRT calls need their own
+    // terminated buffer rather than reading beyond the supplied string length.
+    let input = calloc(path.len + 1, 1);
+    if (input == null) { return ""; }
+    memcpy(input, path.c_str(), path.len);
+    let pointer = _fullpath(null, input, 0);
+    free(input);
+    if (pointer == null) { return ""; }
+    // from_cstr borrows pointer; str_replace copies it into an independent
+    // allocation while the CRT result is still alive.
+    let result = str_replace(from_cstr(pointer), "\\", "/");
+    free(pointer);
+    return result;
+}
+
+// Keep byte length through the filesystem boundary: readFile/read_all_text in
+// this SDK use from_cstr, which would hide a NUL and everything following it.
+public fn naru_read_text(e: &mut Engine, path: string) -> string {
+    if (!e.good()) { return ""; }
+    if (path.len == 0 || naru_contains_nul(path)) {
+        e.reject("text input path is empty or contains NUL"); return "";
+    }
+    let expected = fileSize(path);
+    if (expected < 0 || isDir(path)) { e.reject("cannot read text input: " + path); return ""; }
+    var input = File.open(path, FileOptions { read: true, write: false,
+        create: false, truncate: false, binary: true });
+    if (!input.is_open()) { e.reject("cannot open text input: " + path); return ""; }
+    let bytes = input.read_all_bytes();
+    let closed = input.close();
+    if (bytes.len != expected || fileSize(path) != expected || closed != 0) {
+        e.reject("incomplete or changed text input: " + path); return "";
+    }
+    var i: i64 = 0; var line: i64 = 1; var column: i64 = 1;
+    while (i < bytes.len) {
+        let c = bytes.get(i) as i32;
+        if (c == 0) { e.at_error(path, line, column, "text input contains NUL"); return ""; }
+        if (c == 10) { line = line + 1; column = 1; }
+        else { column = column + 1; }
+        i = i + 1;
+    }
+    if (bytes.len == 0) { return ""; }
+    return from_cstr_len(bytes.data, bytes.len);
+}
+
+public fn naru_dirname(path: string) -> string {
+    var i = path.len;
+    while (i > 0) {
+        i = i - 1;
+        let c = str_char_at(path, i);
+        if (c == 47 || c == 92) {
+            if (i == 0) { return path.substring(0, 1); }
+            if (i == 2 && str_char_at(path, 1) == 58) { return path.substring(0, 3); }
+            return path.substring(0, i);
+        }
+    }
+    return ".";
+}
+
+public fn naru_join_path(directory: string, path: string) -> string {
+    if (is_absolute(path)) { return str_dup(path); }
+    if (directory.len == 0) { return str_dup(path); }
+    let c = str_char_at(directory, directory.len - 1);
+    return directory + (c == 47 || c == 92 ? "" : "/") + path;
+}
+
+// Rule-package imports use the same dotted-module convention as source
+// modules. Prefer the hierarchical spelling (`std/types.stx`) and retain the
+// basename fallback for existing flat dialect groups and package layouts.
+public fn naru_rule_module_path(directory: string, name: string) -> string {
+    let hierarchical = naru_join_path(directory, str_replace(name, ".", "/") + ".stx");
+    if (fileExists(hierarchical) && !isDir(hierarchical)) { return hierarchical; }
+    return naru_join_path(directory, naru_short_name(name) + ".stx");
+}
+
+public fn naru_short_name(name: string) -> string {
+    var i = name.len;
+    while (i > 0) {
+        i = i - 1;
+        if (str_char_at(name, i) == 46) { return name.substring(i + 1, name.len); }
+    }
+    return str_dup(name);
+}
+
+public fn naru_name_module(name: string) -> string {
+    var i = name.len;
+    while (i > 0) {
+        i = i - 1;
+        if (str_char_at(name, i) == 46) { return name.substring(0, i); }
+    }
+    return "";
+}
+
+public fn naru_module_index(e: &mut Engine, name: string) -> i64 {
+    var i: i64 = 0;
+    while (i < e.modules.len) {
+        if (e.modules.get(i).name == name) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+public fn naru_visible(e: &mut Engine, context: string, wanted: string) -> bool {
+    if (context.len == 0 || context == wanted) { return naru_module_index(e, wanted) >= 0; }
+    let module_id = naru_module_index(e, context);
+    if (module_id < 0) { return false; }
+    let module_info = e.modules.get(module_id);
+    var edge = e.node(module_info.imports).first;
+    while (edge >= 0) {
+        let item = e.edges.get(edge);
+        if (e.node(item.value).text == wanted) { return true; }
+        edge = item.next;
+    }
+    return false;
+}
+
+public fn load_rule_file(e: &mut Engine, path: string) -> bool {
+    if (!e.good()) { return false; }
+    if (e.linked) { e.reject("cannot load rule files after module linking"); return false; }
+    if (path.len == 0 || naru_contains_nul(path)) { e.reject("rule path is empty or contains NUL"); return false; }
+    let absolute = naru_absolute_path(path);
+    if (absolute.len == 0) { e.reject("cannot resolve rule path: " + path); return false; }
+    let key = str_to_lower(absolute);
+    var i: i64 = 0;
+    while (i < e.modules.len) {
+        if (str_to_lower(e.modules.get(i).path) == key) { return true; }
+        i = i + 1;
+    }
+    if (!fileExists(absolute) || isDir(absolute)) { e.reject("rule file does not exist: " + absolute); return false; }
+    let source = naru_read_text(e, absolute);
+    if (!e.good()) { return false; }
+    let prior = e.modules.len;
+    if (!load_stx(e, source, absolute)) { return false; }
+    let added = e.modules.get(prior);
+    let exports = e.rule_catalog.keys(); var export_index: i64 = 0;
+    while (export_index < exports.len) {
+        let name = exports.get(export_index);
+        if (same_path(e.rule_catalog.get(name), absolute) && name != added.name) {
+            e.reject("dialect export '" + name + "' declares module '" + added.name + "': " + absolute); return false;
+        }
+        export_index = export_index + 1;
+    }
+    i = 0;
+    while (i < prior) {
+        let existing = e.modules.get(i);
+        if (existing.name == added.name) {
+            e.reject("duplicate rule module '" + added.name + "': " + existing.path + " and " + added.path);
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Frozen module identities are immutable. Identical source can be selected
+// again (including a relocated package); new modules append rules normally.
+public fn rule_file_module(e: &mut Engine, path: string) -> string {
+    let absolute = naru_absolute_path(path);
+    let source = naru_read_text(e, absolute);
+    if (!e.good()) { return ""; }
+    var stream = tokenize(source, absolute);
+    if (!stream.expect("mod")) { e.reject(stream.diagnostic); return ""; }
+    let name = stx_name(&mut stream);
+    if (!stream.expect(";")) { e.reject(stream.diagnostic); return ""; }
+    return name;
+}
+
+public fn load_frozen_extension(e: &mut Engine, path: string) -> bool {
+    let absolute = naru_absolute_path(path);
+    let name = rule_file_module(e, absolute);
+    if (!e.good()) { return false; }
+    if (e.rule_hashes.contains(name)) {
+        if (project_hash(e, absolute) != e.rule_hashes.get(name)) {
+            e.reject("extension differs from frozen dialect: " + name + " (" + absolute + ")"); return false;
+        }
+        e.project_inputs.push(absolute);
+        return true;
+    }
+    return load_rule_file(e, absolute);
+}
+
+public fn naru_symbol_index(e: &mut Engine, kind: i32, module_name: string, name: string) -> i64 {
+    var i: i64 = 0;
+    while (i < e.symbols.len) {
+        let symbol = e.symbols.get(i);
+        if (symbol.kind == kind && symbol.module_name == module_name && symbol.name == name) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+public fn naru_add_symbol(e: &mut Engine, kind: i32, module_name: string, name: string, declared_here: bool) {
+    let prior = naru_symbol_index(e, kind, module_name, name);
+    if (prior >= 0) {
+        if (declared_here) {
+            var symbol = e.symbols.get(prior);
+            symbol.declared_here = true;
+            symbol.full_name = module_name + "." + name;
+            e.symbols.set(prior, symbol);
+        }
+        return;
+    }
+    e.symbols.push(RuleSymbol {
+        kind: kind, name: str_dup(name), module_name: str_dup(module_name),
+        full_name: declared_here ? module_name + "." + name : "", declared_here: declared_here
+    });
+}
+
+public fn naru_collect_constructors(e: &mut Engine, root: i64, module_name: string) {
+    let n = e.node(root);
+    if (n.kind == 3) { return; }
+    if (n.kind == 0 && n.text != "Attr" && n.text != "RawAttr") {
+        let owner = naru_name_module(n.text);
+        if (owner.len == 0) { naru_add_symbol(e, 0, module_name, n.text, false); }
+        else if (owner == module_name) { naru_add_symbol(e, 0, module_name, naru_short_name(n.text), true); }
+    }
+    var edge = n.first;
+    while (edge >= 0) {
+        let item = e.edges.get(edge);
+        naru_collect_constructors(e, item.value, module_name);
+        edge = item.next;
+    }
+}
+
+// Constructor occurrences without a matching imported symbol introduce a local
+// identity. Imported occurrences are aliases, so grammar-only extensions reuse
+// the defining package's identity instead of silently creating a new type.
+public fn naru_resolve_constructor_symbols(e: &mut Engine) -> bool {
+    var unresolved = true;
+    while (unresolved && e.good()) {
+        unresolved = false;
+        var progress = false;
+        var i: i64 = 0;
+        while (i < e.symbols.len && e.good()) {
+            var symbol = e.symbols.get(i);
+            if (symbol.kind == 0 && symbol.full_name.len == 0) {
+                var selected: string = "";
+                var pending = false;
+                let module_info = e.modules.get(naru_module_index(e, symbol.module_name));
+                var edge = e.node(module_info.imports).first;
+                while (edge >= 0) {
+                    let item = e.edges.get(edge);
+                    let imported_name = e.node(item.value).text;
+                    let imported_id = imported_name == symbol.module_name ? -1 : naru_symbol_index(e, 0, imported_name, symbol.name);
+                    if (imported_id >= 0) {
+                        let imported = e.symbols.get(imported_id);
+                        if (imported.full_name.len == 0) { pending = true; }
+                        else if (selected.len == 0) { selected = str_dup(imported.full_name); }
+                        else if (selected != imported.full_name) {
+                            e.reject("ambiguous constructor '" + symbol.name + "' in " + symbol.module_name + ": " + selected + " and " + imported.full_name);
+                            return false;
+                        }
+                    }
+                    edge = item.next;
+                }
+                if (pending) { unresolved = true; }
+                else {
+                    symbol.full_name = selected.len == 0 ? symbol.module_name + "." + symbol.name : str_dup(selected);
+                    e.symbols.set(i, symbol);
+                    progress = true;
+                }
+            }
+            i = i + 1;
+        }
+        if (unresolved && !progress) {
+            e.reject("cyclic constructor identity: qualify the defining module's constructor explicitly");
+            return false;
+        }
+    }
+    return e.good();
+}
+
+public fn naru_resolve_name(e: &mut Engine, kind: i32, name: string, context: string) -> string {
+    if (kind == 4 && builtin_name(name)) { return str_dup(name); }
+    if (kind == 0 && (name == "Attr" || name == "RawAttr")) { return str_dup(name); }
+    let owner = naru_name_module(name);
+    if (owner.len != 0) {
+        if (!naru_visible(e, context, owner)) {
+            e.reject("module '" + owner + "' is not visible from '" + context + "'"); return "";
+        }
+        let id = naru_symbol_index(e, kind, owner, naru_short_name(name));
+        if (id < 0) { e.reject("undefined rule symbol '" + name + "'"); return ""; }
+        return str_dup(e.symbols.get(id).full_name);
+    }
+    var found: string = "";
+    var i: i64 = 0;
+    while (i < e.symbols.len) {
+        let symbol = e.symbols.get(i);
+        if (symbol.kind == kind && symbol.name == name && naru_visible(e, context, symbol.module_name)) {
+            if (found.len == 0) { found = str_dup(symbol.full_name); }
+            else if (found != symbol.full_name) {
+                e.reject("ambiguous rule symbol '" + name + "': " + found + " and " + symbol.full_name + "; use a qualified name");
+                return "";
+            }
+        }
+        i = i + 1;
+    }
+    if (found.len == 0) { e.reject("undefined rule symbol '" + name + "' in '" + context + "'"); }
+    return found;
+}
+
+public fn qualify_expression(e: &mut Engine, term: i64, context_module: string) -> bool {
+    if (!e.good() || term < 0) { return false; }
+    var n = e.node(term);
+    if (n.kind == 3) { return true; }
+    if (n.kind == 0 || n.kind == 4) {
+        let qualified = naru_resolve_name(e, n.kind, n.text, context_module);
+        if (!e.good()) { return false; }
+        n.text = str_dup(qualified);
+        e.nodes.set(term, n);
+    }
+    var edge = n.first;
+    while (edge >= 0) {
+        let item = e.edges.get(edge);
+        if (!qualify_expression(e, item.value, context_module)) { return false; }
+        edge = item.next;
+    }
+    return true;
+}
+
+public fn resolve_entry(e: &mut Engine, name: string) -> string {
+    if (!e.good()) { return ""; }
+    if (e.entry_cache.contains(name)) { return e.entry_cache.get(name); }
+    let resolved = naru_resolve_name(e, 4, name, "");
+    if (e.good()) { e.entry_cache.put(e.intern(name),e.intern(resolved)); }
+    return resolved;
+}
+
+public fn link_rules(e: &mut Engine) -> bool {
+    if (!e.good()) { return false; }
+    if (e.linked) { return true; }
+    e.entry_cache.clear();
+    var check_id: i64 = 0;
+    while (check_id < e.modules.len) {
+        let checked = e.modules.get(check_id);
+        var previous: i64 = 0;
+        while (previous < check_id) {
+            let prior = e.modules.get(previous);
+            if (prior.name == checked.name) {
+                e.reject("duplicate rule module '" + checked.name + "': " + prior.path + " and " + checked.path);
+                return false;
+            }
+            previous = previous + 1;
+        }
+        check_id = check_id + 1;
+    }
+    var module_id: i64 = 0;
+    // Load imports after explicitly selected files, allowing callers to provide
+    // a module in a file whose basename does not match its declared name.
+    while (module_id < e.modules.len && e.good()) {
+        let module_info = e.modules.get(module_id);
+        var edge = e.node(module_info.imports).first;
+        while (edge >= 0 && e.good()) {
+            let item = e.edges.get(edge);
+            let imported = e.node(item.value);
+            if (naru_module_index(e, imported.text) < 0) {
+                let candidate = e.rule_catalog.contains(imported.text) ? e.rule_catalog.get(imported.text)
+                    : naru_rule_module_path(naru_dirname(module_info.path), imported.text);
+                if (!load_rule_file(e, candidate)) { return false; }
+                if (naru_module_index(e, imported.text) < 0) {
+                    e.at_error(module_info.path, imported.line, imported.column,
+                        "import '" + imported.text + "' was not declared by " + candidate);
+                    return false;
+                }
+            }
+            edge = item.next;
+        }
+        module_id = module_id + 1;
+    }
+    var i: i64 = specialized_syntax_count();
+    while (i < e.syntax_rules.len) {
+        let rule = e.syntax_rules.get(i);
+        naru_collect_constructors(e, rule.rhs, rule.module_name);
+        if (rule.guard >= 0) { naru_collect_constructors(e, rule.guard, rule.module_name); }
+        i = i + 1;
+    }
+    i = specialized_effect_count();
+    while (i < e.effect_rules.len && e.good()) {
+        let rule = e.effect_rules.get(i);
+        let lhs = e.node(rule.lhs);
+        if (builtin_name(lhs.text) || (naru_name_module(lhs.text).len == 0 && builtin_name(rule.module_name + "." + lhs.text))) {
+            e.at_error(rule.file, rule.line, 1, "cannot redefine core operation '" + lhs.text + "'");
+            return false;
+        }
+        let owner = naru_name_module(lhs.text);
+        if (owner.len == 0 || owner == rule.module_name) {
+            naru_add_symbol(e, 4, rule.module_name, naru_short_name(lhs.text), true);
+        }
+        naru_collect_constructors(e, rule.lhs, rule.module_name);
+        naru_collect_constructors(e, rule.rhs, rule.module_name);
+        if (rule.guard >= 0) { naru_collect_constructors(e, rule.guard, rule.module_name); }
+        i = i + 1;
+    }
+    if (!naru_resolve_constructor_symbols(e)) { return false; }
+    i = specialized_syntax_count();
+    while (i < e.syntax_rules.len && e.good()) {
+        let rule = e.syntax_rules.get(i);
+        if (!qualify_expression(e, rule.rhs, rule.module_name)) { return false; }
+        if (rule.guard >= 0 && !qualify_expression(e, rule.guard, rule.module_name)) { return false; }
+        i = i + 1;
+    }
+    i = specialized_effect_count();
+    while (i < e.effect_rules.len && e.good()) {
+        let rule = e.effect_rules.get(i);
+        var lhs = e.node(rule.lhs);
+        // Unqualified effect declarations introduce this module's relation;
+        // qualified declarations may extend an explicitly imported relation.
+        if (naru_name_module(lhs.text).len == 0) {
+            lhs.text = rule.module_name + "." + lhs.text;
+            e.nodes.set(rule.lhs, lhs);
+        }
+        if (!qualify_expression(e, rule.lhs, rule.module_name)) { return false; }
+        if (!qualify_expression(e, rule.rhs, rule.module_name)) { return false; }
+        if (rule.guard >= 0 && !qualify_expression(e, rule.guard, rule.module_name)) { return false; }
+        i = i + 1;
+    }
+    e.linked = e.good();
+    return e.good();
+}

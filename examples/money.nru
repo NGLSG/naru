@@ -1,0 +1,4 @@
+fn price(a: cents) -> cents {
+    let fee: cents = 12;
+    return a + fee;
+}

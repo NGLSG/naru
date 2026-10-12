@@ -1,0 +1,27 @@
+[package]
+name = "naru-emergence"
+version = "0.1.0"
+entry = "main.nru"
+
+[exports]
+demo = "demo.stx"
+
+[dependencies.std]
+path = "../../dialects"
+package = "naru-stdlib"
+version = "^0.2.0"
+
+[language]
+dialects = ["std/standard", "std/money", "demo"]
+unit = "program"
+relation = "standard.emit_program"
+
+[build]
+output = "target/demo.exe"
+
+[backend]
+target = "exe"
+opt_level = "2"
+
+[link]
+runtime = "crt-static"

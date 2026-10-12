@@ -1,0 +1,99 @@
+mod patterns;
+use base;
+use types;
+use records;
+use variants;
+use affine;
+// Other semantic libraries consume the same binder protocol as the checker.
+effect arm_scope($pattern,$descriptor,$environment)
+    => arg(pattern($pattern,$descriptor,symbol("match.scope"),$environment),1);
+effect bound_names(Capture($name)) => [$name];
+effect bound_names(Variant($case,$name)) => choose(eq($name,""),[],[$name]);
+effect[fallback] bound_names($pattern) => [];
+effect affine.expression(Match($value,$arms),$state)
+    => bind([$checked,$after],affine.expression($value,$state),
+        bind($descriptor,arg(base.check($checked,affine.type_environment($after),base.Any()),0),
+            bind([$rewritten,$last],ownership_arms($arms,$descriptor,$after),[Match($checked,$rewritten),$last])));
+effect ownership_arms([],$descriptor,$state) => [[],$state];
+effect ownership_arms($arms,$descriptor,$state) when lt(0,size($arms))
+    => bind(Arm($pattern,$value),list.head($arms),bind($scoped,ownership_scope($pattern,$descriptor,$state),
+        bind([$checked,$after],affine.expression($value,$scoped),bind([$rest,$last],ownership_arms(list.tail($arms),$descriptor,$state),
+            [list.prepend(Arm($pattern,$checked),$rest),affine.join($state,$after,$last)]))));
+effect ownership_scope($pattern,$descriptor,affine.State($scope,$owners,$life,$loans,$names))
+    => affine.State(arm_scope($pattern,$descriptor,$scope),shadow_owners(bound_names($pattern),$owners),$life,$loans,$names);
+effect shadow_owners([],$owners) => $owners;
+effect shadow_owners($names,$owners) when lt(0,size($names))
+    => shadow_owners(list.tail($names),env.put($owners,list.head($names),affine.NoOwner()));
+
+syntax expr `match $value:expr { $arms:match_arms }` => Match($value, $arms);
+syntax match_arms `$pattern:pattern => $value:expr` => [Arm($pattern, $value)];
+syntax match_arms `$pattern:pattern => $value:expr,` => [Arm($pattern, $value)];
+syntax match_arms `$pattern:pattern => $value:expr, $rest:match_arms` => list.prepend(Arm($pattern, $value), $rest);
+syntax pattern `$value:int` => ValuePattern(base.Int($value));
+syntax pattern `- $value:int` => ValuePattern(base.Int(int.neg($value)));
+syntax pattern `true` => ValuePattern(base.Boolean(1));
+syntax pattern `false` => ValuePattern(base.Boolean(0));
+syntax pattern `_` => Wildcard();
+syntax pattern `none` => Variant("none", "");
+syntax pattern `some($name:ident)` => Variant("some", $name);
+syntax pattern `ok($name:ident)` => Variant("ok", $name);
+syntax pattern `err($name:ident)` => Variant("err", $name);
+syntax pattern[fallback] `$case:ident($name:ident)` => Variant($case, $name);
+syntax pattern `$case:ident()` => Variant($case, "");
+syntax pattern[fallback] `$name:ident` => Capture($name);
+
+effect base.hint(Match($value, $arms), $environment) => base.Any();
+effect base.check(Match($value, $arms), $environment, $expected)
+    => bind($checked, base.check($value, $environment, base.Any()), bind($identity, symbol("match.value"),
+        bind([$result, $cases], check_arms($arms, $checked, $identity, $environment, $expected, env.empty()),
+            base.Typed($result, Matched($checked, $identity, $cases)))));
+effect check_arms([], $value, $identity, $environment, $expected, $seen)
+    => fail("match is not exhaustive");
+effect check_arms($arms, base.Typed($descriptor, $value), $identity, $environment, $expected, $seen) when lt(0, size($arms))
+    => check_arm(list.head($arms), list.tail($arms), $descriptor, $identity, $environment, $expected, $seen);
+effect check_arm(Arm($pattern, $expression), $rest, $descriptor, $identity, $environment, $expected, $seen)
+    => bind([$condition, $scope, $key, $total], pattern($pattern, $descriptor, $identity, $environment),
+        choose(env.contains($seen, $key), fail("duplicate match arm"),
+            bind(base.Typed($actual, $checked), base.check($expression, $scope, $expected),
+                checked_tail($rest, $descriptor, $identity, $environment, $actual,
+                    env.put($seen, $key, 1), $total, Case($condition, base.Typed($actual, $checked))))));
+effect checked_tail([], $descriptor, $identity, $environment, $actual, $seen, $total, $case)
+    => choose(or($total, exhaustive($descriptor, $seen)), [$actual, [$case]], fail("match is not exhaustive"));
+effect checked_tail($rest, $descriptor, $identity, $environment, $actual, $seen, $total, $case) when lt(0, size($rest))
+    => choose($total, fail("unreachable match arm after a catch-all"),
+        bind([$result, $cases], check_arms($rest, base.Typed($descriptor, base.Read($identity)), $identity, $environment, $actual, $seen),
+            [$result, list.prepend($case, $cases)]));
+effect pattern(Wildcard(), $descriptor, $identity, $environment)
+    => [Always(), $environment, CatchAll(), 1];
+effect pattern(Capture($name), $descriptor, $identity, $environment)
+    => [Always(), env.put($environment, $name, Bound(base.Typed($descriptor, base.Read($identity)))), CatchAll(), 1];
+effect pattern(ValuePattern($literal), $descriptor, $identity, $environment)
+    => [base.check(base.Compare("eq", base.Ascribed(base.Name("match.input"), $descriptor), $literal),
+            env.put($environment, "match.input", base.Slot($descriptor, $identity)), Bool()),
+        $environment, $literal, 0];
+effect pattern(Variant($name, $binding), $descriptor, $identity, $environment)
+    => bind([$tag, $index, $payload], variants.case($descriptor, $name),
+        [base.Typed(Bool(), base.Comparison("eq", base.Typed(Unsigned(8), records.Project(base.Typed($descriptor, base.Read($identity)), 0)),
+            base.Typed(Unsigned(8), base.Integer($tag)))),
+        choose(eq($binding, ""), $environment, env.put($environment, $binding,
+            Bound(base.Typed($payload, records.Project(base.Typed($descriptor, base.Read($identity)), $index))))), $name, 0]);
+effect exhaustive(Bool(), $seen) => and(env.contains($seen, base.Boolean(0)), env.contains($seen, base.Boolean(1)));
+effect exhaustive(variants.Option($type), $seen) => cases_present(variants.cases(variants.Option($type)), $seen);
+effect exhaustive(variants.Result($ok, $error), $seen) => cases_present(variants.cases(variants.Result($ok, $error)), $seen);
+effect exhaustive(variants.Enum($name,$cases),$seen) => cases_present(variants.cases(variants.Enum($name,$cases)),$seen);
+effect[fallback] exhaustive($descriptor, $seen) => 0;
+effect cases_present([], $seen) => 1;
+effect cases_present($cases, $seen) when lt(0, size($cases))
+    => and(env.contains($seen, list.head($cases)), cases_present(list.tail($cases), $seen));
+effect base.read(Bound($value), $expected) => base.expect($value, $expected);
+effect base.slot_type(Bound(base.Typed($descriptor, $value))) => $descriptor;
+effect base.lower(base.Typed($descriptor, Matched($value, $identity, $cases)), $environment)
+    => lower_cases($cases, $descriptor, env.put($environment, $identity, base.lower($value, $environment)));
+// Exhaustiveness is proved before this final unconditional arm is emitted.
+effect lower_cases([Case($condition, $value)], $descriptor, $environment) => base.lower($value, $environment);
+effect lower_cases($cases, $descriptor, $environment) when lt(1, size($cases))
+    => bind(Case($condition, $value), list.head($cases),
+        mlir.op("scf.if", [base.lower($condition, $environment)], [types.repr($descriptor)], [],
+            [mlir.region(yield(base.lower($value, $environment))),
+                mlir.region(yield(lower_cases(list.tail($cases), $descriptor, $environment)))]));
+effect yield($value) => mlir.op("scf.yield", [$value], [], [], []);

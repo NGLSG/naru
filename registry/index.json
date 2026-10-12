@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "packages": {
+    "naru-stdlib": {
+      "description": "Naru composable language rules: base, ownership, C11, B, Pascal and shared infrastructure",
+      "versions": {
+        "0.2.0": {
+          "source": { "path": "../dialects" }
+        }
+      }
+    }
+  }
+}

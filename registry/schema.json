@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Naru dialect registry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "packages"],
+  "properties": {
+    "format": { "const": 1 },
+    "packages": {
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_-]*$" },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["versions"],
+        "properties": {
+          "description": { "type": "string" },
+          "homepage": { "type": "string" },
+          "versions": {
+            "type": "object",
+            "propertyNames": { "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["source"],
+              "properties": { "source": { "$ref": "#/$defs/source" } }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path"],
+          "properties": { "path": { "type": "string", "minLength": 1 } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["git"],
+          "properties": {
+            "git": { "type": "string", "minLength": 1 },
+            "rev": { "type": "string", "minLength": 1 },
+            "subdir": { "type": "string" }
+          }
+        }
+      ]
+    }
+  }
+}

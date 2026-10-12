@@ -1,0 +1,223 @@
+// Affine ownership on ordinary functions. The checker runs before lowering;
+// owned values have their payload's ABI, loans have an actual pointer ABI.
+mod affine;
+use base;
+use types;
+use records;
+use control;
+use pipeline;
+
+syntax typename `owned<$type:typename>` => Owned($type);
+syntax typename `ref<$type:typename>` => Borrowed($type, "shared");
+syntax typename `refmut<$type:typename>` => Borrowed($type, "unique");
+syntax expr `own($value:expr)` => Own($value);
+syntax expr[70,right] `move $name:ident` => Move($name);
+syntax expr[70,right] `& $name:ident` => Borrow($name, "shared");
+syntax expr[70,right] `& mut $name:ident` => Borrow($name, "unique");
+syntax expr[70,right] `* $value:expr` => Dereference($value);
+syntax statement `* $reference:expr = $value:expr;` => WriteReference($reference, $value);
+syntax statement `end $name:ident;` => EndLoan($name);
+effect base.continue(WriteReference($reference, $value), $next) => Write($reference, $value, $next);
+effect base.continue(EndLoan($name), $next) => Release($name, $next);
+effect types.repr(Owned($type)) => seq(records.storable($type), types.repr($type));
+effect records.storable($descriptor) when contains_affine($descriptor)
+    => fail("affine values inside aggregates require a partial-move contract");
+effect contains_affine(Owned($type)) => 1;
+effect contains_affine(Borrowed($type,$kind)) => 1;
+effect[fallback] contains_affine($value) => contains_children($value,0);
+effect contains_children($value,$index) when eq($index,size($value)) => 0;
+effect contains_children($value,$index) when lt($index,size($value))
+    => or(contains_affine(arg($value,$index)),contains_children($value,add($index,1)));
+effect types.repr(Borrowed($type, $kind)) => "!llvm.ptr";
+effect records.aggregate(Owned($type)) => 1;
+effect records.aggregate(Borrowed($type, $kind)) => 1;
+effect inner(Owned($type)) => $type;
+effect base.preparation_slot(Owned($type),$identity) => base.Mutable(Owned($type),$identity);
+effect base.hint(Own($value), $environment) => Owned(base.hint($value, $environment));
+effect base.hint(Move($name), $environment) => base.slot_type(env.get($environment, $name));
+effect base.hint(Borrow($name, $kind), $environment) => Borrowed(inner(base.slot_type(env.get($environment, $name))), $kind);
+effect base.hint(Dereference($value), $environment) => referent(base.hint($value, $environment));
+effect referent(Borrowed($type, $kind)) => $type;
+effect base.check(Own($value), $environment, $expected) => check_own($value, $environment, base.wanted($expected, Owned(base.Any())));
+effect check_own($value, $environment, Owned($type)) => bind($checked, base.check($value, $environment, $type),
+    seq(records.storable(arg($checked,0)), base.Typed(Owned(arg($checked, 0)), Wrapped($checked))));
+effect base.check(Move($name), $environment, $expected) => base.check(base.Name($name), $environment, $expected);
+effect base.check(Borrow($name, $kind), $environment, $expected)
+    => address(env.get($environment, $name), $kind, $expected);
+effect address(base.Mutable(Owned($type), $identity), $kind, $expected)
+    => base.expect(base.Typed(Borrowed($type, $kind), Address($identity)), $expected);
+effect[fallback] address($slot, $kind, $expected) => fail("borrow requires addressable owned storage");
+effect base.check(Dereference($value), $environment, $expected)
+    => bind(base.Typed(Borrowed($type, $kind), $checked), base.check($value, $environment, base.Any()),
+        base.expect(base.Typed($type, Indirect(base.Typed(Borrowed($type, $kind), $checked))), $expected));
+effect base.check_body(Write($reference, $value, $next), $environment, $result)
+    => bind(base.Typed(Borrowed($type, $kind), $checked), base.check($reference, $environment, base.Any()),
+        choose(eq($kind, "unique"), Write(base.Typed(Borrowed($type, $kind), $checked), base.check($value, $environment, $type),
+            base.check_body($next, $environment, $result)), fail("write through a shared borrow")));
+effect base.check_body(Release($name, $next), $environment, $result) => base.check_body($next, $environment, $result);
+effect base.prepare_storage(Write($reference, $value, $next), $entry, $environment) => base.prepare_storage($next, $entry, $environment);
+effect base.flow_terminal(Write($reference, $value, $next)) => base.flow_terminal($next);
+effect base.lower(base.Typed(Owned($type), Wrapped($value)), $environment) => base.lower($value, $environment);
+effect base.lower(base.Typed(Borrowed($type, $kind), Address($identity)), $environment) => env.get($environment, $identity);
+effect base.lower(base.Typed($type, Indirect($reference)), $environment) => records.load($type, base.lower($reference, $environment));
+effect base.lower_flow(Write($reference, $value, $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, records.store($value, base.lower($reference, $environment), $environment)),
+        base.lower_flow($next, $environment, $block, $continuation));
+effect control.append(Write($reference, $value, $next), $suffix) => Write($reference, $value, control.append($next, $suffix));
+effect control.append(Release($name, $next), $suffix) => Release($name, control.append($next, $suffix));
+effect control.range_continues(Write($reference, $value, $next), $increment) => Write($reference, $value, control.range_continues($next, $increment));
+effect control.range_continues(Release($name, $next), $increment) => Release($name, control.range_continues($next, $increment));
+
+effect pipeline.steps() => pipeline.Step("affine", ["generics", "records", "defer"], "affine.prepare");
+effect prepare($items) => functions($items, base.declarations($items, env.empty()));
+effect functions([], $environment) => [];
+effect functions($items, $environment) when lt(0, size($items))
+    => list.prepend(function(list.head($items), $environment), functions(list.tail($items), $environment));
+effect function(base.Function($name, $value), $environment)
+    => function(base.TypedFunction($name, [], Signed(32), base.Return($value)), $environment);
+effect function(base.TypedFunction($name, $params, $result, $body), $environment)
+    => bind($state, parameters($params, State($environment, env.empty(), env.empty(), env.empty(), [])),
+        bind([$rewritten, $last], body($body, $state), base.TypedFunction($name, $params, $result, parameter_storage($params, $rewritten))));
+effect[fallback] function($item, $environment) => $item;
+effect parameters([], $state) => $state;
+effect parameters($params, $state) when lt(0, size($params))
+    => bind(base.Param($name, $type), list.head($params), parameters(list.tail($params), bind_local($name, $type, $state)));
+effect parameter_storage([], $body) => $body;
+effect parameter_storage($params, $body) when lt(0, size($params))
+    => parameter_slot(list.head($params), parameter_storage(list.tail($params), $body));
+effect parameter_slot(base.Param($name, Owned($type)), $body) => base.Var($name, Owned($type), base.Name($name), $body);
+effect[fallback] parameter_slot($parameter, $body) => $body;
+effect bind_local($name, $type, State($scope, $owners, $life, $loans, $names))
+    => bind($identity, symbol($name), local_type($name, $type, $identity, State(env.put($scope, $name, base.Mutable($type, $identity)), $owners, $life, $loans, $names)));
+effect local_type($name, Owned($type), $identity, State($scope, $owners, $life, $loans, $names))
+    => State($scope, env.put($owners, $name, $identity), env.put($life, $identity, Life(0,0,0)), $loans, $names);
+effect[fallback] local_type($name, $type, $identity, State($scope, $owners, $life, $loans, $names))
+    => State(env.put($scope,$name,base.Slot($type,$identity)), env.put($owners, $name, NoOwner()), $life, $loans, $names);
+effect has_owner($owners, $name) => choose(env.contains($owners, $name), not(eq(env.get($owners, $name), NoOwner())), 0);
+effect type_environment(State($scope, $owners, $life, $loans, $names)) => $scope;
+
+effect body(base.End(), $state) => [base.End(), $state];
+effect body(control.Break(), $state) => [control.Break(), $state];
+effect body(control.Continue(), $state) => [control.Continue(), $state];
+effect body(control.ReturnVoid(), $state) => [control.ReturnVoid(), $state];
+effect body(base.Return($value), $state) => bind([$checked, $next], expression($value, $state),
+    seq(no_escape(base.check($checked, type_environment($next), base.Any())), [base.Return($checked), $next]));
+effect no_escape(base.Typed(Borrowed($type, $kind), $value)) => fail("borrow cannot escape its function without a lifetime contract");
+effect[fallback] no_escape($value) => 1;
+effect body(base.Let($name, $type, Borrow($owner, $kind), $next), $state) => borrow_binding($name, $type, $owner, $kind, $next, $state);
+effect[fallback] body(base.Let($name, $type, $value, $next), $state) => local($name, $type, $value, $next, $state, "let");
+effect body(base.Var($name, $type, $value, $next), $state) => local($name, $type, $value, $next, $state, "var");
+effect local($name, $type, $value, $next, $state, $kind)
+    => bind([$checked, $after], expression($value, $state), bind($actual, arg(base.check($checked, type_environment($after), $type), 0),
+        seq(local_value($actual),
+        bind([$tail, $last], body($next, bind_local($name, $actual, $after)),
+            [local_node($name, $actual, $checked, $tail, $kind), $last]))));
+effect local_value(Borrowed($type, $kind)) => fail("a loan cannot be copied into another binding");
+effect[fallback] local_value($type) => 1;
+effect local_node($name, Owned($type), $value, $next, $kind) => base.Var($name, Owned($type), $value, $next);
+effect[fallback] local_node($name, $type, $value, $next, "let") => base.Let($name, $type, $value, $next);
+effect[fallback] local_node($name, $type, $value, $next, "var") => base.Var($name, $type, $value, $next);
+effect body(base.Set($name, $value, $next), $state)
+    => bind([$checked, $after], expression($value, $state), bind([$tail, $last], body($next, reset($name, $after)), [base.Set($name, $checked, $tail), $last]));
+effect reset($name, State($scope, $owners, $life, $loans, $names)) => choose(has_owner($owners, $name),
+    bind($identity, env.get($owners, $name), seq(unloaned(env.get($life, $identity)),
+        State($scope, $owners, env.put($life, $identity, Life(0,0,0)), $loans, $names))), State($scope, $owners, $life, $loans, $names));
+effect body(control.Evaluate($value, $next), $state) => bind([$checked, $after], expression($value, $state),
+    bind([$tail, $last], body($next, $after), [control.Evaluate($checked, $tail), $last]));
+effect body(Write($reference, $value, $next), $state)
+    => bind([$checked_reference, $after_reference], expression($reference, $state),
+        bind([$checked_value, $after], expression($value, $after_reference),
+            bind([$tail, $last], body($next, $after), [Write($checked_reference, $checked_value, $tail), $last])));
+effect body(Release($name, $next), $state) => body($next, release($name, $state));
+effect body(base.If($condition, $yes, $no, $next), $state)
+    => bind([$checked, $after], expression($condition, $state),
+        bind([$yes_body, $yes_state], block($yes, $after), bind([$no_body, $no_state], block($no, $after),
+            bind([$tail, $last], body($next, affine.join($after, $yes_state, $no_state)), [base.If($checked, $yes_body, $no_body, $tail), $last]))));
+effect body(base.While($condition, $loop, $next), $state)
+    => bind([$checked, $after], expression($condition, $state), bind([$loop_body, $loop_state], block($loop, $after),
+        seq(loop_stable($after, $loop_state), bind([$tail, $last], body($next, $after), [base.While($checked, $loop_body, $tail), $last]))));
+// Scope exit ends local loans. Outer loans remain live in nested blocks.
+effect block($body, State($scope, $owners, $life, $loans, $names))
+    => bind([$rewritten, $last], body($body, State($scope, $owners, $life, $loans, $names)),
+        [$rewritten, restore_scope($scope, $owners, $names, close_new($last, size($names)))]);
+effect restore_scope($scope, $owners, $names, State($inner, $inner_owners, $life, $loans, $all_names)) => State($scope, $owners, $life, $loans, $names);
+effect close_new(State($scope, $owners, $life, $loans, $names), $count) when eq(size($names), $count) => State($scope, $owners, $life, $loans, $names);
+effect close_new(State($scope, $owners, $life, $loans, $names), $count) when lt($count, size($names))
+    => bind($name, arg($names, $count), close_new(drop_name(release_if_live($name, State($scope, $owners, $life, $loans, $names)), $count), $count));
+effect drop_name(State($scope, $owners, $life, $loans, $names), $index) => State($scope, $owners, $life, $loans, remove_index($names, $index, 0));
+effect remove_index($names, $wanted, $index) when eq(size($names), $index) => [];
+effect remove_index($names, $wanted, $index) when lt($index, size($names)) => choose(eq($index, $wanted),
+    remove_index($names, $wanted, add($index, 1)), list.prepend(arg($names, $index), remove_index($names, $wanted, add($index, 1))));
+
+effect expression(Move($name), State($scope, $owners, $life, $loans, $names))
+    => choose(has_owner($owners,$name),bind($identity, env.get($owners, $name), seq(movable(env.get($life, $identity)),
+        [Move($name), State($scope, $owners, env.put($life, $identity, Life(1,0,0)), $loans, $names)])),
+        seq(copyable(base.slot_type(env.get($scope,$name))),[base.Name($name),State($scope,$owners,$life,$loans,$names)]));
+effect copyable($type) => choose(contains_affine($type),fail("loan values cannot be moved or copied"),1);
+effect expression(Borrow($name, $kind), $state) => fail("a borrow must be bound to a local loan");
+effect expression(base.Name($name), State($scope, $owners, $life, $loans, $names))
+    => choose(has_owner($owners, $name), fail("owned value requires move or borrow"),
+        seq(name_loan_read($name,$scope,$loans), [base.Name($name), State($scope, $owners, $life, $loans, $names)]));
+effect name_loan_read($name,$scope,$loans) => choose(env.contains($scope,$name),
+    loan_type(env.get($scope,$name),$name,$loans),1);
+effect loan_type(base.Mutable(Borrowed($type,$kind),$identity),$name,$loans) => loan_read($name,$loans);
+effect loan_type(base.Slot(Borrowed($type,$kind),$identity),$name,$loans) => loan_read($name,$loans);
+effect[fallback] loan_type($slot,$name,$loans) => 1;
+effect expression(control.Logical($op,$left,$right),$state)
+    => bind([$checked_left,$after],expression($left,$state),bind([$checked_right,$last],expression($right,$after),
+        [control.Logical($op,$checked_left,$checked_right),affine.join($after,$after,$last)]));
+effect[fallback] expression($value, $state) when eq(term.kind($value), 0)
+    => bind([$children, $next], expression_children($value, 0, $state), [term(tag($value), $children), $next]);
+effect expression($value, $state) when eq(term.kind($value), 5) => expression_children($value, 0, $state);
+effect[fallback] expression($value, $state) when and(not(eq(term.kind($value), 0)), not(eq(term.kind($value), 5))) => [$value, $state];
+effect expression_children($value, $index, $state) when eq($index, size($value)) => [[], $state];
+effect expression_children($value, $index, $state) when lt($index, size($value))
+    => bind([$head, $after], expression(arg($value, $index), $state), bind([$tail, $last], expression_children($value, add($index, 1), $after), [list.prepend($head, $tail), $last]));
+effect movable(Life(0,0,0)) => 1;
+effect[fallback] movable($life) => fail("move requires a live unborrowed owner");
+effect unloaned(Life($moved,0,0)) => 1;
+effect[fallback] unloaned($life) => fail("assignment conflicts with a live borrow");
+effect borrow_binding($name, $expected, $owner, $kind, $next, State($scope, $owners, $life, $loans, $names))
+    => seq(loan_name_free($name, $loans), bind($identity, env.get($owners, $owner), bind($updated, borrow_life(env.get($life, $identity), $kind),
+        bind($type, arg(base.check(Borrow($owner, $kind), $scope, $expected), 0),
+            bind([$tail, $last], body($next, bind_local($name, $type,
+                State($scope, $owners, env.put($life, $identity, $updated), env.put($loans, $name, Loan($identity, $kind, 1)), list.concat($names, [$name])))),
+                [base.Let($name, $type, Borrow($owner, $kind), $tail), $last])))));
+effect loan_name_free($name, $loans) => choose(env.contains($loans, $name),
+    loan_name_state(env.get($loans, $name)), 1);
+effect loan_name_state(Loan($identity, $kind, 0)) => 1;
+effect loan_name_state(Loan($identity, $kind, 1)) => fail("cannot shadow a live loan binding");
+effect borrow_life(Life(0,$shared,0), "shared") => Life(0,add($shared,1),0);
+effect borrow_life(Life(0,0,0), "unique") => Life(0,0,1);
+effect[fallback] borrow_life($life, $kind) => fail("borrow conflicts with ownership or another loan");
+effect loan_read($name, $loans) => choose(env.contains($loans, $name), loan_active(env.get($loans, $name)), 1);
+effect loan_active(Loan($identity, $kind, 1)) => 1;
+effect loan_active(Loan($identity, $kind, 0)) => fail("use of an ended loan");
+effect release_if_live($name, State($scope, $owners, $life, $loans, $names)) => release_optional(env.get($loans, $name), $name, State($scope, $owners, $life, $loans, $names));
+effect release_optional(Loan($identity, $kind, 1), $name, $state) => release($name, $state);
+effect release_optional(Loan($identity, $kind, 0), $name, $state) => $state;
+effect release($name, State($scope, $owners, $life, $loans, $names))
+    => bind(Loan($identity, $kind, $active), env.get($loans, $name), choose($active,
+        State($scope, $owners, env.put($life, $identity, end_life(env.get($life, $identity), $kind)), env.put($loans, $name, Loan($identity, $kind, 0)), $names),
+        fail("loan already ended")));
+effect end_life(Life($moved,$shared,$unique), "shared") => Life($moved,sub($shared,1),$unique);
+effect end_life(Life($moved,$shared,$unique), "unique") => Life($moved,$shared,0);
+// Joining only identities visible before the branch preserves lexical scope.
+effect join(State($scope, $owners, $life, $loans, $names), State($ys,$yo,$yl,$ylo,$yn), State($ns,$no,$nl,$nlo,$nn))
+    => State($scope, $owners, join_life($life, $yl, $nl), join_loans($names, $loans, $ylo, $nlo), $names);
+effect join_life($original,$left,$right) => bind(JoiningLife($result,$ys,$ns),
+    list.fold("affine.join_life_entry",env.entries($original),JoiningLife(env.empty(),$left,$right)),$result);
+effect join_life_entry(JoiningLife($result,$left,$right),[$identity,$prior])
+    => JoiningLife(env.put($result,$identity,join_value(env.get($left,$identity),env.get($right,$identity))),$left,$right);
+effect join_value(Life($lm,$ls,$lu), Life($rm,$rs,$ru)) => Life(choose(eq($lm,$rm),$lm,2), max($ls,$rs), max($lu,$ru));
+effect max($a,$b) => choose(lt($a,$b),$b,$a);
+effect join_loans([], $original, $left, $right) => $original;
+effect join_loans($names, $original, $left, $right) when lt(0,size($names))
+    => bind($name,list.head($names), env.put(join_loans(list.tail($names),$original,$left,$right),$name,
+        join_loan(env.get($left,$name),env.get($right,$name))));
+effect join_loan(Loan($identity,$kind,$a),Loan($identity,$kind,$b)) => Loan($identity,$kind,max($a,$b));
+effect loop_stable(State($s,$o,$life,$loans,$names), State($ns,$no,$after,$nl,$nn))
+    => choose(life_same($life,$after,env.empty()),1,fail("loop changes ownership state across iterations; restore or end loans before continuing"));
+effect life_same($before,$after,$seen) => bind(ComparingLife($same,$last),
+    list.fold("affine.life_same_entry",env.entries($before),ComparingLife(1,$after)),$same);
+effect life_same_entry(ComparingLife($same,$after),[$identity,$value]) => ComparingLife(and($same,eq($value,env.get($after,$identity))),$after);

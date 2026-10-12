@@ -1,0 +1,445 @@
+<html><head>
+<title>3.8 Preprocessing directives</title>
+<link rel="made" rev="made" href="mailto:jutta@cs.tu-berlin.de">
+</head>
+<body>
+<a href="c7.html">3.7 External definitions</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-8">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c9.html">3.9 Future directions</a>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+<hr>
+<h1><a name="3-8">3.8</a>&#160;<tt> </tt><a name="preprocessing-3-8">Preprocessing</a> directives</h1>
+
+<p>
+For an overview of the philosophy behind the preprocessor, see <a href="b.html#2-1-1-2">&#167;2.1.1.2</a>.&#160;<tt> </tt>
+<p>
+Different implementations have had different notions about whether
+white space is permissible before and/or after the <code>#</code>
+signalling a preprocessor line.&#160;<tt> </tt>
+The Committee decided to allow 
+any white space before the <code>#</code>,
+and horizontal white space (spaces or tabs)&#160;<tt> </tt>
+between the <code>#</code> and the directive,
+since the white space introduces no ambiguity,
+causes no particular processing problems,
+and allows maximum flexibility in coding style.&#160;<tt> </tt>
+Note that similar considerations apply for comments,
+which are reduced to white space early in the phases of
+translation (<a href="b.html#2-1-1-2">&#167;2.1.1.2</a>): 
+<pre>         /* here a comment */ #if BLAH
+        #/* there a comment */ if BLAH
+        # if /* every-
+            where a comment */ BLAH
+</pre>The lines all illustrate legitimate placement of comments.&#160;<tt> </tt>
+<p>
+<p>
+<p>
+<p>
+<h2><a name="3-8-1">3.8.1</a>&#160;<tt> </tt>Conditional inclusion</h2>
+<p>
+For a discussion of evaluation of expressions following <code>#if</code>, see <a href="c4.html#3-4">&#167;3.4</a>.&#160;<tt> </tt>
+<p>
+The operator <a name="defined-3-8-1"><code>defined</code></a> has been added
+to make possible writing
+boolean combinations of defined flags with
+one another and with other inclusion conditions.&#160;<tt> </tt>
+If the identifier <code>defined</code> were to be defined as a macro,
+<code>defined(X)</code>
+would mean the macro expansion in C text proper
+and the operator expression in a preprocessing directive
+(or else that the operator would no longer be available).&#160;<tt> </tt>
+To avoid this problem, such a definition is not permitted (<a href="#3-8-8">&#167;3.8.8</a>).&#160;<tt> </tt>
+<p>
+<a name="-35elif-3-8-1"><code>#elif</code></a> has been added to minimize the stacking of
+<a name="-35endif-3-8-1"><code>#endif</code></a> directives in multi-way conditionals.&#160;<tt> </tt>
+<p>
+Processing of skipped material is defined such that an implementation
+need only examine a logical line for the <code>#</code> and then for a directive
+name.&#160;<tt> </tt>
+Thus, assuming that <code>xxx</code> is undefined, in this example:
+<pre>        # ifndef xxx
+        # define xxx &quot;abc&quot;
+        # elif xxx &gt; 0
+            /* ... */
+        # endif
+</pre>an implementation is not required to diagnose an error for the
+<code>elif</code> statement,
+even though if it <i>were</i> processed,
+a syntactic error would be detected.&#160;<tt> </tt>
+<p>
+Various proposals were considered for permitting text other than comments
+at the end of directives,
+particularly <code>#endif</code> and <a name="-35else-3-8-1"><code>#else</code></a>,
+presumably to label them for easier matchup with their corresponding
+<code>#if</code> directives.&#160;<tt> </tt>
+The Committee rejected all such proposals
+because of the difficulty of specifying exactly what would be permitted,
+and how the translator would have to process it.&#160;<tt> </tt>
+<p>
+Various proposals were considered for permitting additional unary
+expressions to be used for the purpose of testing for the system type,
+testing for the presence of a file before
+<code>#include</code>,
+and other extensions to the preprocessing language.&#160;<tt> </tt>
+These proposals were all rejected on the grounds of insufficient
+prior art and/or insufficient utility.&#160;<tt> </tt>
+<p>
+<h2><a name="3-8-2">3.8.2</a>&#160;<tt> </tt>Source file inclusion</h2>
+<p>
+Specification of the <a name="-35include-3-8-2"><code>#include</code></a>
+directive raises distinctive grammatical problems
+because the file name is conventionally parsed quite differently than an
+``ordinary'' token sequence:
+<p>
+<ul><li>The angle brackets are not operators, but delimiters.&#160;<tt> </tt>
+<li>The double quotes do not delimit a string literal
+    with all its defined escape sequences.&#160;<tt> </tt>
+    (In some systems, backslash is a legitimate character in a filename.)&#160;<tt> </tt>
+    The construct just looks like a string literal.&#160;<tt> </tt>
+<li>White space or characters not in the C repertoire
+    may be permissible and significant
+    within either or both forms.&#160;<tt> </tt>
+</ul>These points in the description of phases of translation
+are of particular relevance to the parse of the
+<code>#include</code> directive:
+<ul><li>Any character otherwise unrecognized during tokenization
+ is an instance of an ``invalid token.''&#160;<tt> </tt>
+ As with valid tokens, the spelling is retained
+ so that later phases can, if necessary,
+ map a token sequence (back) into a sequence of characters.&#160;<tt> </tt>
+<li>Preprocessing phases must maintain the spelling of preprocessing tokens;
+ the filename is based on the original spelling
+ of the tokens, not on any interpretation of escape sequences.&#160;<tt> </tt>
+<li>The filename on the <code>#include</code> (and <code>#line</code>) directive,
+ if it does not begin with <code>&quot;</code> or <code>&lt;</code>,
+ is macro expanded prior to execution of the directive.&#160;<tt> </tt>
+ Allowing macros in the <code>include</code>
+ directive facilitates the parameterization of include file names,
+ an important issue in transportability.&#160;<tt> </tt>
+</ul>
+The file search rules used for the filename in the <code>#include</code>
+directive were left as implementation-defined.&#160;<tt> </tt>
+The Standard intends that the rules which are eventually provided by
+the implementor correspond as closely as possible to the original K&amp;R rules.&#160;<tt> </tt>
+The primary reason that explicit rules were not included in the Standard
+is the infeasibility of describing a portable file system structure.&#160;<tt> </tt>
+It was considered unacceptable to include <a name="UNIX-3-8-2">UNIX</a>-like directory rules due
+to significant differences between this structure and other popular
+commercial file system structures.&#160;<tt> </tt>
+<p>
+Nested include files raise an issue of interpreting the file search rules.&#160;<tt> </tt>
+In UNIX C an include statement found within an include file
+entails a search for the named file relative to the file system
+<i>directory</i> that holds the outer <code>#include</code>.&#160;<tt> </tt>
+Other implementations, including the earlier UNIX C described in K&amp;R,
+always search relative to the same <i>current directory</i>.&#160;<tt> </tt>
+The Committee decided, in principle, in favor of the K&amp;R approach,
+but was unable to provide explicit search rules as explained above.&#160;<tt> </tt>
+<p>
+
+The Standard specifies a set of include file names which must
+map onto distinct host file names.  In the absence of such a requirement,
+it would be impossible to write portable programs using include files.&#160;<tt> </tt>
+<p>
+
+Section <a href="b.html#2-2-4-1">&#167;2.2.4.1</a> on translation limits contains the required number of
+nesting levels for include files.&#160;<tt> </tt>
+The limits chosen were intended to
+reflect reasonable needs for users constrained by reasonable system
+resources available to implementors.&#160;<tt> </tt>
+<p>
+
+By defining a failure to read an include file as a syntax error,
+the Standard requires that the failure be diagnosed.&#160;<tt> </tt>
+More than one proposal was presented for some form of conditional include,
+or a directive such as <code>#ifincludable</code>,
+but none were accepted by the Committee
+due to lack of prior art.&#160;<tt> </tt>
+<p>
+<h2><a name="3-8-3">3.8.3</a>&#160;<tt> </tt>Macro replacement</h2>
+<p>
+The specification of macro definition and replacement in the Standard
+was based on these principles:
+<ul><li>Interfere with existing code as little as possible.&#160;<tt> </tt>
+<li>Keep the preprocessing model simple and uniform.&#160;<tt> </tt>
+<li>Allow macros to be used wherever functions can be.&#160;<tt> </tt>
+<li>Define macro expansion such that it produces the same token sequence
+	whether the macro calls appear in open text,
+	in macro arguments, or in macro definitions.&#160;<tt> </tt>
+</ul>
+Preprocessing is specified in such a way that it can be implemented
+as a separate (text-to-text) pre-pass or as a (token-oriented) portion
+of the compiler itself.&#160;<tt> </tt>
+Thus, the preprocessing grammar is specified in terms of tokens.&#160;<tt> </tt>
+<p>
+However, the new-line character must be a token during preprocessing,
+because the preprocessing grammar is line-oriented.&#160;<tt> </tt>
+The presence or absence of white space is also important in several contexts,
+such as between the macro name and a following 
+parenthesis in a <code>#define</code> directive.&#160;<tt> </tt>
+To avoid overly constraining the implementation,
+the Standard allows the preservation of each white space character
+(which is easy for a text-to-text pre-pass)&#160;<tt> </tt>
+or the mapping of white space into a single ``white space'' token
+(which is easier for token-oriented translators).&#160;<tt> </tt>
+<p>
+
+The Committee desired to disallow ``pernicious redefinitions''&#160;<tt> </tt>
+such as
+<p>
+(in header1.h)&#160;<tt> </tt>
+<pre>        #define NBUFS 10
+</pre>
+<p>
+(in header2.h)&#160;<tt> </tt>
+<pre>        #define NBUFS 12
+</pre>
+which are clearly invitations to serious bugs in a program.&#160;<tt> </tt>
+There remained, however, the question of
+``<a name="benign-redefinition-3-8-3">benign redefinitions</a>,''
+such as
+<p>
+(in header1.h)&#160;<tt> </tt>
+<pre>        #define NULL_DEV 0
+</pre>
+<p>
+(in header2.h)&#160;<tt> </tt>
+<pre>        #define NULL_DEV 0
+</pre>
+The Committee concluded that
+safe programming practice is better served by
+allowing benign redefinition where the definitions are the same.&#160;<tt> </tt>
+This allows independent headers to specify their understanding of the proper
+value for a symbol of interest to each,
+with <a name="diagnostics-3-8-3" href="b.html#diagnostics-2-1-1-3">diagnostics</a> generated only if the definitions differ.&#160;<tt> </tt>
+<p>
+The definitions are considered ``the same'' if
+the identifier-lists, token sequences, and occurrences of white-space
+(ignoring the spelling of white-space)&#160;<tt> </tt>
+in the two definitions are identical.&#160;<tt> </tt>
+<p>
+
+Existing implementations have differed on whether keywords can be redefined
+by macro definitions.&#160;<tt> </tt>
+The Committee has decided to allow this usage;
+it sees such redefinition as useful during the transition from existing
+to Standard-conforming translators.&#160;<tt> </tt>
+<p>
+These definitions illustrate possible uses:
+<pre>        # define char   signed char
+        # define sizeof (int) sizeof
+        # define const
+</pre>The first case might be useful in moving extant code from a signed-char
+implementation to one in which <code>char</code> is unsigned.&#160;<tt> </tt>
+The second case might be useful in adapting code which assumes that
+<code>sizeof</code> results in an <code>int</code> value.&#160;<tt> </tt>
+The redefinition of <code>const</code> could be useful in
+retrofitting more modern C code to an older implementation.&#160;<tt> </tt>
+<p>
+As with any other powerful language feature, keyword redefinition
+is subject to abuse.  Users cannot expect any meaningful behavior 
+to come about from source files starting with
+<pre>        #define int double
+        #include &lt;stdio.h&gt;
+</pre>or similar subversions of common sense.&#160;<tt> </tt>
+<p>
+<p>
+<h2><a name="3-8-3-1">3.8.3.1</a>&#160;<tt> </tt>Argument substitution</h2>
+<p>
+<h2><a name="3-8-3-2">3.8.3.2</a>&#160;<tt> </tt>The <code>#</code> operator</h2>
+<p>
+Some implementations have decided to
+replace identifiers found within a string literal
+if they match a macro argument name.&#160;<tt> </tt>
+The replacement text is a ``<a name="stringizing-3-8-3-2">stringized</a>''
+form of the actual argument token sequence.&#160;<tt> </tt>
+This practice appears to be contrary to the definition, in K&amp;R,
+of preprocessing in terms of token sequences.&#160;<tt> </tt>
+The Committee declined to elaborate the syntax of string literals
+to the point where this practice could be condoned.&#160;<tt> </tt>
+However, since the facility provided by this mechanism seems
+to be widely used,
+the Committee introduced a more tractable mechanism of comparable power.&#160;<tt> </tt>
+<p>
+The <code>#</code> operator has been introduced for stringizing.&#160;<tt> </tt>
+It may only be used in a <code>#define</code> expansion.&#160;<tt> </tt>
+It causes the formal parameter name following to be replaced by
+a string literal formed by stringizing the actual argument token
+sequence.&#160;<tt> </tt>
+In conjunction with string literal concatenation (see <a href="c1.html#3-1-4">&#167;3.1.4</a>),
+use of this operator
+permits the construction of strings as effectively as by identifier
+replacement within a string.&#160;<tt> </tt>
+An example in the Standard illustrates this feature.&#160;<tt> </tt>
+<p>
+One problem with defining the effect of stringizing is the treatment
+of white space occurring in macro definitions.&#160;<tt> </tt>
+Where this could be discarded in the past, now upwards of
+one logical line worth (over 500 characters) may have to be retained.&#160;<tt> </tt>
+As a compromise
+between token-based and character-based preprocessing disciplines,
+the Committee decided to permit white space to be
+retained as one bit of information:  none or one.&#160;<tt> </tt>
+Arbitrary white space is replaced in the string by one space character.&#160;<tt> </tt>
+<p>
+The remaining problem with stringizing was to associate a ``spelling''&#160;<tt> </tt>
+with each token.&#160;<tt> </tt>
+(The problem arises in token-based preprocessors, which might,
+for instance, convert a numeric literal to a canonical or internal
+representation, losing information about base, leading 0's, etc.)&#160;<tt> </tt>
+In the interest of simplicity, the Committee decided that each token
+should expand to just those characters used to specify it in the
+original source text.&#160;<tt> </tt>
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>A macro that relies on formal parameter substitution
+within a string literal will produce different results.&#160;<tt> </tt>
+</ul><h2><a name="3-8-3-3">3.8.3.3</a>&#160;<tt> </tt>The <code>##</code> operator</h2>
+<p>
+Another facility relied on in much current practice 
+but not specified in the Base Document is
+``<a name="token-pasting-3-8-3-3">token pasting</a>,''
+or building a new token by macro argument substitution.&#160;<tt> </tt>
+One existing implementation is to replace a comment within a macro expansion
+by zero characters, instead of the single space called for in K&amp;R.&#160;<tt> </tt>
+The Committee considered this practice unacceptable.&#160;<tt> </tt>
+<p>
+As with ``stringizing,''&#160;<tt> </tt>
+the facility was considered desirable,
+but not the extant implementation of this facility,
+so the Committee invented another preprocessing operator.&#160;<tt> </tt>
+The <code>##</code> operator within a macro expansion causes concatenation
+of the tokens on either side of it into a new composite token.&#160;<tt> </tt>
+The specification of this pasting operator is based on these
+principles:
+<ul><li>Paste operations are explicit in the source.&#160;<tt> </tt>
+<li>The <code>##</code> operator is associative.&#160;<tt> </tt>
+<li>A formal parameter as an operand for <code>##</code> is not expanded
+	before pasting.  (The actual is substituted for the formal,
+	but the actual is not expanded:
+<pre>        #define a(n) aaa ## n
+        #define b    2
+</pre>	Given these definitions, the expansion of <code>a(b)</code> is
+	<code>aaab</code>, not <code>aaa2</code> or <code>aaan</code>.)
+<li>A normal operand for <code>##</code> is not expanded before pasting.&#160;<tt> </tt>
+<li>Pasting does not cross macro replacement boundaries.&#160;<tt> </tt>
+<li>The token resulting from a paste operation is subject to
+	further macro expansion.&#160;<tt> </tt>
+</ul>These principles codify the essential features of prior art,
+and are consistent with the specification of the stringizing operator.&#160;<tt> </tt>
+<p>
+<h2><a name="3-8-3-4">3.8.3.4</a>&#160;<tt> </tt>Rescanning and further replacement</h2>
+<p>
+A problem faced by most current preprocessors is how to use a
+macro name in its expansion without suffering ``recursive death.''&#160;<tt> </tt>
+The Committee agreed simply to turn off the definition
+of a macro for the duration
+of the expansion of that macro.&#160;<tt> </tt>
+An example of this feature is included in the Standard.&#160;<tt> </tt>
+<p>
+The rescanning rules incorporate an ambiguity.&#160;<tt> </tt>
+Given the definitions
+<pre>        #define  f(a)  a*g
+        #define  g     f
+</pre>it is clear (or at least unambiguous) that the expansion of
+<code>f(2)(9)</code> is <code>2*f(9)</code> --- the <code>f</code> in the result clearly
+was introduced during the expansion of the original <code>f</code>, so
+is not further expanded.&#160;<tt> </tt>
+<p>
+However, given the definitions
+<pre>        #define f(a)  a*g
+        #define g(a)  f(a)
+</pre>the expansion rules allow the result to be either <code>2*f(9)</code> or
+<code>2*9*g</code> --- it is unclear whether the <code>f(9)</code> token string
+(resulting from the initial expansion of <code>f</code> and the examination
+of the rest of the source file) should be considered as nested
+within the expansion of <code>f</code> or not.&#160;<tt> </tt>
+The Committee intentionally left this behavior ambiguous:
+it saw no useful purpose in specifying all the quirks of preprocessing
+for such questionably useful constructs.
+<p>
+<h2><a name="3-8-3-5">3.8.3.5</a>&#160;<tt> </tt>Scope of macro definitions</h2>
+<p>
+Some pre-Standard implementations maintain a stack of <code>#define</code>
+instances for each identifier;
+<code>#undef</code> simply pops the stack.&#160;<tt> </tt>
+The Committee agreed that more than one level of <code>#define</code>
+was more prone to error than utility.&#160;<tt> </tt>
+<p>
+
+It is explicitly permitted to <code>#undef</code>
+a macro that has no current definition.&#160;<tt> </tt>
+This capability is exploited in conjunction with the standard library
+(see <a href="d1.html#4-1-3">&#167;4.1.3</a>).&#160;<tt> </tt>
+<p>
+<h2><a name="3-8-4">3.8.4</a>&#160;<tt> </tt>Line control</h2>
+Aside from giving values to <a name="-95-95LINE-95-95-3-8-4"><code>__LINE__</code></a> and <a name="-95-95FILE-95-95-3-8-4"><code>__FILE__</code></a>
+(see <a href="#3-8-8">&#167;3.8.8</a>),
+the effect of <code>#line</code> is <a name="unspecified-behavior-3-8-4">unspecified</a>.
+A good implementation will presumably provide line
+and file information in conjunction with most <a href="b.html#diagnostics-2-1-1-3" name="diagnostics-3-8-4">diagnostics</a>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-8-5">3.8.5</a>&#160;<tt> </tt>Error directive</h2>
+<p>
+The directive <a name="-35error-3-8-5"><code>#error</code></a>
+has been introduced to provide an explicit mechanism for
+forcing translation to fail
+under certain conditions.&#160;<tt> </tt>
+(Formally the Standard only requires, <i>can</i> only require, that
+a diagnostic be issued
+when the <code>#error</code> directive is effected.&#160;<tt> </tt>
+It is the intent of the Committee, however,
+that translation cease immediately upon encountering this directive,
+if this is feasible in the implementation;
+further diagnostics on text beyond the directive are apt to be
+of little value.)&#160;<tt> </tt>
+Traditionally such failure has had to be forced by inserting text
+so ill-formed that the translator gagged on it.&#160;<tt> </tt>
+<p>
+<h2><a name="3-8-6">3.8.6</a>&#160;<tt> </tt>Pragma directive</h2>
+<p>
+The <a name="-35pragma-3-8-6"><code>#pragma</code></a>
+directive has been added as the universal method for extending
+the space of directives.&#160;<tt> </tt>
+<p>
+<h2><a name="3-8-7">3.8.7</a>&#160;<tt> </tt>Null directive</h2>
+<p>
+The existing practice of using empty <code>#</code> lines
+for spacing is supported in the Standard.&#160;<tt> </tt>
+<p>
+<h2><a name="3-8-8">3.8.8</a>&#160;<tt> </tt>Predefined macro names</h2>
+<p>
+The rule that these macros may not be redefined or undefined
+reduces the complexity of the name space that the programmer and
+implementor must understand;
+it recognizes that these macros have special built-in properties.&#160;<tt> </tt>
+<p>
+The macros <a name="-95-95DATE-95-95-3-8-8"><code>__DATE__</code></a> and <a name="-95-95TIME-95-95-3-8-8"><code>__TIME__</code></a>
+have been added to make available the time of translation.&#160;<tt> </tt>
+A particular format for the expansion of these macros has been specified
+to aid in parsing strings initialized by them.&#160;<tt> </tt>
+<p>
+The macros <a name="-95-95LINE-95-95-3-8-8"><code>__LINE__</code></a> and <a name="-95-95FILE-95-95-3-8-8"><code>__FILE__</code></a>
+have been added
+to give programmers access to the source line number and file name.&#160;<tt> </tt>
+<p>
+The macro <a name="-95-95STDC-95-95-3-8-8"><code>__STDC__</code></a>
+allows for conditional translation on whether the translator claims
+to be standard-conforming or not.&#160;<tt> </tt>
+It is defined as having value 1;
+future versions of the Standard could define it as 2, 3, ...,
+to allow for conditional compilation on which version of the Standard
+a translator conforms to.&#160;<tt> </tt>
+This macro should be of use in the transition toward conformance
+to the Standard.&#160;<tt> </tt>
+<hr>
+<a href="c7.html">3.7 External definitions</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-8">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c9.html">3.9 Future directions</a>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+</body></html>

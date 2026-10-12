@@ -1,0 +1,39 @@
+mod c11.lex;
+
+// C preprocessing-token policy is data supplied to the generic scanner.
+effect c11.lex.config() => [
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_",
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789",
+    "0123456789.",
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789.", "eEpP",
+    ["%:%:", ">>=", "<<=", "...", "->", "++", "--", "<<", ">>", "<=", ">=", "==", "!=",
+     "&&", "||", "*=", "/=", "%=", "+=", "-=", "&=", "^=", "|=", "##", "<:", ":>", "<%", "%>", "%:",
+     "[", "]", "(", ")", "{", "}", ".", "&", "*", "+", "-", "~", "!", "/", "%", "<", ">", "^", "|", "?", ":", ";", "=", ",", "#"],
+    [["//", "\n"], ["/*", "*/"]], "\"'"
+];
+effect c11.lex.scan($source,$path) => text.lex(c11.lex.phases($source),$path,c11.lex.config());
+effect c11.lex.phases($source) => text.replace(text.replace(
+    list.fold("c11.lex.replace", c11.lex.trigraphs(), text.replace($source,"\r\n","\n")), "\\\n", ""), "\r", "\n");
+effect c11.lex.trigraphs() => [["??=","#"],["??/","\\"],["??'","^"],["??(","["],["??)","]"],
+    ["??!","|"],["??<","{"],["??>","}"],["??-","~"]];
+effect c11.lex.replace($source,[$from,$to]) => text.replace($source,$from,$to);
+effect c11.lex.spelling([$kind,$raw,$file,$line,$column,$space]) => $raw;
+effect c11.lex.kind([$kind,$raw,$file,$line,$column,$space]) => $kind;
+effect c11.lex.space([$kind,$raw,$file,$line,$column,$space]) => $space;
+effect c11.lex.at([$kind,$raw,$file,$line,$column,$space],$new) => [$kind,$new,$file,$line,$column,$space];
+effect c11.lex.made($kind,$raw,[$old,$text,$file,$line,$column,$space]) => [$kind,$raw,$file,$line,$column,$space];
+effect c11.lex.error([$kind,$raw,$file,$line,$column,$space],$message) => source.error($file,$line,$column,$message);
+effect c11.lex.canonical($token) => bind($before,c11.lex.spelling($token),bind($after,c11.lex.digraph($before),choose(eq($before,$after),$token,c11.lex.at($token,$after))));
+effect c11.lex.digraph("<:") => "[";
+effect c11.lex.digraph(":>") => "]";
+effect c11.lex.digraph("<%") => "{";
+effect c11.lex.digraph("%>") => "}";
+effect c11.lex.digraph("%:") => "#";
+effect c11.lex.digraph("%:%:") => "##";
+effect[fallback] c11.lex.digraph($spelling) => $spelling;
+effect c11.lex.tokens($source,$path) => list.map("c11.lex.canonical",c11.lex.scan($source,$path));
+// Keywords are still identifiers throughout preprocessing and macro expansion.
+// Only the final parser input reserves these literal words for this dialect.
+effect c11.lex.parser_token($token) => choose(eq(c11.lex.kind($token),5),c11.lex.made(14,c11.lex.spelling($token),$token),
+    choose(and(eq(c11.lex.kind($token),1),c11.lex.keyword(c11.lex.spelling($token))),c11.lex.made(8,c11.lex.spelling($token),$token),$token));
+effect c11.lex.keyword($word) => text.contains(" auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while _Alignas _Alignof _Atomic _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local ",concat(" ",concat($word," ")));

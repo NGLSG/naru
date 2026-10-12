@@ -1,0 +1,42 @@
+// Union storage is a target-defined sequence of integer units. Shared scalar
+// windows preserve symbolic addresses in pointer-sized slots and keep object
+// representation independent from the member selected by an initializer.
+mod c11.union_storage;
+use c11.types;
+use c11.objects;
+use c11.sema;
+use base;
+use types;
+use storage;
+use tree;
+
+effect base.lower(base.Typed(c11.types.Union($name,$fields),c11.objects.Packed([$value])),$env)
+    => bind($source,base.lower($value,$env),storage.reinterpret($source,shape(arg($value,0)),shape(c11.types.Union($name,$fields))));
+effect shape(c11.types.CBool()) => storage.Scalar("i8",8,8,"integer");
+effect shape(c11.types.FloatType($rank,$format)) => storage.Scalar($format,mul(c11.types.bytes(c11.types.FloatType($rank,$format)),8),
+    mul(c11.types.bytes(c11.types.FloatType($rank,$format)),8),"float");
+effect shape(c11.types.Pointer($element)) => storage.Scalar("!llvm.ptr",64,64,"pointer");
+effect shape(c11.types.Qualified($type,$const,$volatile,$restrict)) => shape($type);
+effect shape(c11.types.AlignedType($type,$alignment)) => shape($type);
+effect shape(c11.types.Array($count,$element)) => storage.Aggregate(types.repr(c11.types.Array($count,$element)),
+    mul(c11.types.bytes(c11.types.Array($count,$element)),8),array_members($count,$element));
+effect array_members($count,$element) => bind(ArrayParts($index,$limit,$type,$parts),
+    rule.iterate("c11.union_storage.array_part",ArrayParts(0,$count,$element,[]),1000000),list.reverse($parts));
+effect array_part(ArrayParts($index,$count,$element,$parts)) when eq($index,$count) => [0,ArrayParts($index,$count,$element,$parts)];
+effect array_part(ArrayParts($index,$count,$element,$parts)) when lt($index,$count)
+    => [1,ArrayParts(add($index,1),$count,$element,list.prepend([mul(mul($index,c11.types.bytes($element)),8),$index,shape($element)],$parts))];
+effect shape(c11.types.Record($name,$fields)) => bind($offsets,list.cursor(arg(c11.types.record_layout($fields),2)),
+    bind(RecordParts($remaining,$index,$parts),list.fold("c11.union_storage.record_part",$fields,RecordParts($offsets,0,[])),
+        storage.Aggregate(types.repr(c11.types.Record($name,$fields)),mul(c11.types.bytes(c11.types.Record($name,$fields)),8),list.reverse($parts))));
+effect record_part(RecordParts($offsets,$index,$parts),c11.types.Field($name,$type))
+    => RecordParts(list.cursor.tail($offsets),add($index,1),choose(eq(c11.types.bytes($type),0),$parts,
+        list.prepend([mul(list.cursor.head($offsets),8),$index,shape($type)],$parts)));
+effect shape(c11.types.Union($name,$fields)) => bind($type,c11.types.Union($name,$fields),bind($unit,c11.types.union_unit($fields),
+    storage.Aggregate(types.repr($type),mul(c11.types.bytes($type),8),array_members(int.div(c11.types.bytes($type),$unit),unit_type($unit)))));
+effect unit_type(8) => c11.types.integer("unsigned long long");
+effect unit_type(4) => c11.types.integer("unsigned int");
+effect unit_type(2) => c11.types.integer("unsigned short");
+effect unit_type(1) => c11.types.integer("unsigned char");
+effect[fallback] shape($type) => choose(c11.types.is_integer($type),
+    storage.Scalar(types.repr($type),mul(c11.types.bytes($type),8),mul(c11.types.bytes($type),8),"integer"),
+    fail("unsupported C object representation in union initializer"));

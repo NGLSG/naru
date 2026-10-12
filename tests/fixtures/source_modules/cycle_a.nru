@@ -1,0 +1,3 @@
+mod cycle_a;
+use cycle_b;
+fn a() -> i32 { return 1; }

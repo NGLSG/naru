@@ -1,0 +1,16 @@
+// Capabilities are an open proof relation. A type package can supply evidence
+// without changing either the solver or the generic-function rules.
+mod traits;
+use types;
+effect accepts("Numeric", Signed($width)) => 1;
+effect accepts("Numeric", Unsigned($width)) => 1;
+effect accepts("Numeric", Real($format)) => 1;
+effect accepts("Integer", Signed($width)) => 1;
+effect accepts("Integer", Unsigned($width)) => 1;
+effect accepts("Integer", Index()) => 1;
+effect[fallback] accepts($name, $descriptor) => 0;
+effect require($name, $descriptor) => choose(accepts($name, $descriptor), 1,
+    fail(concat("unsatisfied capability: ", $name)));
+effect types.solve_one(Supports($name, $descriptor), $rest, $substitution)
+    => choose(accepts($name, logic.resolve($descriptor, $substitution)), types.solve($rest, $substitution),
+        Rejected(concat("unsatisfied capability: ", $name)));

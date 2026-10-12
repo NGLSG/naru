@@ -1,0 +1,4 @@
+mod ambiguous_import;
+use a;
+effect run(Local()) => Local();
+effect test() => run(Local());

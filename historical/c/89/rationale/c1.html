@@ -1,0 +1,903 @@
+<html><head>
+<title>3.1 Lexical Elements</title>
+<link rel="made" rev="made" href="mailto:jutta@cs.tu-berlin.de">
+</head>
+<body>
+<a href="b.html">2 Environment</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#lang">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c2.html">3.2 Conversions</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="d1.html">4 Library</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+<hr>
+<h1><a name="3">3</a>&#160;<tt> </tt>Language</h1>
+<p>
+While more formal methods of language definition were explored,
+the Committee decided early on to employ the style of the Base Document:
+<a name="Backus-Naur-Form-3">Backus-Naur Form</a> for the syntax and prose for the constraints
+and semantics.&#160;<tt> </tt>
+Anything more ambitious was considered to be likely to delay the Standard,
+and to make it less accessible to its audience.&#160;<tt> </tt>
+<p>
+<h2><a name="3-1">3.1</a>&#160;<tt> </tt><a name="lexical-elements-3-1">Lexical Elements</a></h2>
+
+<p>
+The Standard endeavors to bring <a name="preprocessing-3-1">preprocessing</a> more closely into
+line with the token orientation of the language proper.&#160;<tt> </tt>
+To do so requires that at least some information about <a name="white-space-3-1">white space</a>
+be retained through the early phases of translation (see <a href="b.html#2-1-1-2">&#167;2.1.1.2</a>).&#160;<tt> </tt>
+It also requires that an inverse mapping be defined from tokens back
+to source characters (see <a href="c8.html#3-8-3">&#167;3.8.3</a>).&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-1">3.1.1</a>&#160;<tt> </tt>Keywords</h2>
+<p>
+Several keywords have been added:
+<a name="const-3-1-1"><code>const</code></a>, <a name="enum-3-1-1"><code>enum</code></a>, <a name="signed-3-1-1"><code>signed</code></a>,
+<a name="void-3-1-1"><code>void</code></a>, and <a name="volatile-3-1-1"><code>volatile</code></a>.&#160;<tt> </tt>
+<p>
+As much as possible, however, new features have been added by overloading
+existing keywords, as, for example,
+<code>long double</code> instead of <code>extended</code>.&#160;<tt> </tt>
+It is recognized that each added keyword will
+require some existing code that used it as an identifier
+to be rewritten.&#160;<tt> </tt>
+No meaningful programs are known to
+be <a name="quiet-change-3-1-1">quietly changed</a>
+by adding the new keywords.&#160;<tt> </tt>
+<p>
+The keywords <a name="entry-3-1-1"><code>entry</code></a>, <a name="fortran-3-1-1"><code>fortran</code></a>, and <a name="asm-3-1-1"><code>asm</code></a>
+have not been included since they
+were either never used, or are not portable.&#160;<tt> </tt>
+Uses of <code>fortran</code> and <code>asm</code> as keywords are noted as
+<a name="common-extensions-3-1-1"><i>common extensions</i></a>.&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-2">3.1.2</a>&#160;<tt> </tt>Identifiers</h2>
+<p>
+While an implementation is not obliged to remember more than the first
+31 characters of an identifier for the purpose of name matching,
+the programmer is effectively prohibited from intentionally creating two
+different identifiers that are the same in the first 31 characters.&#160;<tt> </tt>
+Implementations may therefore store the full identifier;
+they are not obliged to truncate to 31.&#160;<tt> </tt>
+<p>
+The decision to extend significance to 31 characters for internal names
+was made with little opposition,
+but the decision to retain the old
+six-character case-insensitive restriction on significance
+of <a name="external-identifiers-3-1-2">external</a> names was most painful.
+While strong sentiment was expressed
+for making C ``right'' by requiring longer names everywhere,
+the Committee recognized that the language must,
+for years to come,
+coexist with other languages and with older assemblers and linkers.&#160;<tt> </tt>
+Rather than undermine support for the Standard,
+the severe restrictions have been retained.&#160;<tt> </tt>
+<p>
+The Committee has decided to
+label as <a name="obsolescent"><i>obsolescent</i></a>
+the practice of providing different identifier significance for
+internal and external identifers,
+thereby signalling its intent that some future version of
+the C Standard require 31-character case-sensitive external name
+significance,
+and thereby encouraging new implementations to support such significance.&#160;<tt> </tt>
+<p>
+Three solutions to the external identifier length/case problem were
+explored, each with its own set of problems:
+<p>
+<ol><p>
+<li><i>Label any C implementation without at least 31-character, case-sensitive
+significance in external
+identifiers as non-standard.</i>&#160;<tt> </tt><i>
+</i>This is unacceptable since the whole
+reason for a standard is portability,
+and many systems today simply do not provide such a name space.&#160;<tt> </tt>
+<p>
+<li><i>Require a C implementation which cannot provide 31-character, case-sensitive
+significance
+to map long identifiers into the identifier name space
+that it can provide.</i>&#160;<tt> </tt><i>
+</i>This option quickly becomes very complex for large,
+multi-source programs, since a program-wide database has to be
+maintained for all modules to avoid giving two different identifiers
+the same actual external name.&#160;<tt> </tt>
+It also reduces the usefulness of source code debuggers
+and cross reference programs,
+which generally work with the short mapped names,
+since the source-code name used by the
+programmer would likely bear little resemblance to the
+name actually generated.&#160;<tt> </tt>
+<p>
+<li><i>Require a C implementation which cannot provide 31-character, case-sensitive
+significance
+to rewrite the linker, assembler, debugger, any other
+language translators which use the linker, etc.</i>&#160;<tt> </tt><i>
+</i>This is not always practical,
+since the C implementor might not be providing the linker, etc.&#160;<tt> </tt>
+Indeed, on some systems only the manufacturer's linker can be used,
+either because the format of the resulting program file is not documented,
+or because the ability to create program files is restricted to secure programs.&#160;<tt> </tt>
+<p>
+</ol><p>
+Because of the decision to restrict significance of external identifiers
+to six case-insensitive characters,
+C programmers are faced with these choices when writing portable programs:
+<p>
+<ol><p>
+<li>Make sure that external identifiers are unique within the first six characters,
+and use only one case within the name.&#160;<tt> </tt>
+A unique six-character prefix could be used,
+followed by an underscore,
+followed by a longer, more descriptive name:
+<pre>        extern int a_xvz_real_long_name;
+        extern int a_rwt_real_long_name2;
+</pre><p>
+<li>Use the prefix method described above, and then use
+<code>#define</code>
+statements to provide a
+longer, more descriptive name for the unique name, such as:
+<p>
+<pre>        #define real_long_name  a_xvz_real_long_name
+        #define real_long_name2 a_rwt_real_long_name2
+</pre>Note that overuse of this technique might result in exceeding
+the limit on the number of allowed
+<code>#define</code>
+macros, or some other implementation limit.&#160;<tt> </tt>
+<p>
+<li>Use longer and/or multi-case external names, and limit the portability
+of the programs to systems that support the longer names.&#160;<tt> </tt>
+<p>
+<li>Declare all exported items (or pointers thereto) in a single data structure
+and export that structure.&#160;<tt> </tt>
+The technique can reduce the number of external identifiers to one per
+translation unit;
+member names within the structure are internal identifiers, hence
+can have full significance.&#160;<tt> </tt>
+The principal drawback of this technique is that functions can only
+be exported by reference, not by name;
+on many systems this entails a run-time overhead on each function call.&#160;<tt> </tt>
+<p>
+</ol><p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>A program that depends upon internal identifiers
+matching only in the
+first (say) eight characters may change to one with distinct objects
+for each variant spelling of the identifier.&#160;<tt> </tt>
+</ul><h2><a name="3-1-2-1">3.1.2.1</a>&#160;<tt> </tt>Scopes of identifiers</h2> 
+<p>
+The Standard has separated from the overloaded keywords
+for storage classes the various concepts of
+<a name="scope"><i>scope</i></a>, <a name="linkage"><i>linkage</i></a>, <a name="name-space"><i>name space</i></a>,
+and <a name="storage-duration"><i>storage duration</i></a>.&#160;<tt> </tt>
+(See <a href="#3-1-2-2">&#167;3.1.2.2</a>, <a href="#3-1-2-3">&#167;3.1.2.3</a>, <a href="#3-1-2-4">&#167;3.1.2.4</a>.)&#160;<tt> </tt>
+This has traditionally been a major area of confusion.&#160;<tt> </tt>
+<p>
+One source of dispute was whether identifiers with external linkage should
+have file scope even when introduced within a block.&#160;<tt> </tt>
+The Base Document is vague on this point,
+and has been interpreted differently by different implementations.&#160;<tt> </tt>
+For example,
+the following fragment would be valid in the file scope scheme,
+while invalid in the block scope scheme:
+<pre>        typedef struct data d_struct ;
+</pre><p>
+<pre>        first(){
+                extern d_struct func();
+                /* ...  */
+        }
+</pre><p>
+<pre>        second(){
+                d_struct n = func();
+        }
+</pre>While it was generally agreed that it is poor practice
+to take advantage of an external declaration
+once it had gone out of scope,
+some argued that a translator had to remember the declaration for checking
+anyway, so why not acknowledge this?&#160;<tt> </tt>
+The compromise adopted was to decree essentially that block scope rules apply,
+but that a conforming implementation need not diagnose a failure to
+redeclare an external identifier that had gone out of scope
+(<a name="undefined-behavior"><i>undefined behavior</i></a>).&#160;<tt> </tt>
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>A program relying on file scope rules may be valid under block scope
+rules but behave differently ---
+for instance, if <code>d_struct</code> were defined as type <code>float</code>
+rather than <code>struct data</code> in the example above.&#160;<tt> </tt>
+</ul>
+Although the scope of an identifier in a function prototype
+begins at its declaration and ends at the end of that function's
+declarator, this scope is of course ignored by the preprocessor.&#160;<tt> </tt>
+Thus an identifier in a prototype having the same name as that of an
+existing macro is treated as an invocation of that macro.&#160;<tt> </tt>
+For example:
+<pre>        #define status 23
+        void exit(int status);
+</pre>generates an error, since the prototype after preprocessing becomes
+<pre>        void exit(int 23);
+</pre>Perhaps more surprising is what happens if <code>status</code> is defined
+<pre>        #define status []
+</pre>Then the resulting prototype is
+<pre>        void exit(int []);
+</pre>which is syntactically correct but semantically quite different from the
+intent.&#160;<tt> </tt>
+<p>
+To protect an implementation's header prototypes from such
+misinterpretation,
+the implementor must write them to avoid these surprises.&#160;<tt> </tt>
+Possible solutions include not using identifiers in prototypes,
+or using names (such as <code>__status</code> or <code>_Status</code>) in the
+reserved name space.&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-2-2">3.1.2.2</a>&#160;<tt> </tt>Linkages of identifiers</h2>
+<p>
+The Standard requires that
+the first declaration, implicit or explicit, of an identifier specify
+(by the presence or absence of the keyword <code>static</code>)&#160;<tt> </tt>
+whether the identifier has internal or external <a name="linkage-3-1-2-2">linkage</a>.&#160;<tt> </tt>
+This requirement allows for one-pass compilation
+in an implementation which must treat internal linkage items
+differently than external linkage items.&#160;<tt> </tt>
+An example of such an implementation is one which produces
+intermediate assembler code, and which therefore must construct names
+for internal linkage items
+to circumvent identifier length and/or case restrictions
+in the target assembler.&#160;<tt> </tt>
+<p>
+Existing practice in this area is inconsistent.&#160;<tt> </tt>
+Some implementations have avoided the renaming problem simply by restricting
+internal linkage names by the same rules as for external linkage.&#160;<tt> </tt>
+Others have disallowed
+a static declaration followed later by a defining instance,
+even though such constructs are necessary
+to declare mutually recursive static functions.&#160;<tt> </tt>
+The requirements adopted in the Standard
+may call for changes in some existing programs, but
+allow for maximum flexibility.&#160;<tt> </tt>
+<p>
+
+The definition model to be used for objects with external linkage
+was a major standardization issue.&#160;<tt> </tt>
+The basic problem was to decide which declarations of an object
+define storage for the object,
+and which merely reference an existing object.&#160;<tt> </tt>
+A related problem was whether multiple definitions of storage are allowed,
+or only one is acceptable.&#160;<tt> </tt>
+Existing implementations of C exhibit at least four different models,
+listed here in order of increasing restrictiveness:
+<p>
+<dl><p>
+<dt><b>Common</b><dd>
+Every object declaration with external linkage
+(whether or not the keyword <code>extern</code> appears in the declaration)&#160;<tt> </tt>
+creates a definition of storage.&#160;<tt> </tt>
+When all of the modules are combined together,
+each definition with the same name is located at the same address in memory.&#160;<tt> </tt>
+(The name is derived from <a name="common-storage"><i>common storage</i></a> in <a name="FORTRAN-3-1-2-2">FORTRAN</a>.)&#160;<tt> </tt>
+This model was the intent of the original designer of C,
+<a name="Ritchie-44-Dennis-M-46-3-1-2-2" href="http://www.cs.bell-labs.com/who/dmr/index.html">Dennis
+Ritchie</a>.
+<p>
+<dt><b>Relaxed Ref/Def</b><dd>
+The appearance of the keyword <code>extern</code>
+(whether it is used outside of the scope of a function or not)&#160;<tt> </tt>
+in a declaration indicates a pure reference (ref),
+which does not define storage.&#160;<tt> </tt>
+Somewhere in all of the translation units,
+at least one definition (def) of the object must exist.&#160;<tt> </tt>
+An external definition is indicated by an object declaration
+in file scope containing no storage class indication.&#160;<tt> </tt>
+A reference without a corresponding definition is an error.&#160;<tt> </tt>
+Some implementations also will not generate
+a reference for items which are declared with the <code>extern</code> keyword,
+but are never used within the code.&#160;<tt> </tt>
+The UNIX operating system C compiler and linker implement this model,
+which is recognized as a
+<a name="common-extension-3-1-2-2"><i>common extension</i></a> to the C language (F.4.11).&#160;<tt> </tt>
+UNIX C programs which take advantage of this
+model are standard conforming in their environment,
+but are not maximally portable.&#160;<tt> </tt>
+<p>
+<dt><b>Strict Ref/Def</b><dd>
+This is the same as the relaxed ref/def model,
+save that only one definition is allowed.&#160;<tt> </tt>
+Again, some implementations
+may decide not to put out references to items that are not used.&#160;<tt> </tt>
+This is the model specified in K&amp;R and in the Base Document.&#160;<tt> </tt>
+<p>
+<dt><b>Initialization</b><dd>
+This model requires an explicit initialization to define storage.&#160;<tt> </tt>
+All other declarations are references.&#160;<tt> </tt>
+</dl>
+<p>
+Figure 3.1 demonstrates the differences between the models.&#160;<tt> </tt>
+<hr>
+<pre>
+<i>Model</i>                   <i>File 1</i>                  <i>File 2</i>
+
+common                  extern int i;           extern int i;
+                        main() {                second() {
+                                i = 1;                  third(i);
+                                second();       }
+                        }
+
+Relaxed Ref/Def         int i;                  int i;
+                        main() {                second() {
+                                i = 1;                  third(i);
+                                second();       }
+                        }
+
+Strict Ref/Def          int i;                  extern int i;
+                        main() {                second() {
+                                i = 1;                  third(i);
+                                second();       }
+                        }
+
+Initializer             int i = 0;              int i;
+                        main() {                second() {
+                                i = 1;                  third(i);
+                                second();       }
+                        }
+</pre><hr>
+<ul><ul>Figure 3.1:&#160;<tt> </tt>Comparison of identifier linkage models</ul></ul>
+<p>
+The model adopted in the Standard is a combination of features
+of the strict ref/def model and the initialization model.&#160;<tt> </tt>
+As in the strict ref/def model,
+only a single translation unit contains the definition of a given object ---
+many environments cannot effectively or efficiently support the
+``distributed definition'' inherent in the common or relaxed
+ref/def approaches.&#160;<tt> </tt>
+However, either an initialization, or an appropriate declaration
+without storage class specifier (see <a href="c7.html#3-7">&#167;3.7</a>), serves as the external
+definition.&#160;<tt> </tt>
+This composite approach was chosen to accommodate as wide a range
+of environments and existing implementations as possible.&#160;<tt> </tt>
+<p>
+<p>
+<h2><a name="3-1-2-3">3.1.2.3</a>&#160;<tt> </tt>Name spaces of identifiers</h2>
+<p>
+Implementations have varied considerably in the number of separate name spaces
+maintained.&#160;<tt> </tt>
+The position adopted in the Standard
+is to permit as many separate name spaces as can be distinguished by context,
+except that all tags (<code>struct</code>, <code>union</code>, and <code>enum</code>)&#160;<tt> </tt>
+comprise a single name space.&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-2-4">3.1.2.4</a>&#160;<tt> </tt>Storage durations of objects</h2>
+<p>
+It was necessary to clarify the effect on automatic storage of jumping
+into a block that declares local storage.&#160;<tt> </tt>
+(See <a href="c6.html#3-6-2">&#167;3.6.2</a>.)&#160;<tt> </tt>
+While many implementations allocate the maximum depth of automatic storage
+upon entry to a function,
+some explicitly allocate and deallocate on block entry and exit.&#160;<tt> </tt>
+The latter are required to assure that local storage is allocated regardless
+of the path into the block (although initializers in automatic declarations
+are not executed unless the block is entered from the top).&#160;<tt> </tt>
+<p>
+To effect true reentrancy for functions in the presence of <a name="signal-3-1-2-4">signals</a>
+raised asynchronously
+(see <a href="b.html#2-2-3">&#167;2.2.3</a>),
+an implementation must assure that the storage for function
+return values has automatic duration.&#160;<tt> </tt>
+This means that the caller must allocate automatic storage
+for the return value and communicate its location to the
+called function.&#160;<tt> </tt>
+(The typical case of return registers for small types conforms
+to this requirement:
+the calling convention of the implementation
+implicitly communicates the return location to the called function.)&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-2-5">3.1.2.5</a>&#160;<tt> </tt>Types</h2>
+<p>
+Several new types have been added:
+<pre>    void
+    void *
+    signed char
+    unsigned char
+    unsigned short
+    unsigned long
+    long double
+</pre>New designations for existing types have been added:
+<pre>
+     signed short  <i>for</i>   short
+     signed int    <i>for</i>   int
+     signed long   <i>for</i>   long
+</pre>
+<code>void</code>
+is used primarily as the typemark for a function which returns no result.&#160;<tt> </tt>
+It may also be used,
+in any context where the value of an expression is to be discarded,
+to indicate explicitly that a value is ignored
+by writing the cast
+<code>(void)</code>.&#160;<tt> </tt>
+Finally, a function prototype list that has no arguments is written as
+<code>f(void)</code>,
+because <code>f()</code> retains its old meaning that
+nothing is said about the arguments.&#160;<tt> </tt>
+<p>
+A ``pointer to void,'' <a name="void--42-3-1-2-5"><code>void *</code></a>, is a generic pointer,
+capable of pointing to any (data) object without truncation.&#160;<tt> </tt>
+A pointer to void must have the same representation and alignment
+as a pointer to character;
+the intent of this rule is to allow existing programs
+which call library functions
+(such as <code>memcpy</code> and <code>free</code>)&#160;<tt> </tt>
+to continue to work.&#160;<tt> </tt>
+A pointer to void may not be dereferenced,
+although such a pointer may be converted to a normal pointer type
+which may be dereferenced.&#160;<tt> </tt>
+Pointers to other types coerce silently to and from <code>void</code> <code>*</code>
+in assignments, function prototypes, comparisons, and conditional expressions,
+whereas other pointer type clashes are invalid.&#160;<tt> </tt>
+It is <a name="undefined-behavior-3-1-2-5">undefined</a>
+what will happen if a pointer of some type is converted to <code>void</code> <code>*</code>,
+and then the <code>void</code> <code>*</code>
+pointer is converted to a type with a stricter alignment requirement.&#160;<tt> </tt>
+<p>
+Three types of <code>char</code> are specified:
+<code>signed</code>, plain, and <code>unsigned</code>.&#160;<tt> </tt>
+A plain <code>char</code> may be represented as either signed or unsigned,
+depending upon the implementation, as in prior practice.&#160;<tt> </tt>
+The type <code>signed char</code> was introduced
+to make available a one-byte signed integer type on those
+systems which implement plain <code>char</code> as unsigned.&#160;<tt> </tt>
+For reasons of symmetry,
+the keyword <code>signed</code> is allowed as
+part of the type name of other integral types.&#160;<tt> </tt>
+<p>
+Two varieties of the integral types are specified:
+<code>signed</code> and <code>unsigned</code>.&#160;<tt> </tt>
+If neither specifier is used, signed is assumed.&#160;<tt> </tt>
+In the Base Document the only unsigned type is <code>unsigned int</code>.&#160;<tt> </tt>
+<p>
+The keyword <code>unsigned</code> is something of a misnomer,
+suggesting as it does arithmetic that is non-negative but capable of overflow.&#160;<tt> </tt>
+The semantics of the C type <code>unsigned</code>
+is that of modulus, or wrap-around, arithmetic,
+for which overflow has no meaning.&#160;<tt> </tt>
+The result of an unsigned arithmetic operation is thus always defined,
+whereas the result of a signed operation may
+(in principle) be undefined.&#160;<tt> </tt>
+In practice, on <a name="twos-complement-3-1-2-5">twos-complement</a> machines,
+both types often give the same result for all operators except
+division, modulus, right shift, and comparisons.&#160;<tt> </tt>
+Hence there has been a lack of sensitivity in the C community to the
+differences between signed and unsigned arithmetic (see <a href="c2.html#3-2-1-1">&#167;3.2.1.1</a>).&#160;<tt> </tt>
+<p>
+The Committee has explicitly restricted the C language to binary architectures, on the grounds that this stricture
+was implicit in any case:
+<ul><li>Bit-fields are specified by a number of bits,
+with no mention of ``invalid integer'' representation.&#160;<tt> </tt>
+The only reasonable encoding for such bit-fields is binary.&#160;<tt> </tt>
+<p>
+<li>The integer formats for
+<a name="printf-3-1-2-5">printf</a>
+suggest no provision for ``illegal integer'' values,
+implying that any result of bitwise manipulation produces an
+integer result which can be printed by <code>printf</code>.&#160;<tt> </tt>
+<p>
+<li>All methods of specifying integer constants
+--- decimal, hex, and octal ---
+specify an integer value.&#160;<tt> </tt>
+No method independent of integers is defined for specifying
+``bit-string constants.''&#160;<tt> </tt>
+Only a binary encoding provides a complete one-to-one mapping
+between bit strings and integer values.&#160;<tt> </tt>
+<p>
+</ul>The restriction to ``<a name="binary-numeration-systems-3-1-2-5">binary numeration systems</a>''&#160;<tt> </tt>
+rules out such curiosities as <a name="Gray-code-3-1-2-5">Gray code</a>,
+and makes possible arithmetic definitions of the bitwise operators
+on unsigned types
+(see <a href="c3.html#3-3-3-3">&#167;3.3.3.3</a>, <a href="c3.html#3-3-7">&#167;3.3.7</a>, <a href="c3.html#3-3-10">&#167;3.3.10</a>, <a href="c3.html#3-3-11">&#167;3.3.11</a>, <a href="c3.html#3-3-12">&#167;3.3.12</a>).&#160;<tt> </tt>
+<p>
+<p>
+A new floating type <a name="long-double-3-1-2-5"><code>long double</code></a> has been added to C.&#160;<tt> </tt>
+The <code>long double</code> type must offer at least as much precision as
+the type <code>double</code>.&#160;<tt> </tt>
+Several architectures support more
+than two floating types and thus can map a distinct machine type
+onto this additional C type.&#160;<tt> </tt>
+Several architectures which only support two floating point types
+can also take advantage of the three C types
+by mapping the less precise type onto <code>float</code> and <code>double</code>,
+and designating the more precise type <code>long double</code>.&#160;<tt> </tt>
+Architectures in which this mapping might be desirable include those
+in which single-precision floats offer at least as much precision
+as most other machines's double-precision,
+or those on which single-precision is considerably more efficient
+than double-precision.&#160;<tt> </tt>
+Thus the common C floating types would map onto an efficient
+implementation type,
+but the more precise type would still be available to those programmers
+who require its use.&#160;<tt> </tt>
+<p>
+To avoid confusion,
+<code>long float</code> as a synonym for <code>double</code> has been retired.&#160;<tt> </tt>
+<p>
+
+<a name="enumerations-3-1-2-5">Enumerations</a>
+permit the declaration of named constants in a more
+convenient and structured fashion than <code>#define</code>'s.&#160;<tt> </tt>
+Both enumeration constants and variables behave like integer types
+for the sake of type checking, however.&#160;<tt> </tt>
+<p>
+The Committee considered several alternatives for enumeration types in C:
+<ol><li>leave them out;
+<li>include them as definitions of integer constants;
+<li>include them in the weakly typed form of the UNIX C compiler;
+<li>include them with strong typing, as, for example, in <a name="Pascal-3-1-2-5">Pascal</a>.&#160;<tt> </tt>
+</ol>The Committee adopted the second alternative
+on the grounds that this approach most clearly reflects common practice.&#160;<tt> </tt>
+Doing away with enumerations altogether would invalidate a fair
+amount of existing code;
+stronger typing than integer creates problems, for instance,
+with arrays indexed by enumerations.&#160;<tt> </tt>
+<p>
+
+<p>
+<h2><a name="3-1-2-6">3.1.2.6</a>&#160;<tt> </tt>Compatible type and composite type</h2>
+
+<p>
+The notions of <a name="compatible-types"><i>compatible types</i></a> and <a name="composite-type"><i>composite type</i></a>
+have been introduced to discuss those situations in which type declarations
+need not be identical.   
+These terms are especially useful in explaining the relationship between
+an incomplete type and a complete type.&#160;<tt> </tt>
+<p>
+Structure, union, or enumeration type declarations in two different
+translation units do not formally declare the <a name="same-type"><i>same type</i></a>,
+even if the text of these declarations come from the same include
+file, since the translation units are themselves disjoint.&#160;<tt> </tt>
+The Standard thus specifies additional compatibility rules
+for such types, so that if two such declarations are sufficiently
+similar they are compatible.
+<p>
+<h2><a name="3-1-3">3.1.3</a>&#160;<tt> </tt>Constants</h2>
+<p>
+In folding and converting constants,
+an implementation must use at least as much precision
+as is provided by the target environment.&#160;<tt> </tt>
+However, it is not required to use exactly the same precision as the target,
+since this would require a <a name="cross-compilation-3-1-3">cross compiler</a>
+to simulate target arithmetic at translation time.&#160;<tt> </tt>
+<p>
+
+The Committee considered the introduction of structure constants.&#160;<tt> </tt>
+Although it agreed that structure literals would occasionally be useful,
+its policy has been not to invent new features unless a strong need exists.&#160;<tt> </tt>
+Since the language already allows for initialized
+<code>const</code> structure objects,
+the need for inline anonymous structured constants seems less than pressing.&#160;<tt> </tt>
+<p>
+Several implementation difficulties beset structure constants.&#160;<tt> </tt>
+All other forms of constants are ``self typing'' ---
+the type of the constant is evident from its lexical structure.&#160;<tt> </tt>
+Structure constants would require either an explicit type mark,
+or typing by context;
+either approach is considered to require increased complexity in the
+design of the translator,
+and either approach would also require as much, if not more,
+care on the part of the programmer
+as using an initialized structure object.&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-3-1">3.1.3.1</a>&#160;<tt> </tt>Floating constants</h2>
+<p>
+Consistent with existing practice,
+a floating point constant has been defined to have type <code>double</code>.&#160;<tt> </tt>
+Since the Standard now allows expressions that contain only <code>float</code>
+operands to be performed in <code>float</code> arithmetic (see <a href="c2.html#3-2-1-5">&#167;3.2.1.5</a>)&#160;<tt> </tt>
+rather than <code>double</code>,
+a method of expressing explicit <code>float</code> constants is desirable.&#160;<tt> </tt>
+The new <a name="long-double-3-1-3-1"><code>long double</code></a> type raises similar issues.&#160;<tt> </tt>
+<p>
+Thus the <code>F</code> and <code>L</code> suffixes have been added to
+convey type information with floating constants,
+much like the <code>L</code> suffix for long integers.&#160;<tt> </tt>
+The default type of floating constants remains <code>double</code>,
+for compatibility with prior practice.&#160;<tt> </tt>
+Lower case <code>f</code> and <code>l</code> are also allowed as suffixes.&#160;<tt> </tt>
+<p>
+Note that the run-time selection of the decimal point character
+by <code>setlocale</code> (<a href="d4.html#4-4-1">&#167;4.4.1</a>) has no effect on the syntax of C source text:
+the decimal point character is always period.&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-3-2">3.1.3.2</a>&#160;<tt> </tt>Integer constants</h2>
+<p>
+The rule that
+the default type of a decimal integer constant is either
+<code>int</code>, <code>long</code>, or <code>unsigned long</code>,
+depending on which type is large enough to hold the value without overflow,
+simplifies the use of constants.&#160;<tt> </tt>
+<p>
+The suffixes <code>U</code> and <code>u</code> have been added to specify unsigned numbers.&#160;<tt> </tt>
+<p>
+Unlike decimal constants,
+octal and hexadecimal constants
+too large to be <code>int</code>s are typed as <code>unsigned int</code>
+(if within range of that type),
+since it is more likely that
+they represent bit patterns or masks,
+which are generally best treated as unsigned,
+rather than ``real'' numbers.&#160;<tt> </tt>
+<p>
+Little support was expressed for the old practice of permitting the digits
+8 and 9 in an octal constant, so it has been dropped.&#160;<tt> </tt>
+<p>
+A proposal to add binary constants was rejected due to lack of
+precedent and insufficient utility.&#160;<tt> </tt>
+<p>
+Despite a concern that a lower-case L could be taken for the numeral one
+at the end of an integral (or floating) literal,
+the Committee rejected proposals to remove this usage,
+primarily on the grounds of sanctioning existing practice.&#160;<tt> </tt>
+<p>
+The rules given for typing integer constants
+were carefully worked out in accordance with the Committee's deliberations
+on integral promotion rules
+(see <a href="c2.html#3-2-1-1">&#167;3.2.1.1</a>).&#160;<tt> </tt>
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>Unsuffixed integer constants may have different types.&#160;<tt> </tt>
+In K&amp;R, unsuffixed decimal constants greater than <code>INT_MAX</code>,
+and unsuffixed octal or hexadecimal constants greater than <code>UINT_MAX</code>
+are of type <code>long</code>.&#160;<tt> </tt>
+</ul><h2><a name="3-1-3-3">3.1.3.3</a>&#160;<tt> </tt>Enumeration constants</h2>
+<p>
+Whereas an <a name="enumerations-3-1-3-3">enumeration</a>
+variable may have any integer type that correctly
+represents all its values when widened to <code>int</code>,
+an enumeration constant is only usable as the value of an expression.&#160;<tt> </tt>
+Hence its type is simply <code>int</code>.&#160;<tt> </tt>
+(See <a href="#3-1-2-5">&#167;3.1.2.5</a>.)&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-3-4">3.1.3.4</a>&#160;<tt> </tt>Character constants</h2>
+
+<p>
+The digits 8 and 9 are no longer permitted in octal escape sequences.&#160;<tt> </tt>
+(Cf. octal constants, <a href="#3-1-3-2">&#167;3.1.3.2</a>.)&#160;<tt> </tt>
+<p>
+The alert escape sequence has been added (see <a href="b.html#2-2-2">&#167;2.2.2</a>).&#160;<tt> </tt>
+<p>
+Hexadecimal escape sequences, beginning with <code>\x</code>,
+have been adopted, with precedent in several existing implementations.&#160;<tt> </tt>
+(Little sentiment was garnered for providing <code>\X</code> as well.)&#160;<tt> </tt>
+The escape sequence extends to the first non-hex-digit
+character, thus providing the capability of expressing any
+character constant no matter how large the type <code>char</code> is.&#160;<tt> </tt>
+String concatenation can be used to specify a hex-digit character
+following a hexadecimal escape sequence:
+<pre>        char a[] = &quot;\xff&quot; &quot;f&quot; ;
+        char b[] = {'\xff', 'f', '\0'};
+</pre>These two initializations give <code>a</code> and <code>b</code>
+the same string value.&#160;<tt> </tt>
+<p>
+The Committee has chosen to reserve all lower case letters not currently
+used for future escape sequences (<a name="undefined-behavior-3-1-3-4"><i>undefined behavior</i></a>).&#160;<tt> </tt>
+All other characters with no current meaning are left to the implementor
+for extensions (<a name="impl-defined-behavior"><i>implementation-defined behavior</i></a>).&#160;<tt> </tt>
+No portable meaning is assigned to multi-character constants or ones
+containing other than the mandated source character set
+(<i>implementation-defined behavior</i>).&#160;<tt> </tt>
+<p>
+The Committee considered proposals to add
+the character constant <code>'\e'</code>
+to represent the <a name="ASCII-3-1-3-4">ASCII</a> ESC (<code>'\033'</code>) character.&#160;<tt> </tt>
+This proposal was based upon
+the use of ESC as the initial character of most control
+sequences in common terminal driving disciplines,
+such as <a name="ANSI-X3-4664-3-1-3-4">ANSI X3.64</a>.&#160;<tt> </tt>
+However, this usage has no obvious counterpart in other
+popular character codes, such as <a name="EBCDIC-3-1-3-4">EBCDIC</a>.&#160;<tt> </tt>
+A programmer merely wishing to avoid having to type <code>\033</code> to
+represent the ESC character in an ASCII/X3.64 environment,
+may, instead of writing
+<p>
+<pre>        printf(&quot;\033[10;10h%d\n&quot;, somevalue);
+</pre>write:
+<pre>        #define  ESC  &quot;\033&quot;
+
+        printf( ESC &quot;[10;10h%d\n&quot;, somevalue);
+</pre><p>
+Notwithstanding the general rule that literal constants are non-negative&#160;<tt> </tt>[Footnote:  <code>-3</code> is an expression: unary minus with operand 3.]&#160;<tt> </tt>,
+a character constant containing one character
+is effectively preceded with a <code>(char)</code>
+cast and hence may yield a negative value if plain <code>char</code>
+is represented the same as <code>signed char</code>.&#160;<tt> </tt>
+This simply reflects widespread past practice and was deemed too
+dangerous to change.&#160;<tt> </tt>
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>A constant of the form <code>'\078'</code> is valid,
+but now has different meaning.&#160;<tt> </tt>
+It now denotes a character constant whose value is the
+(implementation-defined)
+combination of the values of the two characters
+<code>'\07'</code> and <code>'8'</code>.&#160;<tt> </tt>
+In some implementations
+the old meaning is the character whose code is 078 <i>=</i> 0100 <i>=</i> 64.&#160;<tt> </tt>
+</ul><ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>A constant of the form <code>'\a'</code> or <code>'\x'</code>
+now may have different meaning.&#160;<tt> </tt>
+The old meaning, if any, was implementation dependent.&#160;<tt> </tt>
+</ul>An <code>L</code> prefix distinguishes <a name="wide-character-3-1-3-4">wide character</a> constants.&#160;<tt> </tt>
+(See <a href="b.html#2-2-1-2">&#167;2.2.1.2</a>.)&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-4">3.1.4</a>&#160;<tt> </tt>String literals</h2>
+<p>
+String literals are specified to be unmodifiable.&#160;<tt> </tt>
+This specification allows implementations
+to share copies of strings with identical text,
+to place string literals in read-only memory,
+and perform certain optimizations.&#160;<tt> </tt>
+However, string literals do not have the type
+<i>array of const char</i>,
+in order to avoid the problems of pointer type checking,
+particularly with library functions,
+since assigning a <i>pointer to const char</i>
+to a plain <i>pointer to char</i> is not valid.&#160;<tt> </tt>
+Those members of the Committee who insisted that string literals
+should be modifiable were content
+to have this practice designated a <a name="common-extension-3-1-4">common extension</a> (see F.5.5).&#160;<tt> </tt>
+<p>
+Existing code which modifies string literals
+can be made strictly conforming by replacing the string literal
+with an initialized static character array.&#160;<tt> </tt>
+For instance,
+<pre>        char *p, *make_temp(char *str);
+            /* ... */
+        p = make_temp(&quot;tempXXX&quot;);
+                /* make_temp overwrites the literal */
+                /* with a unique name */
+</pre>can be changed to:
+<pre>        char *p, *make_temp(char *str);
+            /* ... */
+        {
+            static char template[ ] = &quot;tempXXX&quot;;
+            p = make_temp( template );
+        }
+</pre><p>
+A long string can be continued across multiple lines by using the
+backslash-newline line continuation, but this practice requires that the
+continuation of the string
+start in the first position of the next line.&#160;<tt> </tt>
+To permit more flexible layout,
+and to solve some <a name="preprocessing-3-1-4">preprocessing</a> problems
+(see <a href="c8.html#3-8-3">&#167;3.8.3</a>), the Committee introduced string literal <a name="concatenation-3-1-4">concatenation</a>.&#160;<tt> </tt>
+Two string literals in a row are pasted together
+(with no null character in the middle)&#160;<tt> </tt>
+to make one combined string literal.&#160;<tt> </tt>
+This addition to the C language allows a programmer to extend a string literal
+beyond the end of a physical line
+without having to use the backslash-newline mechanism
+and thereby destroying the indentation scheme of the program.&#160;<tt> </tt>
+An explicit concatenation operator was not introduced because
+the concatenation is a lexical construct rather than a run-time operation.&#160;<tt> </tt>
+<p>
+<p>
+\smallskip
+without concatenation:
+<p>
+<pre>        /* say the column is this wide */
+                alpha = &quot;abcdefghijklm\
+        nopqrstuvwxyz&quot; ;
+</pre><p>
+with concatenation:
+<p>
+<pre>        /* say the column is this wide */
+                alpha = &quot;abcdefghijklm&quot;
+                        &quot;nopqrstuvwxyz&quot;;
+</pre><p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>A string of the form <code>&quot;\078&quot;</code> is valid, but now has different meaning.&#160;<tt> </tt>
+(See <a href="#3-1-3">&#167;3.1.3</a>.)&#160;<tt> </tt>
+</ul><ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>A string of the form <code>&quot;\a&quot;</code> or <code>&quot;\x&quot;</code> now has different meaning.&#160;<tt> </tt>
+(See <a href="#3-1-3">&#167;3.1.3</a>.)&#160;<tt> </tt>
+</ul><ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>It is neither required nor forbidden that identical string literals
+be represented by a single copy of the string in memory;
+a program depending upon either scheme may behave differently.&#160;<tt> </tt>
+</ul>An <code>L</code> prefix distinguishes <a name="wide-string-3-1-4">wide string</a> literals.&#160;<tt> </tt>
+A prefix (as opposed to suffix) notation was adopted so that
+a translator can know at the start of the processing of a long
+string literal whether it is dealing with ordinary or wide characters.&#160;<tt> </tt>
+(See <a href="b.html#2-2-1-2">&#167;2.2.1.2</a>.)&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-5">3.1.5</a>&#160;<tt> </tt>Operators</h2>
+<p>
+Assignment operators of the form <code>=+</code>, described as <i>old fashioned</i>
+even in K&amp;R, have been dropped.&#160;<tt> </tt>
+<p>
+The form <code>+=</code> is now defined to be a single token, not two,
+so no white space is permitted within it;
+no compelling case could be made for permitting such white space.&#160;<tt> </tt>
+<p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>Expressions of the form <code>x=-3</code> change meaning with the
+loss of the old-style assignment operators.&#160;<tt> </tt>
+</ul>
+The operator <code>#</code>
+has been added in <a name="preprocessing-3-1-5">preprocessing</a> statements:
+within a <code>#define</code> it causes the macro argument
+following to be converted to a string literal.&#160;<tt> </tt>
+<p>
+<a name="token-pasting-3-1-5">The operator</a> <code>##</code> has also been added in preprocessing statements:
+within a <code>#define</code> it causes the tokens on either side to be
+<i>pasted</i>
+to make a single new token.&#160;<tt> </tt>
+See <a href="c8.html#3-8-3">&#167;3.8.3</a> for further discussion of these preprocessing operators.&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-6">3.1.6</a>&#160;<tt> </tt>Punctuators</h2>
+<p>
+The punctuator <code>...</code> (ellipsis) has been added to denote a variable number of
+trailing arguments in a function prototype.&#160;<tt> </tt>
+(See <a href="c5.html#3-5-4-3">&#167;3.5.4.3</a>.)&#160;<tt> </tt>
+<p>
+
+The constraint that certain punctuators must occur in pairs
+(and the similar constraint on certain operators in <a href="#3-1-5">&#167;3.1.5</a>)&#160;<tt> </tt>
+only applies after preprocessing.  Syntactic constraints are
+checked during syntactic analysis, and this follows preprocessing.&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-7">3.1.7</a>&#160;<tt> </tt><a name="header-names-3-1-7">Header names</a></h2> 
+<p>
+Header names in <code>#include</code> directives
+obey distinct tokenization rules;  hence they are identified as distinct
+tokens.  Attempting to treat quote-enclosed header names as string literals
+creates a contorted description of preprocessing, and the problems of
+treating angle-bracket-enclosed header names as a sequence of C tokens
+is even more severe.&#160;<tt> </tt>
+<p>
+<h2><a name="3-1-8">3.1.8</a>&#160;<tt> </tt><a name="preprocessing-3-1-8">Preprocessing</a> numbers</h2> 
+<p>
+The notion of preprocessing numbers has been introduced to simplify
+the description of preprocessing.&#160;<tt> </tt>
+It provides a means of talking about the tokenization of strings that
+look like numbers, or initial substrings of numbers,
+prior to their semantic interpretation.&#160;<tt> </tt>
+In the interests of keeping the description simple, occasional spurious
+forms are scanned as preprocessing numbers --- <code>0x123E+1</code> is a single token
+under the rules.  The Committee felt that it was better to tolerate
+such anomalies than burden the preprocessor with a
+more exact, and exacting, lexical specification.&#160;<tt> </tt>
+It felt that this anomaly was no worse than the principle under which
+the characters <code>a+++++b</code> are tokenized as <code>a ++ ++ + b</code> (an invalid
+expression), even though the tokenization <code>a ++ + ++ b</code> would yield
+a syntactically correct expression.  In both cases,
+exercise of reasonable precaution in coding style avoids surprises.&#160;<tt> </tt>
+<p>
+<p>
+<h2><a name="3-1-9">3.1.9</a>&#160;<tt> </tt><a name="comments-3-1-9">Comments</a></h2> 
+<p>
+The Committee considered proposals to allow comments to nest.&#160;<tt> </tt>
+The main argument for nesting comments is that it would allow programmers to
+``comment out'' code.&#160;<tt> </tt>
+The Committee rejected this proposal on the grounds that
+comments should be used for adding documentation to a program,
+and that preferable mechanisms already exist for source code exclusion.&#160;<tt> </tt>
+For example,
+<pre>        #if 0
+        /* this code is bracketed out because ... */
+        code_to_be_excluded();
+        #endif
+</pre><a name="preprocessing-3-1-9">Preprocessing</a> directives
+such as this prevent the enclosed code from
+being scanned by later translation phases.&#160;<tt> </tt>
+Bracketed material can include comments and other, nested, regions
+of bracketed code.&#160;<tt> </tt>
+<p>
+Another way of accomplishing these goals is with an <code>if</code> statement:
+<pre>        if (0) {
+            /* this code is bracketed out because ... */
+            code_to_be_excluded();
+        }
+</pre>Many modern compilers will generate no code for this <code>if</code> statement.&#160;<tt> </tt>
+<hr>
+<a href="b.html">2 Environment</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#lang">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c2.html">3.2 Conversions</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="d1.html">4 Library</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+</body></html>

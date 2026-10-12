@@ -1,0 +1,65 @@
+{
+  "passed": true,
+  "cases": [
+    {
+      "test": "lazy-else",
+      "passed": true,
+      "dynamic_exit": 0,
+      "frozen_exit": 0
+    },
+    {
+      "test": "lazy-then",
+      "passed": true,
+      "dynamic_exit": 0,
+      "frozen_exit": 0
+    },
+    {
+      "test": "sequence",
+      "passed": true,
+      "dynamic_exit": 0,
+      "frozen_exit": 0
+    },
+    {
+      "test": "capture-equality",
+      "passed": true,
+      "dynamic_exit": 0,
+      "frozen_exit": 0
+    },
+    {
+      "test": "capture-mismatch",
+      "passed": true,
+      "dynamic_exit": 1,
+      "frozen_exit": 1
+    },
+    {
+      "test": "ambiguity",
+      "passed": true,
+      "dynamic_exit": 1,
+      "frozen_exit": 1
+    },
+    {
+      "test": "recursion",
+      "passed": true,
+      "dynamic_exit": 0,
+      "frozen_exit": 0
+    },
+    {
+      "test": "rule-error",
+      "passed": true,
+      "dynamic_exit": 1,
+      "frozen_exit": 1
+    },
+    {
+      "test": "region-evaluation",
+      "passed": true,
+      "dynamic_exit": 0,
+      "frozen_exit": 0
+    },
+    {
+      "test": "native-mlir-emission",
+      "passed": true,
+      "dynamic_exit": 0,
+      "frozen_exit": 0
+    }
+  ]
+}

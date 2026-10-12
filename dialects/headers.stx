@@ -1,0 +1,17 @@
+mod headers;
+
+// Include resolution is language independent. Directives, macro expansion,
+// include-once policies and header-name syntax belong to the caller's rules.
+effect headers.option($options,$key,$default) => choose(env.contains($options,$key),env.get($options,$key),$default);
+effect headers.toolchain($options) => target.toolchain(headers.option($options,"target_configuration","{}"));
+effect headers.directories($local,$source,$options,$system) => list.concat(
+    choose($local,[source.directory($source)],[]),list.concat(
+        text.split(headers.option($options,"include_paths",""),"|"),$system));
+effect headers.find($header,$local,$source,$options,$system,$at) => headers.search($header,
+    headers.directories($local,$source,$options,$system),headers.option($options,"project_directory","."),$at);
+effect headers.search($header,[],$base,[$kind,$raw,$file,$line,$column,$space])
+    => source.error($file,$line,$column,concat("header not found in configured or system include paths: ",$header));
+effect headers.search($header,$directories,$base,$at) when lt(0,size($directories)) => bind($directory,list.head($directories),
+    choose(eq($directory,""),headers.search($header,list.tail($directories),$base,$at),
+        bind($candidate,source.path($base,concat($directory,concat("/",$header))),
+            choose(source.exists($candidate),$candidate,headers.search($header,list.tail($directories),$base,$at)))));

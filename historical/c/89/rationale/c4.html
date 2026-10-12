@@ -1,0 +1,101 @@
+<html><head>
+<title>3.4 Constant Expressions</title>
+<link rel="made" rev="made" href="mailto:jutta@cs.tu-berlin.de">
+</head>
+<body>
+<a href="c3.html">3.3 Expressions</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-4">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c5.html">3.5 Declarations</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+<hr>
+<h1><a name="3-4">3.4</a>&#160;<tt> </tt><a name="constant-expressions-3-4">Constant Expressions</a></h1>
+
+<p>
+To clarify existing practice,
+several varieties of constant expression have been identified:
+<p>
+<p><p>The expression following <code>#if</code> (<a href="c8.html#3-8-1">&#167;3.8.1</a>)&#160;<tt> </tt>
+    must expand to integer constants,
+    character constants,
+    the special operator <a name="defined-3-4"><code>defined</code></a>,
+    and operators with no side effects.&#160;<tt> </tt>
+    No environmental inquiries can be made,
+    since all arithmetic is done as translate-time
+    (signed or unsigned) long integers,
+    and casts are disallowed.&#160;<tt> </tt>
+    The restriction to translate-time arithmetic frees an
+    implementation from having to perform execution-environment
+    arithmetic in the host environment. It does not preclude
+    an implementation from doing so --- the implementation may
+    simply define ``translate-time arithmetic'' to be that of the
+    target.&#160;<tt> </tt>
+<p>
+    Unsigned arithmetic is performed in these expressions
+    (according to the default widening rules)&#160;<tt> </tt>
+    when unsigned operands are involved;
+    this rule allows for unsurprising arithmetic involving very large
+    constants (i.e, those whose type is <code>unsigned long</code>)&#160;<tt> </tt>
+    since they cannot be represented as <code>long</code>
+    or constants explicitly marked as unsigned.&#160;<tt> </tt>
+<p>
+    Character constants, when evaluated
+    in <code>#if</code> expressions, may be interpreted in the source character
+    set, the execution character set, or some other implementation-defined
+    character set.&#160;<tt> </tt>
+    This latitude reflects the diversity of existing practice,
+    especially in cross-compilers.&#160;<tt> </tt>
+<p>
+<p>An <a name="integral-constant-expression"><i>integral constant expression</i></a>
+    must involve only numbers knowable at translate time,
+    and operators with no side effects.&#160;<tt> </tt>
+    Casts and the <a name="sizeof-3-4"><code>sizeof</code></a>
+    operator may be used to interrogate the execution environment.&#160;<tt> </tt>
+<p>
+<p><a name="Static-initializers"><i>Static initializers</i></a>
+    include integral constant expressions, along with floating
+    constants and simple addressing expressions.&#160;<tt> </tt>
+    An implementation must accept arbitrary expressions involving
+    floating and integral numbers and side-effect-free operators
+    in arithmetic initializers, but it is at
+    liberty to turn such initializers into executable code which is invoked
+    prior to <a name="program-startup-3-4">program startup</a> (see <a href="b.html#2-1-2-2">&#167;2.1.2.2</a>);
+    this scheme might impose some requirements on linkers or runtime library
+    code in some implementations.&#160;<tt> </tt>
+<p>
+    The translation environment
+    must not produce a less accurate value
+    for a floating-point initializer
+    than the execution environment,
+    but it is at liberty to do better.&#160;<tt> </tt>
+    Thus a static initializer may well be slightly different than the same
+    expression computed at execution time.&#160;<tt> </tt>
+    However,
+    while implementations are certainly <em> permitted</em>
+    to produce exactly the same result
+    in translation and execution environments,
+    <em> requiring</em> this
+    was deemed to be an intolerable burden
+    on many <a name="cross-compilation-3-4">cross-compilers</a>.
+<p><p>
+<ul><ul><ul><ul><b>QUIET CHANGE</b><p></ul></ul></ul>A program that uses <a name="-35if-3-4"><code>#if</code></a>
+expressions to determine properties of
+the execution environment may now get different answers.&#160;<tt> </tt>
+</ul>
+<hr>
+<a href="c3.html">3.3 Expressions</a>
+<img src="../c-small-left.xbm" alt=" -&lt; " align="top">
+<a href="title.html#3-4">ANSI C Rationale</a>
+<img src="../c-small-right.xbm" alt=" -&gt; " align="top">
+<a href="c5.html">3.5 Declarations</a>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+&#160;<tt> </tt>&#160;<tt> </tt>&#160;<tt> </tt>
+<a href="index.html"><i>Index</i></a>&#160;<tt> </tt>
+</body></html>

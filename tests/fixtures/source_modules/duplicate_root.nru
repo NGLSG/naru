@@ -1,0 +1,4 @@
+mod duplicate_root;
+use a.left;
+use b.right;
+fn main() -> i32 { return 42; }

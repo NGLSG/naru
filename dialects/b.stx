@@ -1,0 +1,865 @@
+// B (1972, Users' Reference to B on MH-TSS) over the base rule library.
+// Milestone 1: the word machine (64-bit words, word addressing), typeless
+// expressions, lvalue operators * and &, vectors, 17 assignment operators,
+// ++/--, ?:, auto/extrn/external definitions, if/while/return,
+// putchar intrinsic, strings and character constants.
+// Provenance: historical/b/1972/ (manual + notes.md, clause-referenced).
+// Known deviations are listed in docs/b.md.
+mod b;
+use base;
+use types;
+use numbers;
+use pipeline;
+use tree;
+use cfg;
+
+// ---- frontend: B lexing (§2.2) ------------------------------------------------
+// comments /* */; single-char tokens (){}[],;?:; maximal sequences of
+// +-*/<>&|!=; ascii; keywords lowercase (classified below).
+effect lex_config() => [
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_.",
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789",
+    "0123456789",
+    "0123456789", "",
+    ["==", "!=", "<<", ">>",
+     "=+", "=-", "=*", "=/", "=%", "=&", "=|", "=^", "=<", "=>",
+     "=<<", "=>>", "=<=", "=>=", "===", "=!=",
+     "++", "--",
+     "+", "-", "*", "/", "<", ">", "&", "|", "!", "=",
+     "(", ")", "{", "}", "[", "]", ",", ";", "?", ":", ".", "~"],
+    [["/*", "*/"]],
+    "\"'"
+];
+effect lex_phases($source)
+    => text.replace(text.replace($source, "\r\n", "\n"), "\r", "\n");
+effect lex_scan($source, $path)
+    => text.lex(lex_phases($source), $path, lex_config());
+
+// token reclassification (c11.lex pattern): drop newline rows, punctuation
+// becomes kind 14 indivisible terminals, reserved words become kind 8.
+effect drop_newlines($tokens) => list.reverse(list.fold("drop_step", $tokens, []));
+effect drop_step($acc, $token)
+    => choose(eq(lex_kind($token), 7), $acc, list.prepend($token, $acc));
+effect classify($tokens) => list.reverse(list.fold("classify_step", $tokens, []));
+effect classify_step($acc, $token) => list.prepend(classify_one($token), $acc);
+effect classify_one([$k, $r, $f, $l, $c, $s]) when eq($k, 5) => [14, $r, $f, $l, $c, $s];
+effect classify_one([$k, $r, $f, $l, $c, $s]) when and(eq($k, 1), reserved($r))
+    => [8, $r, $f, $l, $c, $s];
+// octal constants keep their spelling (the int capture would decimalize 077)
+effect classify_one([$k, $r, $f, $l, $c, $s]) when and(eq($k, 2), b_octal_p($r))
+    => [3, $r, $f, $l, $c, $s];
+effect[fallback] classify_one([$k, $r, $f, $l, $c, $s]) => [$k, $r, $f, $l, $c, $s];
+effect lex_kind([$k, $r, $f, $l, $c, $s]) => $k;
+// §2.2: keywords are recognized only in lower case and are reserved.
+effect reserved($word)
+    => text.contains(" auto extrn case default if else while switch goto return break ",
+        concat(" ", concat($word, " ")));
+
+// The commit is identity: the pseq chains self-convert when the frozen item
+// is evaluated inside the parser's per-item evaluation.
+effect b.frontend($path, $source, $options)
+    => source.parse_tokens(classify(drop_newlines(lex_scan($source, $path))), "b.item",
+        env.empty(), "commit");
+// the commit is the conversion hub: the parse context threads the interning
+// pool across items, integer literals sweep to word constants, and the
+// putchar declaration/format global are emitted once for the file.
+effect commit($context, $item)
+    => bind([$rewritten, $globals, $pool], intern_walk($item, [], $context),
+        bind($first, choose(env.contains($pool, FmtKey()), [],
+                [PFuncDecl("printf"), PExitDecl(), ByteFmt(".fmt.c", "%c")]),
+            [env.put($pool, FmtKey(), 1),
+             list.concat($first, list.concat($globals, [$rewritten]))]));
+
+// ---- the word machine (§3.0) ----------------------------------------------------
+// An rvalue is a fixed-length bit pattern; this host defines 64-bit words.
+// Addresses are WORD indices (adding 1 = the next word): realized as
+// ptrtoint(pointer)/8, and *e dereferences through inttoptr(word*8).
+// Signed(64) doubles as B's only storage descriptor.
+effect base.storage_type(Signed(64)) => "!llvm.ptr";
+effect base.storage_alloc(Signed(64))
+    => mlir.op("llvm.alloca",
+        [mlir.op("arith.constant", [], ["i64"], [Attr("value", 1, "i64")], [])],
+        ["!llvm.ptr"],
+        [RawAttr("elem_type", "i64"), RawAttr("operandSegmentSizes", "array<i32: 1, 0>")],
+        []);
+effect base.storage_load(Signed(64), $slot)
+    => mlir.op("llvm.load", [$slot], ["i64"], [], []);
+effect base.storage_store(Typed(Signed(64), $value), $slot, $environment)
+    => mlir.op("llvm.store", [lower(Typed(Signed(64), $value), $environment), $slot], [], [], []);
+
+// word <-> pointer: the host is byte-addressed (like the PDP-11 B, cf.
+// manual 14.0 - byte machines motivated C); a B word is 64 bits and pointer
+// arithmetic in vector indexing scales by the word size (8 bytes).
+effect word_ptr($word) => mlir.op("llvm.inttoptr",
+    [mlir.op("arith.muli", [$word,
+        mlir.op("arith.constant", [], ["i64"], [Attr("value", 8, "i64")], [])],
+        ["i64"], [], [])], ["!llvm.ptr"], [], []);
+effect ptr_word($ptr) => mlir.op("arith.divui",
+    [mlir.op("llvm.ptrtoint", [$ptr], ["i64"], [], []),
+     mlir.op("arith.constant", [], ["i64"], [Attr("value", 8, "i64")], [])],
+    ["i64"], [], []);
+
+// ---- constants (§4.1) -------------------------------------------------------------
+// decimal; leading zero = octal (§4.1.3); 'c' character constants (§4.1.4);
+// Strings use host byte packing, terminated with *e = EOT = 4 (§4.1.5;
+// packing is machine-dependent per the manual).
+effect base.check(BNum($raw), $environment, $expected)
+    => numeric(b_number($raw), $expected);
+effect base.hint(BNum($raw), $environment) => Signed(64);
+// global initial values reach lowering unchecked (constants need no env)
+effect base.lower(Typed(Signed(64), BNum($raw)), $environment)
+    => lower(check(BNum($raw), $environment, Signed(64)), $environment);
+effect base.lower(BNum($raw), $environment)
+    => lower(check(BNum($raw), $environment, Signed(64)), $environment);
+effect b_number($raw) => choose(b_octal_p($raw),
+    numbers.Untyped(b_octal($raw, 0, text.len($raw), 0)), numbers.Untyped($raw));
+effect b_octal_p($raw) => and(eq(text.slice($raw, 0, 1), "0"), lt(1, text.len($raw)));
+effect b_octal($raw, $i, $end, $acc) when eq($i, $end) => $acc;
+effect b_octal($raw, $i, $end, $acc) when lt($i, $end)
+    => bind($digit, int.sub(text.byte($raw, $i), 48),
+        choose(and(lt(-1, $digit), lt($digit, 8)),
+            b_octal($raw, add($i, 1), $end, add(mul($acc, 8), $digit)),
+            fail("invalid B octal digit")));
+
+// §2.2 B escape sequences: *n *t *0 *e *( *) ** *' *"
+// §2.2 B escape sequences (*n *t *0 *e *( *) ** *' *") are decoded while
+// walking raw bytes (text.byte arithmetic) - a NUL byte cannot appear in
+// .stx source, so a text.replace on the literal is not an option.
+effect b_escape_code($b) => choose(eq($b, 110), 10, choose(eq($b, 116), 9,
+    choose(eq($b, 48), 0, choose(eq($b, 101), 4, choose(eq($b, 42), 42,
+    choose(eq($b, 40), 123, choose(eq($b, 41), 125, choose(eq($b, 39), 39,
+    choose(eq($b, 34), 34, fail("unknown B escape"))))))))));
+
+// ---- expressions (§4.1-4.12) -------------------------------------------------------
+// The token carries its delimiters; a leading ' is a character constant,
+// a leading " is a string (§4.1.4-5).
+syntax expr `$s:string` => BQuote($s);
+// the token spelling arrives raw: 'c' characters, "strings", and octal
+// numbers (reclassified to keep their spelling) all dispatch here
+effect base.check(BQuote($s), $environment, $expected)
+    => choose(eq(text.byte($s, 0), 39),
+        b_char_check(text.slice($s, 1, int.sub(text.len($s), 1)), $expected),
+        choose(b_octal_p($s),
+            expect(Typed(Signed(64), Integer(b_octal($s, 0, text.len($s), 0))), $expected),
+            choose(eq(text.byte($s, 0), 34),
+                b_string_check(text.slice($s, 1, int.sub(text.len($s), 1)), $expected),
+                fail("unrecognized B constant"))));
+// §4.1.4: multi-character constants are machine-dependent - unsupported here
+effect b_char_check($raw, $expected) =>
+    choose(and(eq(text.len($raw), 2), eq(text.byte($raw, 0), 42)),
+        expect(Typed(Signed(64), Integer(b_escape_code(text.byte($raw, 1)))), $expected),
+        choose(eq(text.len($raw), 1),
+            expect(Typed(Signed(64), Integer(text.byte($raw, 0))), $expected),
+            fail("multi-character constants are machine-dependent and unsupported")));
+effect b_string_check($text, $expected)
+    => expect(Typed(Signed(64), BString($text)), $expected);
+
+// §4.1.7 vector reference: v[n] == *(v+n); primary level.
+syntax expr[90,left] `$v:expr [ $n:expr ]` => BIndex($v, $n);
+effect base.check(BIndex($v, $n), $environment, $expected)
+    => bind($base, b_word_check($v, $environment),
+        bind($idx, b_word_check($n, $environment),
+            expect(address_of_index($base, $idx), $expected)));
+// Addresses are already word indices. Only word_ptr scales to host bytes.
+effect address_of_index(Typed(Signed(64), $base), Typed(Signed(64), $idx))
+    => Typed(Signed(64), BDerefC(Typed(Signed(64),
+        Binary("add", Typed(Signed(64), $base), Typed(Signed(64), $idx)))));
+// §4.2 unary operators, bound right to left.
+syntax expr[70,right] `* $e:expr` => BDeref($e);
+syntax expr[70,right] `& $e:expr` => BAddrOf($e);
+syntax expr[70,right] `! $e:expr` => BNot($e);
+syntax expr[70,right] `~ $e:expr` => BCompl($e);
+
+// §4.5 shifts: looser than additive, tighter than relational; zero fill.
+syntax expr[55,left] `$a:expr "<<" $b:expr` => BShift("shl", $a, $b);
+syntax expr[55,left] `$a:expr ">>" $b:expr` => BShift("shr", $a, $b);
+effect base.hint(BShift($op, $a, $b), $environment) => Signed(64);
+effect base.check(BShift($op, $a, $b), $environment, $expected)
+    => expect(Typed(Signed(64), BShiftC($op,
+        b_word_check($a, $environment), b_word_check($b, $environment))), $expected);
+effect base.lower(Typed(Signed(64), BShiftC($op, $a, $b)), $environment)
+    => b_binop($op, lower($a, $environment), lower($b, $environment), $environment);
+
+// §4.11 conditional expression, right to left.
+syntax expr[20,right] `$c:expr ? $a:expr : $b:expr` => BTernary($c, $a, $b);
+
+// §4.12 seventeen assignment operators, right to left, prefix order.
+syntax expr[10,right] `$l:expr $op:bassign $r:expr` => BAsgn($l, $op, $r);
+syntax bassign `=` => "assign";
+syntax bassign `"=*"` => "mul";
+syntax bassign `"=/"` => "div";
+syntax bassign `"=%"` => "rem";
+syntax bassign `"=+"` => "add";
+syntax bassign `"=-"` => "sub";
+syntax bassign `"=<<"` => "shl";
+syntax bassign `"=>>"` => "shr";
+syntax bassign `"=<"` => "lt";
+syntax bassign `"=<="` => "le";
+syntax bassign `"=>"` => "gt";
+syntax bassign `"=>="` => "ge";
+syntax bassign `"==="` => "eq";
+syntax bassign `"=!="` => "ne";
+syntax bassign `"=&"` => "and";
+syntax bassign `"=^"` => "xor";
+syntax bassign `"=|"` => "or";
+
+// §4.2.5 ++ and -- in prefix and postfix form on lvalues.
+syntax expr[70,right] `"++" $e:expr` => BInc($e, 1, 0);
+syntax expr[70,right] `"--" $e:expr` => BInc($e, -1, 0);
+syntax expr[90,left] `$e:expr "++"` => BInc($e, 1, 1);
+syntax expr[90,left] `$e:expr "--"` => BInc($e, -1, 1);
+
+// ---- statements (§5) ----------------------------------------------------------------
+// §5.9 the null statement is a semicolon; sequences are adjacency recursion.
+syntax bstmt `;` => Empty();
+syntax bstmt[fallback] `{ $steps:bstmts }` => Compound($steps);
+syntax bstmt `{ }` => Compound(End());
+
+// §5.2 if: the else binds the nearest if (fallback layering).
+syntax bstmt `if ( $c:expr ) $yes:bstmt else $no:bstmt` => Branch(BCond($c), $yes, $no);
+syntax bstmt[fallback] `if ( $c:expr ) $yes:bstmt` => Branch(BCond($c), $yes, End());
+
+// §5.3 while.
+syntax bstmt `while ( $c:expr ) $body:bstmt` => Loop(BCond($c), $body);
+
+// §5.7 return; / return ( rvalue ); - B returns words (0/1 from comparisons)
+syntax bstmt `return ;` => BReturn();
+syntax bstmt `return ( $e:expr ) ;` => BReturnV($e);
+
+// §6.3 labels: name : preceding any statement; the identity is the name
+syntax bstmt[fallback] `$name:ident : $rest:bstmt` => BLabel($name, $rest);
+// §5.5 goto rvalue ; - labels are internal storage (rvalues of type label)
+syntax bstmt `goto $name:ident ;` => BGoto($name);
+
+// §5.8 any rvalue followed by a semicolon is a statement.
+syntax bstmt[fallback] `$e:expr ;` => ExprStat($e);
+
+// §6.0 declarations inside functions.
+syntax bdefs `$n:ident` => [$n];
+syntax bdefs `$n:ident , $rest:bdefs` => list.prepend($n, $rest);
+// §6.1 extrn name1, name2 ... ;
+syntax bstmt `extrn $names:bdefs ;` => BExtrn($names);
+// §6.2 auto def1, def2 ... ; with name or name[constant]
+syntax bstmt `auto $defs:bautodefs ;` => BAuto($defs);
+syntax bautodefs `$n:ident` => [BAutoScalar($n)];
+syntax bautodefs `$n:ident , $rest:bautodefs` => list.prepend(BAutoScalar($n), $rest);
+syntax bautodefs `$n:ident [ $c:bsize ]` => [BAutoDef($n, $c)];
+syntax bautodefs `$n:ident [ $c:bsize ] , $rest:bautodefs`
+    => list.prepend(BAutoDef($n, $c), $rest);
+
+syntax bstmts `$s:bstmt` => pseq($s, End());
+syntax bstmts `$s:bstmt $rest:bstmts` => pseq($s, $rest);
+
+// ---- external definitions (§7) -------------------------------------------------------
+// §7.3 functions: name ( arguments ) statement - no trailing semicolon.
+syntax b.item[fallback] `$name:ident ( ) $body:bstmt`
+    => BFunc($name, [], $body);
+syntax b.item[fallback] `$name:ident ( $params:bdefs ) $body:bstmt`
+    => BFunc($name, $params, $body);
+// §7.1 simple definitions: name ; or name ival ; (constant initial values;
+// the ival form name-lvalue is milestone 2)
+syntax b.item `$name:ident ;` => BGlobalDef($name, Int(0));
+syntax b.item[fallback] `$name:ident $ival:bival ;` => BGlobalDef($name, $ival);
+syntax bival `$n:int` => Int($n);
+syntax bival `- $n:int` => Neg(Int($n));
+syntax bival `$n:string` when b_octal_p($n) => BNum($n);
+syntax bival `- $n:string` when b_octal_p($n) => Neg(BNum($n));
+syntax bsize `$n:int` => $n;
+syntax bsize `$n:string` when b_octal_p($n) => b_octal($n, 0, text.len($n), 0);
+// 7.2 vector definitions: name[constant] ival, ... ; actual size is
+// max(constant+1, number of initial values); missing size means zero
+syntax b.item[fallback] `$name:ident [ $c:bsize ] $ivals:bivals ;`
+    => BGlobalVec($name, $c, $ivals);
+syntax b.item[fallback] `$name:ident [ ] $ivals:bivals ;`
+    => BGlobalVec($name, 0, $ivals);
+syntax bivals `$v:bival` => [$v];
+syntax bivals `$v:bival , $rest:bivals` => list.prepend($v, $rest);
+// §7.2 vector definitions are milestone 2.
+
+// pseq is the chain constructor and its own conversion.
+effect pseq($s, $rest) => convert_step($s, $rest);
+effect convert_step(Branch($c, $yes, $no), $rest)
+    => base.continue(Branch($c, body_of($yes), body_of($no)), $rest);
+effect convert_step(Loop($c, $body), $rest)
+    => base.continue(Loop($c, body_of($body)), $rest);
+effect convert_step(Compound($chain), $rest) => splice_end($chain, $rest);
+effect convert_step(End(), $rest) => $rest;
+effect convert_step(BReturn(), $rest) => BRetC(Int(0), $rest);
+// 6.3 label: control may arrive here from a goto; the labeled statement and
+// the rest of the chain both follow the label
+effect convert_step(BLabel($name, $stmt), $rest)
+    => Label($name, splice_end(body_of($stmt), $rest));
+// 5.5 goto: jump to the label's target block; the rest is unreachable
+effect convert_step(BGoto($name), $rest)
+    => bind($dropped, $rest, Jump($name));
+effect convert_step(BReturnV($e), $rest) => BRetC($e, $rest);
+effect base.check_body(BRetC($e, $next), $environment, $result)
+    => bind(Typed($d, $v), b_word_check($e, $environment),
+        BRetDone(Typed($d, $v), check_body($next, $environment, $result)));
+effect base.prepare_storage(BRetDone($t, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.lower_flow(BRetDone(Typed($d, $v), $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, return_in($environment, [lower(Typed($d, $v), $environment)])),
+        [$block]);
+effect base.flow_terminal(BRetDone($t, $next)) => 1;
+effect splice_end(BRetDone($t, $next), $tail) => fail("unreachable statement after return");
+effect base.flow_terminal(BRetC($e, $next)) => 1;
+// cfg body terms pass through check_body (Label/Jump are flow-level)
+effect base.check_body(Jump($identity), $environment, $result) => Jump($identity);
+effect base.check_body(Label($identity, $next), $environment, $result)
+    => Label($identity, check_body($next, $environment, $result));
+effect base.prepare_storage(BRetC($e, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+
+effect[fallback] convert_step($s, $rest) => base.continue($s, $rest);
+
+effect body_of($stmt) => convert_step($stmt, End());
+
+// ---- statement conversion (B-specific terms) -------------------------------------------
+// §6.2 auto: scalars become zero-initialized words (the manual leaves them
+// undefined; zero init is a documented diagnostic-friendly deviation);
+// name[constant] becomes a (constant+1)-word block whose base address is
+// stored in the variable (§6.2).
+effect base.continue(BAuto($defs), $next) => b_auto_chain($defs, $next);
+effect b_auto_chain([], $next) => $next;
+effect b_auto_chain($defs, $next) when lt(0, size($defs))
+    => b_auto_def(list.head($defs), b_auto_chain(list.tail($defs), $next));
+effect b_auto_def(BAutoScalar($name), $next) => Var($name, Signed(64), Int(0), $next);
+effect b_auto_def(BAutoDef($name, $size), $next) => BAutoVec($name, $size, $next);
+
+// §6.1 extrn: binds the names to external storage defined by §7.1 items.
+// §5.9 the null statement executes nothing
+effect base.continue(Empty(), $next) => $next;
+effect base.continue(BExtrn($names), $next) => BExtrnC($names, $next);
+effect base.check_body(BExtrnC([], $next), $environment, $result)
+    => check_body($next, $environment, $result);
+// extrn declares the storage class; the definition (scalar or vector)
+// determines the read semantics, so existing entries are preserved
+effect base.check_body(BExtrnC($names, $next), $environment, $result) when lt(0, size($names))
+    => check_body(BExtrnC(list.tail($names), $next),
+        b_bind_extrn($environment, list.head($names)), $result);
+effect b_bind_extrn($environment, $name) => choose(env.contains($environment, $name),
+    $environment, env.put($environment, $name, BExtGlobal($name)));
+
+// automatic vectors (§6.2): the variable holds the base of a block of
+// (constant+1) words, allocated in the function's entry block
+effect base.check_body(BAutoVec($name, $size, $next), $environment, $result)
+    => bind($id, symbol($name),
+        BAutoVecC($id, $size, check_body($next,
+            env.put($environment, $name, Mutable(Signed(64), $id)), $result)));
+effect base.prepare_storage(BAutoVecC($id, $size, $next), $entry, $environment)
+    => bind($var, mlir.with_block($entry, base.storage_alloc(Signed(64))),
+        bind($vec, mlir.with_block($entry, b_alloc_vec($size)),
+            prepare_storage($next, $entry,
+                env.put(env.put($environment, $id, $var), b.vecslot($id), $vec))));
+effect b.vecslot($id) => BVecSlotKey($id);
+effect b_alloc_vec($size)
+    => mlir.op("llvm.alloca",
+        [mlir.op("arith.constant", [], ["i64"], [Attr("value", add($size, 1), "i64")], [])],
+        ["!llvm.ptr"],
+        [RawAttr("elem_type", "i64"), RawAttr("operandSegmentSizes", "array<i32: 1, 0>")],
+        []);
+// initialize the variable's contents with the block's byte address
+effect base.lower_flow(BAutoVecC($id, $size, $next), $environment, $block, $continuation)
+    => bind($var, env.get($environment, $id),
+        bind($vec, env.get($environment, b.vecslot($id)),
+            seq(mlir.in_block($block, mlir.op("llvm.store",
+                [ptr_word($vec), $var], [], [], [])),
+                lower_flow($next, $environment, $block, $continuation))));
+
+// expression statements (§5.8) and the ExprDone discard path
+effect base.continue(ExprStat($e), $next) => ExprStep($e, $next);
+effect base.check_body(ExprStep($e, $next), $environment, $result)
+    => bind(Typed($d, $c), b_word_check($e, $environment),
+        ExprDone(Typed($d, $c), check_body($next, $environment, $result)));
+effect base.prepare_storage(ExprDone($t, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.lower_flow(ExprDone($t, $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, lower($t, $environment)),
+        lower_flow($next, $environment, $block, $continuation));
+effect base.flow_terminal(ExprDone($t, $next)) => flow_terminal($next);
+effect base.flow_terminal(ExprStep($e, $next)) => flow_terminal($next);
+effect base.flow_terminal(Var($name, $descriptor, $value, $next)) => flow_terminal($next);
+effect base.flow_terminal(Set($name, $value, $next)) => flow_terminal($next);
+effect base.flow_terminal(If($c, $yes, $no, $next))
+    => or(and(flow_terminal($yes), flow_terminal($no)), flow_terminal($next));
+effect base.flow_terminal(While($c, $body, $next)) => flow_terminal($next);
+effect base.flow_terminal(BAutoVec($name, $size, $next)) => flow_terminal($next);
+effect base.flow_terminal(BAutoVecC($id, $size, $next)) => flow_terminal($next);
+effect base.flow_terminal(BExtrnC($names, $next)) => flow_terminal($next);
+
+// splice a continuation in front of the final End() of a converted chain
+effect splice_end(End(), $tail) => $tail;
+effect splice_end(Var($name, $descriptor, $value, $next), $tail)
+    => Var($name, $descriptor, $value, splice_end($next, $tail));
+effect splice_end(Set($name, $value, $next), $tail)
+    => Set($name, $value, splice_end($next, $tail));
+effect splice_end(If($c, $yes, $no, $next), $tail)
+    => If($c, $yes, $no, splice_end($next, $tail));
+effect splice_end(While($c, $body, $next), $tail)
+    => While($c, $body, splice_end($next, $tail));
+effect splice_end(ExprStep($e, $next), $tail)
+    => ExprStep($e, splice_end($next, $tail));
+effect splice_end(ExprDone($t, $next), $tail)
+    => ExprDone($t, splice_end($next, $tail));
+effect splice_end(BAutoVec($name, $size, $next), $tail)
+    => BAutoVec($name, $size, splice_end($next, $tail));
+effect splice_end(BAutoVecC($id, $size, $next), $tail)
+    => BAutoVecC($id, $size, splice_end($next, $tail));
+effect splice_end(Label($identity, $next), $tail)
+    => Label($identity, splice_end($next, $tail));
+effect splice_end(BExtrnC($names, $next), $tail)
+    => BExtrnC($names, splice_end($next, $tail));
+
+// ---- the lvalue machinery (§3.0) --------------------------------------------------------
+// b_address evaluates an lvalue expression to its ADDRESS as a word.
+effect b_address(Name($name), $environment)
+    => b_name_addr(env.get($environment, $name), $name);
+effect b_name_addr(Mutable($descriptor, $identity), $name)
+    => Typed(Signed(64), BSlotWord($identity));
+effect b_name_addr(BExtGlobal($name), $n)
+    => Typed(Signed(64), BGlobalWord($name));
+effect[fallback] b_name_addr($slot, $name)
+    => fail(concat("not an lvalue: ", $name));
+// *e: the operand's rvalue IS the address (§3.0)
+effect b_address(BDeref($e), $environment) => b_word_check($e, $environment);
+// v[n]: *(v+n), with no IR construction during semantic checking.
+effect b_address(BIndex($v, $n), $environment)
+    => bind(Typed($d1, $base), b_word_check($v, $environment),
+        bind($idx, b_word_check($n, $environment),
+            Typed(Signed(64), Binary("add", Typed(Signed(64), $base), $idx))));
+
+// dereference as an rvalue: load through inttoptr(word*8)
+effect base.check(BDeref($e), $environment, $expected)
+    => bind(Typed($d, $c), b_word_check($e, $environment),
+        Typed(Signed(64), BDerefC(Typed($d, $c))));
+effect base.lower(Typed(Signed(64), BDerefC($c)), $environment)
+    => mlir.op("llvm.load", [word_ptr(lower($c, $environment))], ["i64"], [], []);
+
+// &e: the address operator (§3.0)
+effect base.check(BAddrOf($e), $environment, $expected)
+    => b_address($e, $environment);
+
+// ! (§4.2.4): zero if nonzero, one if zero
+effect base.check(BNot($e), $environment, $expected)
+    => bind(Typed($d, $c), b_word_check($e, $environment),
+        Typed(Signed(64), BNotC(Typed($d, $c))));
+effect base.lower(Typed(Signed(64), BNotC($c)), $environment)
+    => mlir.op("arith.extui",
+        [mlir.op("llvm.icmp",
+            [lower($c, $environment),
+             mlir.op("arith.constant", [], ["i64"], [Attr("value", 0, "i64")], [])],
+            ["i1"], [Attr("predicate", 0, "i64")], [])],
+        ["i64"], [], []);
+
+// ~ (§4.2.6): ones complement
+effect base.check(BCompl($e), $environment, $expected)
+    => bind(Typed($d, $c), b_word_check($e, $environment),
+        Typed(Signed(64), BComplC(Typed($d, $c))));
+effect base.lower(Typed(Signed(64), BComplC($c)), $environment)
+    => mlir.op("arith.xori",
+        [lower($c, $environment),
+         mlir.op("arith.constant", [], ["i64"], [Attr("value", -1, "i64")], [])],
+        ["i64"], [], []);
+
+// ?: (§4.11)
+effect base.check(BTernary($c, $a, $b), $environment, $expected)
+    => bind(Typed(Bool(), $cc), b_cond($c, $environment),
+        bind(Typed($da, $ca), b_word_check($a, $environment),
+            bind(Typed($db, $cb), b_word_check($b, $environment),
+                Typed(Signed(64), BTernaryC(Typed(Bool(), $cc), Typed($da, $ca), Typed($db, $cb))))));
+effect b_cond($e, $environment) => b_cond_check($e, $environment);
+effect base.lower(Typed(Signed(64), BTernaryC(Typed(Bool(), $cc), Typed($da, $ca), Typed($db, $cb))), $environment)
+    => mlir.op("scf.if", [lower(Typed(Bool(), $cc), $environment)], ["i64"], [], [
+        mlir.region(mlir.op("scf.yield", [lower(Typed($da, $ca), $environment)], [], [], [])),
+        mlir.region(mlir.op("scf.yield", [lower(Typed($db, $cb), $environment)], [], [], []))]);
+
+
+// every B expression is a word: the hint cascade pins arithmetic to i64
+effect base.hint(BDeref($e), $environment) => Signed(64);
+effect base.hint(BAddrOf($e), $environment) => Signed(64);
+effect base.hint(BNot($e), $environment) => Signed(64);
+effect base.hint(BCompl($e), $environment) => Signed(64);
+effect base.hint(BInc($e, $d, $p), $environment) => Signed(64);
+effect base.hint(BAsgn($l, $op, $r), $environment) => Signed(64);
+effect base.hint(BTernary($c, $a, $b), $environment) => Signed(64);
+effect base.hint(BIndex($v, $n), $environment) => Signed(64);
+effect base.hint(BQuote($s), $environment) => Signed(64);
+// conditions (§5.2-5.3): a word is true when nonzero
+// conditions: a comparison is already a truth value; a word tests nonzero
+effect base.check(BCond($e), $environment, $expected) => b_cond_check($e, $environment);
+effect[fallback] b_cond_check($e, $environment) => b_truth(b_word_check($e, $environment));
+effect b_truth(Typed(Signed(64), $v)) => Typed(Bool(), BTruth(Typed(Signed(64), $v)));
+effect b_truth(Typed(Bool(), $v)) => Typed(Bool(), $v);
+// 12.4: & in a truth context is logical - both operands tested for nonzero
+effect b_cond_check(Bitwise("and", $a, $b), $environment)
+    => bind(Typed($d1, $a2), b_truth_word($a, $environment),
+        bind(Typed($d2, $b2), b_truth_word($b, $environment),
+            Typed(Bool(), BTruth(Typed(Signed(64), Binary("and", Typed($d1, $a2), $b2))))));
+effect b_truth_word($e, $environment)
+    => bind(Typed($d, $v), b_word_check($e, $environment),
+        Typed(Signed(64), BBoolWord(Typed(Bool(), BTruth(Typed($d, $v))))));
+effect base.hint(BCond($e), $environment) => Bool();
+effect base.lower(Typed(Bool(), BTruth(Typed(Signed(64), $v))), $environment)
+    => mlir.op("llvm.icmp",
+        [lower(Typed(Signed(64), $v), $environment),
+         mlir.op("arith.constant", [], ["i64"], [Attr("value", 0, "i64")], [])],
+        ["i1"], [Attr("predicate", 1, "i64")], []);
+
+// ---- assignment (§4.12) ------------------------------------------------------------------
+effect base.check(BAsgn($l, $op, $r), $environment, $expected)
+    => bind(Typed($da, $addr), b_address($l, $environment),
+        bind(Typed($dr, $r), b_word_check($r, $environment),
+            Typed(Signed(64), BAsgnC(Typed($da, $addr), $op, Typed($dr, $r)))));
+effect base.lower(Typed(Signed(64), BAsgnC(Typed($da, $addr), $op, Typed($dr, $r))), $environment)
+    => bind($aptr, word_ptr(lower(Typed($da, $addr), $environment)),
+        bind($val, lower(Typed($dr, $r), $environment),
+            bind($result, b_store_op($op, $aptr, $val, $environment),
+                seq($result, b_asgn_value($op, $val, $result)))));
+effect b_asgn_value("assign", $val, $stored) => $val;
+effect[fallback] b_asgn_value($op, $val, $stored) => $stored;
+// simple assignment stores the rvalue; op-assignments store old OP rvalue
+effect b_store_op("assign", $aptr, $val, $environment)
+    => seq(mlir.op("llvm.store", [$val, $aptr], [], [], []), $val);
+effect[fallback] b_store_op($op, $aptr, $val, $environment)
+    => bind($old, mlir.op("llvm.load", [$aptr], ["i64"], [], []),
+        bind($new, b_binop($op, $old, $val, $environment),
+            seq(mlir.op("llvm.store", [$new, $aptr], [], [], []), $new)));
+// B arithmetic on words: reuse the base opcode relations on Signed(64)
+effect b_binop("mul", $a, $b, $env) => mlir.op("arith.muli", [$a, $b], ["i64"], [], []);
+effect b_binop("div", $a, $b, $env) => mlir.op("arith.divsi", [$a, $b], ["i64"], [], []);
+effect b_binop("rem", $a, $b, $env) => mlir.op("arith.remsi", [$a, $b], ["i64"], [], []);
+effect b_binop("add", $a, $b, $env) => mlir.op("arith.addi", [$a, $b], ["i64"], [], []);
+effect b_binop("sub", $a, $b, $env) => mlir.op("arith.subi", [$a, $b], ["i64"], [], []);
+effect b_binop("shl", $a, $b, $env) => mlir.op("arith.shli", [$a, $b], ["i64"], [], []);
+effect b_binop("shr", $a, $b, $env) => mlir.op("arith.shrui", [$a, $b], ["i64"], [], []);
+effect b_binop("lt", $a, $b, $env) => b_predicate(2, $a, $b);
+effect b_binop("le", $a, $b, $env) => b_predicate(3, $a, $b);
+effect b_binop("gt", $a, $b, $env) => b_predicate(4, $a, $b);
+effect b_binop("ge", $a, $b, $env) => b_predicate(5, $a, $b);
+effect b_binop("eq", $a, $b, $env) => b_predicate(0, $a, $b);
+effect b_binop("ne", $a, $b, $env) => b_predicate(1, $a, $b);
+effect b_binop("and", $a, $b, $env) => mlir.op("arith.andi", [$a, $b], ["i64"], [], []);
+effect b_binop("xor", $a, $b, $env) => mlir.op("arith.xori", [$a, $b], ["i64"], [], []);
+effect b_binop("or", $a, $b, $env) => mlir.op("arith.ori", [$a, $b], ["i64"], [], []);
+effect b_predicate($code, $a, $b) => mlir.op("arith.extui",
+    [mlir.op("arith.cmpi", [$a, $b], ["i1"], [Attr("predicate", $code, "i64")], [])],
+    ["i64"], [], []);
+
+// §4.2.5 ++ and --: prefix returns the new value, postfix the old
+effect base.check(BInc($l, $delta, $post), $environment, $expected)
+    => bind(Typed($da, $addr), b_address($l, $environment),
+        Typed(Signed(64), BIncC(Typed($da, $addr), $delta, $post)));
+effect base.lower(Typed(Signed(64), BIncC(Typed($da, $addr), $delta, $post)), $environment)
+    => bind($aptr, word_ptr(lower(Typed($da, $addr), $environment)),
+        bind($old, mlir.op("llvm.load", [$aptr], ["i64"], [], []),
+            bind($new, mlir.op("arith.addi", [$old,
+                mlir.op("arith.constant", [], ["i64"], [Attr("value", $delta, "i64")], [])],
+                ["i64"], [], []),
+                seq(mlir.op("llvm.store", [$new, $aptr], [], [], []),
+                    choose($post, $old, $new)))));
+
+// ---- addresses of named storage ------------------------------------------------------------
+effect base.check(BSlotWord($identity), $environment, $expected)
+    => fail("internal address term escaped checking");
+effect base.lower(Typed(Signed(64), BSlotWord($identity)), $environment)
+    => ptr_word(env.get($environment, $identity));
+// a vector variable's rvalue is the block address stored in its slot
+effect base.lower(Typed(Signed(64), BVecAddr($identity)), $environment)
+    => mlir.op("llvm.load", [env.get($environment, $identity)], ["i64"], [], []);
+effect base.lower(Typed(Signed(64), BGlobalWord($name)), $environment)
+    => ptr_word(mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"],
+        [RawAttr("global_name", concat("@\"", concat($name, "\"")))], []));
+
+// ---- reads of external storage (§6.1/§7.1) ---------------------------------------------------
+effect base.read(BExtGlobal($name), $expected)
+    => expect(Typed(Signed(64), BExtLoad($name)), $expected);
+effect base.hint(BExtGlobal($name), $environment) => Signed(64);
+effect base.slot_type(BExtGlobal($name)) => Signed(64);
+// vector globals: the name's rvalue is the vector base address (7.2)
+effect base.read(BExtVector($name), $expected)
+    => expect(Typed(Signed(64), BExtAddr($name)), $expected);
+effect base.hint(BExtVector($name), $environment) => Signed(64);
+effect base.slot_type(BExtVector($name)) => Signed(64);
+effect base.lower(Typed(Signed(64), BExtAddr($name)), $environment)
+    => ptr_word(mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"],
+        [RawAttr("global_name", concat("@\"", concat($name, "\"")))], []));
+// A vector definition currently has an array object, not the separate
+// rebindable address slot required by B. Reject &v/v=... rather than corrupt
+// element zero. Element lvalues v[n] still use the indexed address path.
+effect b_name_addr(BExtVector($name), $n)
+    => fail("B external vector address slots are not implemented");
+effect base.lower(Typed(Signed(64), BExtLoad($name)), $environment)
+    => mlir.op("llvm.load",
+        [mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"],
+            [RawAttr("global_name", concat("@\"", concat($name, "\"")))], [])],
+        ["i64"], [], []);
+// assignments to externals route through the same address
+effect base.check_assignment(BExtGlobal($name), $value, $next, $environment, $result)
+    => fail("assignment to external storage goes through the lvalue path");
+// (BAsgn covers x = v; the base Set path is never produced for B names)
+
+// B word contexts funnel through b_word: comparisons yield Bool (0/1) and
+// extend losslessly; small integer constants re-type to the word width.
+effect b_word(Typed($d, $v)) => b_word_of(Typed($d, $v), $d);
+effect b_word_of(Typed(Signed(64), $v), Signed(64)) => Typed(Signed(64), $v);
+effect[fallback] b_word_of(Typed(Signed($w), Integer($v)), Signed($w)) => Typed(Signed(64), Integer($v));
+effect[fallback] b_word_of(Typed(Bool(), $v), Bool()) => Typed(Signed(64), BBoolWord(Typed(Bool(), $v)));
+// re-type whole 32-bit subtrees (constants cascaded through Any-context checks)
+// base's Binary carries the left operand Typed-wrapped and the right bare
+effect b_word_of(Typed(Signed(32), Binary($op, $a, $b)), Signed(32))
+    => bind(Typed($d1, $a2), b_word($a),
+        bind($b2, b_word($b),
+            Typed(Signed(64), Binary($op, Typed($d1, $a2), $b2))));
+effect b_word_of(Typed(Signed(32), Unary($op, $a)), Signed(32))
+    => bind(Typed($d1, $a2), b_word($a), Typed(Signed(64), Unary($op, Typed($d1, $a2))));
+effect b_word_of(Typed(Bool(), Comparison($p, $a, $b)), Bool())
+    => bind(Typed($d1, $a2), b_word($a),
+        bind($b2, b_word($b),
+            Typed(Signed(64), BBoolWord(Typed(Bool(), Comparison($p, Typed($d1, $a2), $b2))))));
+effect base.lower(Typed(Signed(64), BBoolWord(Typed(Bool(), $v))), $environment)
+    => mlir.op("arith.extui", [lower(Typed(Bool(), $v), $environment)], ["i64"], [], []);
+effect base.lower(BBoolWord(Typed(Bool(), $v)), $environment)
+    => mlir.op("arith.extui", [lower(Typed(Bool(), $v), $environment)], ["i64"], [], []);
+effect b_word_check($e, $environment) => b_word(check($e, $environment, Any()));
+
+// ---- runtime intrinsics (§8) -------------------------------------------------------------------
+// putchar is the milestone-1 console: one character per call (the manual's
+// four-character H6070 packing is machine-dependent; NUL/EOT deletion lives
+// in putstr, milestone 2). putchar returns c (§8.1).
+effect base.declare(BIntrinsics, $rest, $environment)
+    => declarations($rest, b_seed_intrinsics($environment));
+effect base.prepare(BIntrinsics, $environment) => CheckedBIntrinsics;
+effect base.lower_function(CheckedBIntrinsics) => [];
+effect base.call_checked($name, $arguments, BIntrinsic($kind), $environment, $expected)
+    => expect(Typed(Signed(64), BCallIntrinsic($kind,
+            check_arguments($arguments, list.map("b.intrinsic_param", intrinsic_arity($kind)), $environment))),
+        $expected);
+effect intrinsic_arity("putchar") => [Signed(64)];
+effect intrinsic_arity("exit") => [];
+effect intrinsic_arity("char") => [Signed(64), Signed(64)];
+effect intrinsic_arity("lchar") => [Signed(64), Signed(64), Signed(64)];
+// char(s,n): the n-th character of the string, zero filled (8.2)
+effect base.lower(Typed(Signed(64), BCallIntrinsic("char", $args)), $environment)
+    => mlir.op("arith.extui",
+        [mlir.op("llvm.load",
+            [mlir.op("llvm.getelementptr",
+                [word_ptr(lower(list.head($args), $environment)), lower(list.head(list.tail($args)), $environment)],
+                ["!llvm.ptr"],
+                [RawAttr("elem_type", "i8"), RawAttr("rawConstantIndices", "array<i32: -2147483648>")], [])],
+            ["i8"], [], [])], ["i64"], [], []);
+// lchar(s,n,c): replace the n-th character, return c (8.2)
+effect base.lower(Typed(Signed(64), BCallIntrinsic("lchar", $args)), $environment)
+    => bind($s, lower(list.head($args), $environment),
+        bind($n, lower(list.head(list.tail($args)), $environment),
+            bind($c, lower(list.head(list.tail(list.tail($args))), $environment),
+                seq(mlir.op("llvm.store",
+                    [mlir.op("arith.trunci", [$c], ["i8"], [], []),
+                     mlir.op("llvm.getelementptr", [word_ptr($s), $n], ["!llvm.ptr"],
+                         [RawAttr("elem_type", "i8"), RawAttr("rawConstantIndices", "array<i32: -2147483648>")], [])],
+                    [], [], []),
+                    $c))));
+effect b.intrinsic_param($d) => $d;
+// intrinsics return words
+effect base.signature_result(BIntrinsic($kind)) => Signed(64);
+effect base.signature_params(BIntrinsic($kind)) => list.map("b.intrinsic_param", intrinsic_arity($kind));
+effect base.lower(Typed(Signed(64), BCallIntrinsic("putchar", $args)), $environment)
+    => bind($c, lower(list.head($args), $environment),
+        seq(mlir.op("llvm.call",
+            [string_ptr(".fmt.c"),
+             mlir.op("arith.trunci", [$c],
+                ["i32"], [], [])],
+            ["i32"],
+            [RawAttr("callee", "@printf"),
+             RawAttr("var_callee_type", "!llvm.func<i32 (ptr, ...)>"),
+             RawAttr("op_bundle_sizes", "array<i32>"),
+             RawAttr("operandSegmentSizes", "array<i32: 2, 0>")], []),
+        $c));
+effect base.lower(Typed(Signed(64), BCallIntrinsic("exit", $args)), $environment)
+    => seq(mlir.op("llvm.call",
+        [mlir.op("arith.constant", [], ["i32"], [Attr("value", 0, "i32")], [])], [],
+        [RawAttr("callee", "@exit"), RawAttr("op_bundle_sizes", "array<i32>"),
+         RawAttr("operandSegmentSizes", "array<i32: 1, 0>")], []),
+        mlir.op("arith.constant", [], ["i64"], [Attr("value", 0, "i64")], []));
+effect string_ptr($name)
+    => mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"],
+        [RawAttr("global_name", concat("@\"", concat($name, "\"")))], []);
+
+// ---- strings (§4.1.5): byte-packed, EOT-terminated, word-aligned ------------------------------
+
+effect intern_walk_test($node) => intern_walk($node, [], env.empty());
+effect intern_walk($node, $globals, $pool)
+    => bind([$value, Hoisting($new_globals, $new_pool)],
+        tree.rewrite_with($node, "intern_enter", "intern_leave", 0, Hoisting($globals, $pool)),
+        [$value, $new_globals, $new_pool]);
+effect intern_enter(Int($n), $context, Hoisting($globals, $pool))
+    => tree.Stop(BNum($n), Hoisting($globals, $pool));
+effect intern_enter(BQuote($s), $context, Hoisting($globals, $pool)) when eq(text.byte($s, 0), 34)
+    => bind($text, b_string_text($s),
+        bind([$value, $new_globals, $new_pool], choose(env.contains($pool, $text),
+            [BStrRef(env.get($pool, $text)), $globals, $pool],
+            intern_string($text, concat(".bstr.", text(string_count($pool))), $globals, $pool)),
+            tree.Stop($value, Hoisting($new_globals, $new_pool))));
+effect b_string_text($s) => text.slice($s, 1, int.sub(text.len($s), 1));
+effect intern_string($text, $name, $globals, $pool)
+    => [BStrRef($name), list.prepend(BStringGlobal($name, $text), $globals),
+        env.put(env.put($pool, $text, $name), StringCountKey(), add(string_count($pool), 1))];
+effect string_count($pool) => choose(env.contains($pool, StringCountKey()), env.get($pool, StringCountKey()), 0);
+effect[fallback] intern_enter($node, $context, $state) when or(eq(term.kind($node), 0), eq(term.kind($node), 5))
+    => tree.Descend(term.children($node), $context, $node, $state);
+effect[fallback] intern_enter($node, $context, $state) when and(not(eq(term.kind($node), 0)), not(eq(term.kind($node), 5)))
+    => tree.Stop($node, $state);
+effect[fallback] intern_leave($original, $children, $context, $state) => [term.rebuild($original, $children), $state];
+
+effect base.declare(BStringGlobal($name, $text), $rest, $environment) => declarations($rest, $environment);
+// putchar's format lives in a BYTE array: the C runtime's printf reads a
+// NUL-terminated byte string, not B's packed words
+effect base.declare(ByteFmt($name, $text), $rest, $environment) => declarations($rest, $environment);
+effect base.prepare(ByteFmt($name, $text), $environment) => CheckedByteFmt($name, $text);
+effect base.analyze(ByteFmt($name, $text)) => prepare(ByteFmt($name, $text), env.empty());
+effect base.lower_checked(CheckedByteFmt($name, $text)) => lower_function(CheckedByteFmt($name, $text));
+effect base.lower_function(CheckedByteFmt($name, $text))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text(add(text.len($text), 1)), " x i8>"))),
+        RawAttr("linkage", "#llvm.linkage<internal>"), RawAttr("constant", "unit"),
+        RawAttr("value", concat("\"", concat(b_cescape($text, 0, text.len($text)), "\\00\"")))],
+        [mlir.region_blocks([])]);
+effect b_cescape($text, $i, $end) when eq($i, $end) => "";
+effect b_cescape($text, $i, $end) when lt($i, $end)
+    => concat(b_cbyte(text.byte($text, $i), $text, $i), b_cescape($text, add($i, 1), $end));
+effect b_cbyte(34, $t, $i) => "\\22";
+effect b_cbyte(92, $t, $i) => "\\5C";
+effect b_cbyte(10, $t, $i) => "\\0A";
+effect b_cbyte(9, $t, $i) => "\\09";
+effect[fallback] b_cbyte($c, $t, $i) => text.slice($t, $i, add($i, 1));
+effect base.prepare(BStringGlobal($name, $text), $environment) => CheckedBStringGlobal($name, $text);
+effect base.lower_function(CheckedBStringGlobal($name, $raw))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text(b_words_len($raw, 0, text.len($raw), 1)), " x i8>"))),
+        RawAttr("linkage", "#llvm.linkage<internal>"), Attr("alignment", 8, "i64"),
+        RawAttr("value", concat("\"", concat(b_bytes($raw, 0, text.len($raw)), "\\04\"")))],
+        [mlir.region_blocks([])]);
+// the walk decodes *-escapes (2.2) and appends the EOT terminator (4.1.5)
+effect b_bytes($raw, $i, $end) when eq($i, $end) => "";
+effect b_bytes($raw, $i, $end) when lt($i, $end)
+    => choose(eq(text.byte($raw, $i), 42),
+        concat(b_star_out(text.byte($raw, add($i, 1))), b_bytes($raw, add($i, 2), $end)),
+        concat(b_byte_out($raw, $i), b_bytes($raw, add($i, 1), $end)));
+effect b_star_out(110) => "\\0A";
+effect b_star_out(116) => "\\09";
+effect b_star_out(48) => "\\00";
+effect b_star_out(101) => "\\04";
+effect b_star_out(42) => "\\2A";
+effect b_star_out(40) => "\\7B";
+effect b_star_out(41) => "\\7D";
+effect b_star_out(39) => "\\27";
+effect b_star_out(34) => "\\22";
+effect[fallback] b_star_out($b) => fail("unknown B escape");
+effect b_byte_out($raw, $i) when eq(text.byte($raw, $i), 34) => "\\22";
+effect b_byte_out($raw, $i) when eq(text.byte($raw, $i), 92) => "\\5C";
+effect[fallback] b_byte_out($raw, $i) => text.slice($raw, $i, add($i, 1));
+effect b_words_len($raw, $i, $end, $acc) when eq($i, $end) => $acc;
+effect b_words_len($raw, $i, $end, $acc) when lt($i, $end)
+    => choose(eq(text.byte($raw, $i), 42),
+        b_words_len($raw, add($i, 2), $end, add($acc, 1)),
+        b_words_len($raw, add($i, 1), $end, add($acc, 1)));
+effect base.check(BStrRef($name), $environment, $expected)
+    => expect(Typed(Signed(64), BStrRef($name)), $expected);
+effect base.hint(BStrRef($name), $environment) => Signed(64);
+effect base.lower(Typed(Signed(64), BStrRef($name)), $environment)
+    => ptr_word(mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"],
+        [RawAttr("global_name", concat("@\"", concat($name, "\"")))], []));
+
+// ---- functions and globals (§7.3/§7.1) --------------------------------------------------------
+effect base.declare(BFunc($name, $params, $body), $rest, $environment)
+    => base.declaration($name, Signature(list.map("b.param_type", $params), Signed(64)), $rest, $environment);
+effect b.param_type($name) => Signed(64);
+effect base.declare(PFuncDecl($name), $rest, $environment)
+    => declarations($rest, $environment);
+effect base.declare(BGlobalDef($name, $ival), $rest, $environment)
+    => declarations($rest, env.put($environment, $name, BExtGlobal($name)));
+effect base.declare(BGlobalVec($name, $size, $ivals), $rest, $environment)
+    => declarations($rest, env.put($environment, $name, BExtVector($name)));
+effect base.prepare(BGlobalVec($name, $size, $ivals), $environment)
+    => CheckedBGlobalVec($name, $size, $ivals);
+effect base.analyze(BGlobalVec($name, $size, $ivals))
+    => prepare(BGlobalVec($name, $size, $ivals), env.empty());
+effect base.lower_checked(CheckedBGlobalVec($name, $size, $ivals))
+    => lower_function(CheckedBGlobalVec($name, $size, $ivals));
+// 7.2: actual size = max(constant+1, number of initial values); undefined
+// elements keep the undef fill
+effect base.lower_function(CheckedBGlobalVec($name, $size, $ivals))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text(b_vec_size($size, $ivals)), " x i64>"))),
+        RawAttr("linkage", "#llvm.linkage<internal>")],
+        [mlir.region(mlir.op("llvm.return",
+            [b_pack_ivals($ivals, 0, b_vec_size($size, $ivals),
+                mlir.op("llvm.mlir.undef", [], [concat("!llvm.array<", concat(text(b_vec_size($size, $ivals)), " x i64>"))], [], []))],
+            [], [], []))]);
+effect b_vec_size($size, $ivals) => choose(lt($size, size($ivals)), size($ivals), add($size, 1));
+effect b_pack_ivals($ivals, $i, $total, $agg)
+    => choose(eq(size($ivals), 0), $agg,
+        bind($agg2, mlir.op("llvm.insertvalue", [$agg,
+                lower(check(list.head($ivals), env.empty(), Signed(64)), env.empty())],
+                [concat("!llvm.array<", concat(text($total), " x i64>"))],
+                [RawAttr("position", concat("array<i64: ", concat(text($i), ">")))], []),
+            b_pack_ivals(list.tail($ivals), add($i, 1), $total, $agg2)));
+
+effect base.analyze(BFunc($name, $params, $body))
+    => bind($env, env.put(b_intrinsic_env(), $name,
+            Signature(list.map("b.param_type", $params), Signed(64))),
+        base.prepare(b_fn_term($name, $params, $body), $env));
+effect b_intrinsic_env()
+    => b_seed_intrinsics(env.empty());
+effect b_seed_intrinsics($environment)
+    => env.put(env.put(env.put(env.put($environment,
+            "putchar", BIntrinsic("putchar")), "exit", BIntrinsic("exit")),
+        "char", BIntrinsic("char")), "lchar", BIntrinsic("lchar"));
+effect b.mkparam($name) => Param($name, Signed(64));
+
+// program mode seeds the runtime intrinsics before declaration collection
+effect base.prepare_module($items) => pipeline.run(list.prepend(BIntrinsics, $items));
+// §5.7: a return statement is automatically generated before the closing }
+effect b_body(Compound($chain)) => $chain;
+effect[fallback] b_body($stmt) => convert_step($stmt, End());
+effect b_fn_term($name, $params, $body)
+    => bind($v, choose(flow_terminal(b_body($body)), b_body($body),
+            splice_end(b_body($body), Return(Int(0)))),
+        TypedFunction($name, list.map("b.mkparam", $params), Signed(64), $v));
+effect base.prepare(BFunc($name, $params, $body), $environment)
+    => base.prepare(b_fn_term($name, $params, $body), $environment);
+effect base.emit(BFunc($name, $params, $body))
+    => lower_checked(analyze(BFunc($name, $params, $body)));
+
+effect base.prepare(BGlobalDef($name, $ival), $environment)
+    => CheckedBGlobalDef($name, check($ival, $environment, Signed(64)));
+effect base.analyze(BGlobalDef($name, $ival))
+    => prepare(BGlobalDef($name, $ival), env.empty());
+effect base.lower_checked(CheckedBGlobalDef($name, $ival))
+    => lower_function(CheckedBGlobalDef($name, $ival));
+effect base.prepare(PFuncDecl($name), $environment) => CheckedPFuncDecl($name);
+effect base.analyze(PFuncDecl($name)) => prepare(PFuncDecl($name), env.empty());
+effect base.analyze(BStringGlobal($name, $text)) => prepare(BStringGlobal($name, $text), env.empty());
+effect base.lower_checked(CheckedPFuncDecl($name)) => lower_function(CheckedPFuncDecl($name));
+effect base.declare(PExitDecl(), $rest, $environment) => declarations($rest, $environment);
+effect base.prepare(PExitDecl(), $environment) => CheckedPExitDecl();
+effect base.analyze(PExitDecl()) => CheckedPExitDecl();
+effect base.lower_checked(CheckedPExitDecl()) => lower_function(CheckedPExitDecl());
+effect base.lower_function(CheckedPExitDecl())
+    => mlir.op("llvm.func", [], [], [Attr("sym_name", "exit"),
+        RawAttr("function_type", "!llvm.func<void (i32)>"), RawAttr("linkage", "#llvm.linkage<external>")],
+        [mlir.region_blocks([])]);
+// external declaration: the CRT supplies the body at link time
+effect base.lower_function(CheckedPFuncDecl($name))
+    => mlir.op("llvm.func", [], [], [Attr("sym_name", $name),
+        RawAttr("function_type", "!llvm.func<i32 (ptr, ...)>"),
+        RawAttr("linkage", "#llvm.linkage<external>")],
+        [mlir.region_blocks([])]);
+effect base.lower_checked(CheckedBStringGlobal($name, $text))
+    => lower_function(CheckedBStringGlobal($name, $text));
+effect base.lower_function(CheckedBGlobalDef($name, $ival))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", "i64"),
+        RawAttr("linkage", "#llvm.linkage<internal>")],
+        [mlir.region(mlir.op("llvm.return",
+            [lower($ival, env.empty())], [], [], []))]);

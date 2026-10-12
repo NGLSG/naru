@@ -1,0 +1,16 @@
+module naru;
+// Replaced by generated native rule code in a specialized compiler build.
+public fn specialized_available() -> bool { return false; }
+public fn specialized_effect_count() -> i64 { return 0; }
+public fn specialized_syntax_count() -> i64 { return 0; }
+public fn specialized_load(e: &mut Engine) { }
+public fn specialized_syntax_match(e: &mut Engine, g: &mut Grammar, s: &mut Stream, rule_id: i64, left: i64, depth: i64) -> i64 {
+    e.reject("specialized syntax matching is unavailable in the core compiler");
+    return -1;
+}
+public fn specialized_dispatch(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64) -> i64 {
+    e.reject("specialized rule dispatch is unavailable in the core compiler");
+    return -1;
+}
+public fn specialized_rule_match(e: &mut Engine, rt: &mut Runtime, rule: i64, call: i64, bindings: i64, depth: i64) -> bool { return false; }
+public fn specialized_rule_body(e: &mut Engine, rt: &mut Runtime, rule: i64, bindings: i64, depth: i64) -> i64 { return -1; }

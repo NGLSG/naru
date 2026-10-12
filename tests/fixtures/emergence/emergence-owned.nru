@@ -1,0 +1,2 @@
+fn consume(x: owned<i32>) -> i32 { let r = &x; let n = *r; end r; return n; }
+fn main() -> i32 { let x = own(20); let r = &mut x; *r = 42; end r; return consume(move x); }
