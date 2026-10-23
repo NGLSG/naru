@@ -3,15 +3,15 @@
   "generator": "naru",
   "packages": [
     {"name": "b-examples", "version": "0.1.0", "manifest": "Naru.toml", "sha256": "4ee4e19ee9821fc4ab2ca27d44321c2ea6fe9ac0f3e03a23e367bfb9519918a8"},
-    {"name": "naru-stdlib", "version": "0.2.0", "manifest": "../../dialects/Naru.toml", "sha256": "666f8ad942bed892b0f97659837e0412262ad4a292a94fc56cd8f5840daf0de7"}
+    {"name": "naru-stdlib", "version": "0.2.0", "manifest": "../../dialects/Naru.toml", "sha256": "cbf95e277b48fb070da7fee6a83302546ee41cd871f930a76cf456d5e2cc6571"}
   ],
   "dependencies": [
     {"owner": 0, "alias": "std", "target": 1}
   ],
   "rules": [
-    {"module": "allocation", "path": "../../dialects/allocation.stx", "sha256": "8d5cdbe987dc087efd50dfceb7dd317215dc47c775b096b597a61eb0309fe028"},
+    {"module": "allocation", "path": "../../dialects/allocation.stx", "sha256": "09d985eb4551859c4b59c7c2c80e0039c5d6faaee7690aa55be6649f691a1318"},
     {"module": "b", "path": "../../dialects/b.stx", "sha256": "8ad1ee99706eae70011438a8c2f352d29a96880bb44cc05d7aa53b29806cfa1e"},
-    {"module": "base", "path": "../../dialects/base.stx", "sha256": "695120457711fe8bebd4166c4c8e29e0fef43dc54bfab60ac5735a441ce3b24a"},
+    {"module": "base", "path": "../../dialects/base.stx", "sha256": "da6cb84545add54779d1ee5ddf5e5435b93e8403a603146b92d5017c23fcd776"},
     {"module": "cfg", "path": "../../dialects/cfg.stx", "sha256": "bdf32f979934d9c80afdef1021bb90e34ca29f9beb4391f3528f1a42a203d753"},
     {"module": "numbers", "path": "../../dialects/numbers.stx", "sha256": "9cb7d661e744e9897253a94046b144abc17e70cffe71da13131070f6bd387d85"},
     {"module": "pipeline", "path": "../../dialects/pipeline.stx", "sha256": "4110be63ae2f5c6563c97f396cb1479093f2fb994c356ea93f125bab49b3de5c"},
