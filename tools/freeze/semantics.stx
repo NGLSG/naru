@@ -1,0 +1,13 @@
+mod freeze_semantics;
+
+effect lazy(0) => choose(0, fail("unselected branch executed"), Result(42));
+effect lazy(1) => choose(1, Result(7), fail("unselected branch executed"));
+effect sequence($n) => seq(eq($n, $n), add($n, 1));
+effect repeated(Pair($x, $x)) => Same($x);
+effect overlap($x) => A();
+effect overlap(1) => B();
+effect count($n) => choose(eq($n, 0), 0, count(sub($n, 1)));
+effect bad() => fail("expected failure");
+effect nested_region() => mlir.region(seq(
+    mlir.op("arith.constant", [], ["i32"], [Attr("value", 1, "i32")], []),
+    mlir.op("func.return", [], [], [], [])));

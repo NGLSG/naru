@@ -1,0 +1,18 @@
+mod collect_contract;
+effect[fallback] facts($node,$context) => Early();
+effect facts(A($value),$context) => First($value,$context);
+effect facts($node,42) when eq(tag($node),"collect_contract.A") => Generic();
+effect facts(B($value),$context) => Other($value);
+effect facts(A($value),0) => Second($value);
+effect[fallback] facts(A($value),$context) => Late();
+effect equal(A($value),$value) => 1;
+effect[fallback] equal($left,$right) => 0;
+effect atom(42) => "integer";
+effect atom("42") => "string";
+effect atom([42]) => "list";
+effect arity() => 42;
+effect arity($value) => $value;
+effect[fallback] defaults($value) => Early();
+effect[fallback] defaults(A($value)) => Late();
+effect guarded(A($value)) when lt($value,0) => $value;
+effect[fallback] guarded($value) => "fallback";

@@ -1,0 +1,119 @@
+{
+  "backend": "in-process",
+  "child_processes_prohibited": true,
+  "passed": true,
+  "tests": [
+    {
+      "test": "no child processes or PATH: bytecode",
+      "passed": true
+    },
+    {
+      "test": "no child processes or PATH: object",
+      "passed": true
+    },
+    {
+      "test": "no child processes or PATH: llvm-ir",
+      "passed": true
+    },
+    {
+      "test": "no child processes or PATH: exe",
+      "passed": true
+    },
+    {
+      "test": "CFG arguments and backedge at O0",
+      "passed": true
+    },
+    {
+      "test": "CFG arguments and backedge at O3",
+      "passed": true
+    },
+    {
+      "test": "CPU storage preparation preserves every volatile access",
+      "passed": true
+    },
+    {
+      "test": "CPU storage preparation preserves escaped aggregate writes",
+      "passed": true
+    },
+    {
+      "test": "LLVM size preference Os",
+      "passed": true
+    },
+    {
+      "test": "LLVM size preference Oz",
+      "passed": true
+    },
+    {
+      "test": "generic DLL symbol facts survive optimization and emit COFF export directives",
+      "passed": true
+    },
+    {
+      "test": "global pointer relocations remain LLVM constants",
+      "passed": true
+    },
+    {
+      "test": "nonconstant symbolic shifts diagnose without LLVM destruction aborts",
+      "passed": true
+    },
+    {
+      "test": "side-effecting global calls preserve verifier diagnostics and the artifact",
+      "passed": true
+    },
+    {
+      "test": "zero-result global stores diagnose before LLVM translation",
+      "passed": true
+    },
+    {
+      "test": "DLL storage cannot annotate definitions as imported",
+      "passed": true
+    },
+    {
+      "test": "DLL storage requires a recognized string value",
+      "passed": true
+    },
+    {
+      "test": "DLL storage rejects non-string facts",
+      "passed": true
+    },
+    {
+      "test": "Windows DLL facts reject a non-Windows target",
+      "passed": true
+    },
+    {
+      "test": "native pass plugin shares host TypeIDs and registry",
+      "passed": true
+    },
+    {
+      "test": "native dialect registration and verifier",
+      "passed": true
+    },
+    {
+      "test": "duplicate IRDL and plugin inputs including hardlinks load once",
+      "passed": true
+    },
+    {
+      "test": "conflicting IRDL namespaces report an error without crashing",
+      "passed": true
+    },
+    {
+      "test": "plugin failure preserves the artifact",
+      "passed": true
+    },
+    {
+      "test": "failed pass emits a native backend report",
+      "passed": true
+    },
+    {
+      "test": "integer attributes reject truncation and signed overflow",
+      "passed": true
+    },
+    {
+      "test": "unknown operation in a registered dialect is rejected",
+      "passed": true
+    },
+    {
+      "test": "MLIR verifies branch operand counts",
+      "passed": true
+    }
+  ]
+}

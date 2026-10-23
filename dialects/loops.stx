@@ -1,0 +1,14 @@
+// Adds loop analysis to the existing ownership relation. The compiler has no
+// special knowledge of Loop or the abstract-state fixed-point calculation.
+mod loops;
+use ownership;
+
+syntax flow `while $condition:ident { $body:flow }` => Loop($body);
+
+effect ownership.own(Loop($body), $entry) => iterate($body, $entry, $entry);
+
+effect iterate($body, $entry, $head)
+    => advance($body, $entry, $head, join($entry, own($body, $head)));
+
+effect advance($body, $entry, $head, $next)
+    => choose(eq($head, $next), $next, iterate($body, $entry, $next));

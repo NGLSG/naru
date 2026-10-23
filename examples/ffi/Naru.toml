@@ -1,0 +1,23 @@
+[package]
+name = "ffi-demo"
+version = "0.1.0"
+entry = "main.nru"
+
+[dependencies]
+std = { path = "../../dialects", package = "naru-stdlib", version = "^0.2.0" }
+
+[language]
+dialects = ["std/base", "std/externc"]
+entry = "item"
+relation = "base.emit_program"
+unit = "program"
+
+[backend]
+target = "exe"
+opt_level = "2"
+
+[link]
+runtime = "crt-static"
+
+[build]
+output_dir = "target"

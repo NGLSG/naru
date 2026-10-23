@@ -1,0 +1,2 @@
+mod operator_syntax_conflict;
+syntax expr[50,left] `$a:expr + $b:expr` => VectorAdd($a, $b);

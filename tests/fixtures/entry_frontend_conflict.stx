@@ -1,0 +1,5 @@
+mod entry_frontend_conflict;
+use entry_frontend;
+use base;
+
+effect entry_frontend.frontend($path,$source,$options) => [base.Function("main",base.Int(43))];

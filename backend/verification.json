@@ -1,0 +1,60 @@
+{
+  "mlir_version": "Naru 0.2.0 - extensible AOT compiler with in-process MLIR/LLVM/LLD\nnaru parse|check|emit <file.nru> --rules <file.stx> [--rules ...]\nnaru eval --rules <file.stx> --expr 'relation(Term(...))'\nnaru build <file.nru> --rules <file.stx> -o <artifact> [--target mlir|exe|profile.json]\nnaru opt <file.mlir> -o <artifact> [--target mlir|bytecode|llvm-ir|object|exe|profile.json]\nnaru freeze --rules <file.stx> -o <specialized.vyx>\nOptions: --entry item --relation emit --project Naru.toml --pass-pipeline PIPELINE\n         --irdl FILE --dialect-plugin DLL --pass-plugin DLL --backend-library DLL\n         --native-entry main --triple TRIPLE --cpu CPU --features FEATURES --opt-level 0|1|2|3|s|z\nemit verifies MLIR; build optimizes and emits entirely in process.",
+  "tests": [
+    {
+      "test": "constant-folding",
+      "passed": true,
+      "detail": "20 + 22 folds to one i32 constant 42",
+      "seconds": 0.0528
+    },
+    {
+      "test": "cpu-aot",
+      "passed": true,
+      "detail": "Embedded MLIR -> LLVM -> TargetMachine -> LLD executable exits 42 under a no-child-process Job",
+      "seconds": 0.1162
+    },
+    {
+      "test": "affine-fusion",
+      "passed": true,
+      "detail": "2 loops -> 1; temporary allocation, deallocation, load and store eliminated",
+      "seconds": 0.0575
+    },
+    {
+      "test": "custom-dialect-non-llvm",
+      "passed": true,
+      "detail": "Registered IRDL operations and custom f32 tile type preserved in a non-LLVM artifact",
+      "seconds": 0.0538
+    },
+    {
+      "test": "custom-dialect-type-error",
+      "passed": true,
+      "detail": "IRDL verifier rejects wrong operand type; existing output is not replaced",
+      "seconds": 0.0576
+    },
+    {
+      "test": "unregistered-dialect-error",
+      "passed": true,
+      "detail": "Device program is rejected without its dialect registration",
+      "seconds": 0.0492
+    },
+    {
+      "test": "unknown-pass-error",
+      "passed": true,
+      "detail": "Unknown pass cannot silently fall back to an unoptimized build",
+      "seconds": 0.0504
+    },
+    {
+      "test": "custom-dialect-attribute-validation",
+      "passed": true,
+      "detail": "Device workgroups IntegerAttr is accepted; a string attribute is rejected",
+      "seconds": 0.1114
+    },
+    {
+      "test": "path-protection",
+      "passed": true,
+      "detail": "9 output/report input collisions rejected, including target, IRDL, plugins and a hard-linked report path",
+      "seconds": 0.3932
+    }
+  ],
+  "passed": true
+}

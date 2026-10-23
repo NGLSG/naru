@@ -1,0 +1,5 @@
+// This package adds grammar only: it reuses ownership.If and its analysis.
+mod unless;
+use ownership;
+
+syntax flow `unless $condition:ident { $body:flow }` => If(Skip(), $body);

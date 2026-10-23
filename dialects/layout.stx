@@ -1,0 +1,31 @@
+// Object layout is data: each member supplies [byteSize, byteAlignment].
+// Target dialects choose those facts; these combinators know no source types.
+mod layout;
+
+effect round_up($size,$alignment) => choose(and(not(int.lt($size,0)),int.lt(0,$alignment)),
+    int.mul(int.div(int.add($size,int.sub($alignment,1)),$alignment),$alignment),fail("invalid object size or alignment"));
+effect sequential($members) => finish(list.fold("layout.place",$members,State(0,1,[])));
+effect place(State($end,$alignment,$offsets),[$size,$member_alignment])
+    => bind($offset,round_up($end,$member_alignment),seq(round_up($size,$member_alignment),
+        State(int.add($offset,$size),common_alignment($alignment,$member_alignment),list.prepend($offset,$offsets))));
+effect overlap($members) => finish(list.fold("layout.overlay",$members,State(0,1,[])));
+effect overlay(State($size,$alignment,$offsets),[$member_size,$member_alignment])
+    => seq(round_up($member_size,$member_alignment),State(maximum($size,$member_size),common_alignment($alignment,$member_alignment),list.prepend(0,$offsets)));
+effect finish(State($size,$alignment,$offsets)) => Object(round_up($size,$alignment),$alignment,list.reverse($offsets));
+// Cap member placement alignments without changing their object sizes. A
+// source adapter may supply already-overridden facts for explicit alignment.
+effect layout.capped_members($members,$cap) => bind(layout.Capped($out,$limit),
+    list.fold("layout.cap_member",$members,layout.Capped([],$cap)),list.reverse($out));
+effect layout.cap_member(layout.Capped($out,$cap),[$size,$alignment]) => seq(layout.round_up(0,$cap),
+    layout.Capped(list.prepend([$size,choose(lt($cap,$alignment),$cap,$alignment)],$out),$cap));
+// Raise an object's minimum alignment and round its stride while preserving
+// existing member offsets. This describes storage; no source type is involved.
+effect layout.with_alignment(Object($size,$natural,$offsets),$requested)
+    => seq(layout.round_up($size,$requested),bind($alignment,layout.common_alignment($natural,$requested),Object(layout.round_up($size,$alignment),$alignment,$offsets)));
+effect maximum($a,$b) => choose(int.lt($a,$b),$b,$a);
+// LCM also covers target alignments that are not powers of two. Conventional
+// CPU alignments take the constant-time divisibility path.
+effect common_alignment($a,$b) => bind($larger,maximum($a,$b),bind($smaller,choose(eq($larger,$a),$b,$a),
+    choose(eq(int.rem($larger,$smaller),0),$larger,bind([$gcd,$zero],rule.iterate("layout.gcd",[$a,$b],1000000),int.mul(int.div($a,$gcd),$b)))));
+effect gcd([$a,0]) => [0,[$a,0]];
+effect gcd([$a,$b]) when not(eq($b,0)) => [1,[$b,int.rem($a,$b)]];

@@ -1,0 +1,213 @@
+{
+  "format": 1,
+  "standard": "C11 nonlocal jumps and actual MSVC header ABI extensions",
+  "target": "windows-x86_64-llp64",
+  "status": "implemented_source_pending_consolidated_acceptance",
+  "full_conformance_claimed": false,
+  "reference_note": "Uses actual setjmp headers and CRT; no private jump-buffer or assembly implementation. No undefined setjmp assignment-initializer contexts are used.",
+  "cases": [
+    {
+      "id": "sdk-align-small-record",
+      "work_item": "all-standard-headers",
+      "feature": "system-crt",
+      "clause": "target aggregate alignment",
+      "source": "struct __declspec(align(16)) S{char x;};int main(void){struct S a[2]={{20},{22}};return sizeof(struct S)==16&&_Alignof(struct S)==16&&a[0].x+a[1].x==42?42:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target header extension __declspec(align), not an ISO C spelling."
+    },
+    {
+      "id": "sdk-align-typedef",
+      "work_item": "all-standard-headers",
+      "feature": "system-crt",
+      "clause": "target aggregate alignment",
+      "source": "typedef struct __declspec(align(32)) S{int x;} T;int main(void){T a={42};return sizeof(T)==32&&_Alignof(T)==32&&a.x==42?42:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target header extension __declspec(align), not an ISO C spelling."
+    },
+    {
+      "id": "sdk-align-nested-member",
+      "work_item": "all-standard-headers",
+      "feature": "system-crt",
+      "clause": "6.2.8;target alignment",
+      "source": "#include <stddef.h>\nstruct __declspec(align(32)) S{int x;};struct O{char c;struct S s;char d;};int main(void){struct O o={0,{42},1};return offsetof(struct O,s)==32&&offsetof(struct O,d)==64&&sizeof(struct O)==96&&o.s.x==42?42:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target header extension __declspec(align), not an ISO C spelling."
+    },
+    {
+      "id": "sdk-align-union",
+      "work_item": "all-standard-headers",
+      "feature": "system-crt",
+      "clause": "target aggregate alignment",
+      "source": "union __declspec(align(32)) U{char c;int n;};int main(void){union U a[2]={{.n=20},{.n=22}};return sizeof(union U)==32&&_Alignof(union U)==32&&a[0].n+a[1].n==42?42:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target header extension __declspec(align), not an ISO C spelling."
+    },
+    {
+      "id": "sdk-align-bitfield-record",
+      "work_item": "all-standard-headers",
+      "feature": "system-crt",
+      "clause": "target aggregate alignment",
+      "source": "struct __declspec(align(16)) S{unsigned x:6;};int main(void){struct S a[2]={{20},{22}};return sizeof(struct S)==16&&_Alignof(struct S)==16&&a[0].x+a[1].x==42?42:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target header extension __declspec(align), not an ISO C spelling."
+    },
+    {
+      "id": "sdk-align-self-reference",
+      "work_item": "all-standard-headers",
+      "feature": "system-crt",
+      "clause": "6.2.7;target alignment",
+      "source": "struct S;struct S* p;struct __declspec(align(16)) S{struct S* next;int n;};int main(void){struct S x={0,42};p=&x;x.next=p;return p->next->n;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target header extension __declspec(align), not an ISO C spelling."
+    },
+    {
+      "id": "sdk-align-byvalue-call",
+      "work_item": "aggregate-calling-abi",
+      "feature": "system-crt",
+      "clause": "target aligned aggregate ABI",
+      "source": "struct __declspec(align(32)) S{int n;};struct S pass(struct S x){x.n+=22;return x;}int main(void){struct S x={20};return pass(x).n;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target header extension __declspec(align), not an ISO C spelling."
+    },
+    {
+      "id": "sdk-align-shadow-identity",
+      "work_item": "all-standard-headers",
+      "feature": "system-crt",
+      "clause": "6.2.1;target alignment",
+      "source": "struct __declspec(align(16)) S{int n;};int main(void){struct S a={20};{struct __declspec(align(32)) S{int n;};struct S b={22};if(sizeof(b)!=32)return 1;a.n+=b.n;}return sizeof(a)==16?a.n:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target header extension __declspec(align), not an ISO C spelling."
+    },
+    {
+      "id": "sdk-align-future-pointer-declaration",
+      "work_item": "all-standard-headers",
+      "feature": "system-crt",
+      "clause": "6.2.7;target alignment",
+      "source": "struct S;struct S *get(void);struct __declspec(align(16)) S{int n;};struct S v={42};struct S *get(void){return &v;}int main(void){return get()->n;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target header extension __declspec(align), not an ISO C spelling."
+    },
+    {
+      "id": "sdk-align-invalid-power",
+      "work_item": "all-standard-headers",
+      "feature": "alignment",
+      "clause": "target alignment diagnostic",
+      "source": "struct __declspec(align(3)) S{int n;};int main(void){return 42;}",
+      "reject": true,
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target header extension __declspec(align), not an ISO C spelling."
+    },
+    {
+      "id": "sdk-setjmp-real-buffer",
+      "work_item": "all-standard-headers",
+      "feature": "system-crt",
+      "clause": "7.13;target buffer ABI",
+      "source": "#include <setjmp.h>\n_Static_assert(_Alignof(jmp_buf)==16,\"actual x64 buffer alignment\");_Static_assert(sizeof(jmp_buf)==256,\"actual x64 buffer size\");int main(void){return 42;}"
+    },
+    {
+      "id": "setjmp-initial-return",
+      "work_item": "system-runtime-semantics",
+      "feature": "system-crt",
+      "clause": "7.13",
+      "source": "#include <setjmp.h>\nint main(void){jmp_buf b;if(setjmp(b)==0)return 42;return 1;}",
+      "llvm_ir_contains": [
+        "llvm.frameaddress",
+        "returns_twice",
+        "@_setjmp"
+      ]
+    },
+    {
+      "id": "setjmp-zero-normalized-to-one",
+      "work_item": "system-runtime-semantics",
+      "feature": "system-crt",
+      "clause": "7.13.1.1;7.13.2.1",
+      "source": "#include <setjmp.h>\nint main(void){jmp_buf b;switch(setjmp(b)){case 0:longjmp(b,0);case 1:return 42;default:return 1;}}"
+    },
+    {
+      "id": "setjmp-volatile-local",
+      "work_item": "system-runtime-semantics",
+      "feature": "system-crt",
+      "clause": "7.13.2.1p3",
+      "source": "#include <setjmp.h>\nint main(void){jmp_buf b;volatile int n=20;if(setjmp(b)==0){n=42;longjmp(b,7);}return n;}"
+    },
+    {
+      "id": "setjmp-nested-calls",
+      "work_item": "system-runtime-semantics",
+      "feature": "system-crt",
+      "clause": "7.13",
+      "source": "#include <setjmp.h>\njmp_buf b;void third(void){longjmp(b,7);}void second(void){volatile int n=5;third();(void)n;}int main(void){switch(setjmp(b)){case 0:second();return 1;case 7:return 42;default:return 2;}}"
+    },
+    {
+      "id": "setjmp-negative-value",
+      "work_item": "system-runtime-semantics",
+      "feature": "system-crt",
+      "clause": "7.13",
+      "source": "#include <setjmp.h>\nint main(void){jmp_buf b;switch(setjmp(b)){case 0:longjmp(b,-42);case -42:return 42;default:return 1;}}"
+    },
+    {
+      "id": "setjmp-side-effect-buffer-once",
+      "work_item": "system-runtime-semantics",
+      "feature": "system-crt",
+      "clause": "7.13.1.1",
+      "source": "#include <setjmp.h>\njmp_buf b;int calls;jmp_buf *buffer(void){++calls;return &b;}int main(void){if(setjmp(*buffer())==0)longjmp(b,9);return calls==1?42:1;}"
+    },
+    {
+      "id": "setjmp-cross-unit",
+      "work_item": "system-runtime-semantics",
+      "feature": "system-crt",
+      "clause": "7.13",
+      "source": "#include <setjmp.h>\njmp_buf b;void jump_back(jmp_buf);int main(void){if(setjmp(b)==0)jump_back(b);return 42;}",
+      "additional_sources": {
+        "jump.c": "#include <setjmp.h>\nvoid jump_back(jmp_buf b){longjmp(b,3);}"
+      }
+    },
+    {
+      "id": "setjmp-repeated-resume",
+      "work_item": "system-runtime-semantics",
+      "feature": "system-crt",
+      "clause": "7.13",
+      "source": "#include <setjmp.h>\nint main(void){jmp_buf b;volatile int n=0;if(setjmp(b)==0)n=1;if(n<42){++n;longjmp(b,1);}return n;}"
+    },
+    {
+      "id": "setjmp-inner-saved-context",
+      "work_item": "system-runtime-semantics",
+      "feature": "system-crt",
+      "clause": "7.13",
+      "source": "#include <setjmp.h>\njmp_buf outer,inner;void f(void){switch(setjmp(inner)){case 0:longjmp(inner,3);case 3:longjmp(outer,42);default:longjmp(outer,1);}}int main(void){switch(setjmp(outer)){case 0:f();return 1;case 42:return 42;default:return 2;}}"
+    },
+    {
+      "id": "setjmp-vla-after-save",
+      "work_item": "system-runtime-semantics",
+      "feature": "system-crt",
+      "clause": "6.7.6.2;7.13.2.1",
+      "source": "#include <setjmp.h>\njmp_buf b;volatile int n=20;int main(void){if(setjmp(b)==0){int size=n;int a[size];a[0]=42;n=a[0];longjmp(b,1);}return n;}"
+    },
+    {
+      "id": "setjmpex-system-header",
+      "work_item": "all-standard-headers",
+      "feature": "system-crt",
+      "clause": "target setjmpex extension",
+      "source": "#include <setjmpex.h>\nint main(void){jmp_buf b;if(setjmp(b)==0)longjmp(b,7);return 42;}"
+    }
+  ]
+}

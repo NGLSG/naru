@@ -1,0 +1,145 @@
+// The Windows UCRT uses named record carriers in its real complex.h. Adapt
+// only those implementation-reserved typedefs after checking their declared
+// layout. An arbitrary two-float user record never acquires complex behavior.
+mod c11.complex_crt;
+use c11.complex;
+use c11.syntax;
+use c11.types;
+use c11.sema;
+use c11.names;
+use c11.objects;
+use c11.constants;
+use c11.initializers;
+use c11.union_storage;
+use c11.abi;
+use base;
+use storage;
+use types;
+use complex_numbers;
+use c11.pp;
+use c11.system_headers;
+use c11.functions;
+use c11.specifiers;
+
+// The actual UCRT exposes carrier structs rather than ISO complex prototypes.
+// Keep its layout/field interface for private helpers, while public ISO names
+// have their specified source types and use the existing common physical ABI.
+effect c11.complex_crt.standard_name($name) => or(c11.complex_crt.standard_base($name),
+    choose(or(text.ends($name,"f"),text.ends($name,"l")),c11.complex_crt.standard_base(text.slice($name,0,sub(text.len($name),1))),0));
+effect c11.complex_crt.standard_base($name) => text.contains(" cabs carg creal cimag cacos casin catan ccos csin ctan cacosh casinh catanh ccosh csinh ctanh cexp clog cpow csqrt conj cproj ",concat(" ",concat($name," ")));
+effect c11.complex_crt.public_type(ComplexBridge($real,$record)) => c11.complex.ComplexType($real);
+effect c11.complex_crt.public_type(c11.types.Qualified($type,$c,$v,$r)) => c11.types.qualify(c11.complex_crt.public_type($type),[$c,$v,$r]);
+effect[fallback] c11.complex_crt.public_type($type) => $type;
+effect c11.complex_crt.public_parameter(base.Param($name,$type)) => base.Param($name,c11.complex_crt.public_type($type));
+effect[fallback] c11.complex_crt.public_parameter($parameter) => $parameter;
+effect c11.syntax.target_declaration(c11.syntax.Prototype($name,$params,$result,$variadic),$context) when c11.complex_crt.standard_name($name)
+    => c11.syntax.Prototype($name,list.map("c11.complex_crt.public_parameter",$params),c11.complex_crt.public_type($result),$variadic);
+// UCRT's reserved mixed-domain pow helpers are header-owned definitions. Their
+// bodies stay intact; COMDAT emission also makes their addresses usable at O0
+// and across TUs without changing the semantics of user ISO inline functions.
+effect c11.functions.target_specifiers("file",c11.specifiers.FunctionFlags(1,$noreturn),"none",$source,
+    c11.syntax.Function($name,$params,ComplexBridge($real,$record),$body),$context)
+    when and(text.starts($name,"__cpow"),c11.complex_crt.carrier_parameters($params))
+    => c11.functions.Specified("file",c11.specifiers.FunctionFlags(2,$noreturn),"none",c11.functions.NoSource(),
+        c11.syntax.HeaderInline(c11.syntax.Function($name,$params,ComplexBridge($real,$record),$body)));
+effect c11.complex_crt.carrier_parameters($params) => list.fold("c11.complex_crt.has_carrier_parameter",$params,0);
+effect c11.complex_crt.has_carrier_parameter($found,base.Param($name,$type))
+    => or($found,c11.complex_crt.is_carrier(c11.types.unqualified($type)));
+effect c11.complex_crt.is_carrier(ComplexBridge($real,$record)) => 1;
+effect[fallback] c11.complex_crt.is_carrier($type) => 0;
+// Target carrier names are reserved library ABI views of these arithmetic
+// domains for generic selection. Unrelated user records retain nominal types.
+effect c11.sema.generic_match(c11.complex.ComplexType($a),ComplexBridge($b,$record)) => c11.types.compatible($a,$b);
+effect c11.sema.generic_match(ComplexBridge($a,$record),c11.complex.ComplexType($b)) => c11.types.compatible($a,$b);
+effect c11.pp.header_macro_provider($header,$path,$options) when c11.system_headers.crt_header("complex.h",$path,$options)
+    => c11.pp.MacroProvider("iso-complex-macro-contract","c11.complex_crt.header_macros");
+effect c11.complex_crt.header_macros($macros) => list.fold("c11.complex_crt.macro_if_missing",[
+    ["complex","complex _Complex"],
+    ["CMPLX","CMPLX(x,y) __builtin_complex((double)(x),(double)(y))"],
+    ["CMPLXF","CMPLXF(x,y) __builtin_complex((float)(x),(float)(y))"],
+    ["CMPLXL","CMPLXL(x,y) __builtin_complex((long double)(x),(long double)(y))"]],$macros);
+effect c11.complex_crt.macro_if_missing($macros,[$name,$definition]) => choose(c11.pp.defined($macros,$name),$macros,
+    c11.pp.define_source($definition,$macros));
+
+effect c11.complex_crt.carrier_name($name) => text.contains(" _C_float_complex _C_double_complex _C_ldouble_complex ",concat(" ",concat($name," ")));
+effect c11.complex_crt.carrier_real("_C_float_complex") => c11.types.floating("float");
+effect c11.complex_crt.carrier_real("_C_double_complex") => c11.types.floating("double");
+effect c11.complex_crt.carrier_real("_C_ldouble_complex") => c11.types.floating("long double");
+effect c11.syntax.typedef_type($name,$type,$context) when c11.complex_crt.carrier_name($name)
+    => bind($record,c11.objects.declaration_type($type,c11.names.tags($context)),bind($real,c11.complex_crt.carrier_real($name),
+        seq(c11.complex_crt.carrier_layout($record,$real),ComplexBridge($real,$record))));
+effect c11.complex_crt.carrier_layout(c11.types.Record($identity,[c11.types.Field("_Val",c11.types.Array(2,$real))]),$real) => 1;
+effect[fallback] c11.complex_crt.carrier_layout($type,$real) => fail("target complex CRT typedef has an unexpected object representation");
+effect types.repr(ComplexBridge($real,$record)) => types.repr($record);
+effect c11.types.bytes(ComplexBridge($real,$record)) => c11.types.bytes($record);
+effect c11.types.alignment(ComplexBridge($real,$record)) => c11.types.alignment($record);
+effect c11.types.compatibility_shape(ComplexBridge($real,$record)) => c11.types.compatibility_shape($record);
+effect c11.types.is_arithmetic(ComplexBridge($real,$record)) => 1;
+effect c11.types.promotion(ComplexBridge($real,$record)) => c11.complex.ComplexType($real);
+effect c11.types.default_argument(ComplexBridge($real,$record)) => ComplexBridge($real,$record);
+effect c11.complex.is_complex(ComplexBridge($real,$record)) => 1;
+effect c11.complex.component(ComplexBridge($real,$record)) => $real;
+effect c11.sema.float_type(ComplexBridge($real,$record)) => 1;
+effect c11.sema.increment_type(ComplexBridge($real,$record)) => fail("C increment requires a real or pointer operand");
+effect c11.abi.is_aggregate(ComplexBridge($real,$record)) => 1;
+effect c11.union_storage.shape(ComplexBridge($real,$record)) => c11.union_storage.shape($record);
+effect c11.sema.complete_type(ComplexBridge($real,$record),$env) => ComplexBridge($real,c11.sema.complete_type($record,$env));
+effect c11.objects.declaration_type(ComplexBridge($real,$record),$tags) => ComplexBridge($real,c11.objects.declaration_type($record,$tags));
+effect c11.objects.aggregate_layout(ComplexBridge($real,$record)) => c11.objects.aggregate_layout($record);
+effect c11.objects.aggregate_fields(ComplexBridge($real,$record)) => c11.objects.aggregate_fields($record);
+effect c11.objects.anonymous_visible(ComplexBridge($real,$record)) => c11.objects.anonymous_visible($record);
+effect c11.sema.writable_type(ComplexBridge($real,$record)) => c11.sema.writable_type($record);
+effect c11.initializers.aggregate_type(ComplexBridge($real,$record)) => 1;
+effect c11.initializers.first_child(ComplexBridge($real,$record)) => c11.initializers.first_child($record);
+effect c11.initializers.next_child(ComplexBridge($real,$record),$index) => c11.initializers.next_child($record,$index);
+effect c11.initializers.child_type(ComplexBridge($real,$record),$index) => c11.initializers.child_type($record,$index);
+effect c11.initializers.child_exists_plain(ComplexBridge($real,$record),$index) => c11.initializers.child_exists_plain($record,$index);
+effect c11.initializers.extract_child($value,ComplexBridge($real,$record),$index) => c11.initializers.extract_child($value,$record,$index);
+effect c11.initializers.insert_child($value,ComplexBridge($real,$record),$index,$replacement) => c11.initializers.insert_child($value,$record,$index,$replacement);
+effect c11.initializers.compatible_aggregate($from,ComplexBridge($real,$record)) => or(c11.complex.is_complex($from),c11.types.compatible($from,$record));
+effect c11.sema.zero(ComplexBridge($real,$record)) => base.Typed(ComplexBridge($real,$record),BridgeComponents(c11.sema.zero($real),c11.sema.zero($real)));
+effect c11.complex.parts(base.Typed(ComplexBridge($source,$record),$value),$real)
+    => c11.complex.ComplexComponents(c11.sema.convert(base.Typed($source,BridgePart(base.Typed(ComplexBridge($source,$record),$value),0)),$real),
+        c11.sema.convert(base.Typed($source,BridgePart(base.Typed(ComplexBridge($source,$record),$value),1)),$real));
+effect base.lower(base.Typed($real,BridgePart($value,$index)),$env)
+    => mlir.op("llvm.extractvalue",[base.lower($value,$env)],[types.repr($real)],[RawAttr("position",concat("array<i64: 0, ",concat(text($index),">")))],[]);
+effect base.lower(base.Typed(ComplexBridge($real,$record),BridgeComponents($a,$b)),$env)
+    => storage.reinterpret(complex_numbers.make(c11.complex.format($real),base.lower($a,$env),base.lower($b,$env)),
+        c11.union_storage.shape(c11.complex.ComplexType($real)),c11.union_storage.shape($record));
+effect c11.complex.complex_conversion($value,ComplexBridge($real,$record))
+    => choose(c11.types.is_arithmetic(arg($value,0)),base.Typed(ComplexBridge($real,$record),BridgeConverted(c11.sema.convert($value,c11.complex.ComplexType($real)))),
+        choose(c11.types.compatible(arg($value,0),$record),base.Typed(ComplexBridge($real,$record),arg($value,1)),fail("C CRT complex carrier conversion requires a compatible carrier or complex value")));
+effect c11.complex.complex_conversion(base.Typed(ComplexBridge($real,$record),$value),$to) when and(not(c11.complex.is_complex($to)),not(eq($to,c11.types.CBool())))
+    => c11.sema.convert(base.Typed($real,BridgePart(base.Typed(ComplexBridge($real,$record),$value),0)),$to);
+effect base.lower(base.Typed(ComplexBridge($real,$record),BridgeConverted($value)),$env)
+    => storage.reinterpret(base.lower($value,$env),c11.union_storage.shape(arg($value,0)),c11.union_storage.shape($record));
+effect c11.sema.truth(base.Typed(ComplexBridge($real,$record),$value))
+    => c11.sema.truth(c11.sema.convert(base.Typed(ComplexBridge($real,$record),$value),c11.complex.ComplexType($real)));
+effect c11.complex.constant_parts(base.Typed(ComplexBridge($type,$record),BridgeComponents($a,$b)),$real)
+    => c11.complex.ComplexComponents(c11.sema.constant_convert($a,$real),c11.sema.constant_convert($b,$real));
+effect c11.complex.constant_conversion($value,ComplexBridge($real,$record))
+    => bind(c11.complex.ComplexComponents($a,$b),c11.complex.constant_parts($value,$real),base.Typed(ComplexBridge($real,$record),BridgeComponents($a,$b)));
+effect c11.complex.constant_conversion(base.Typed(ComplexBridge($real,$record),BridgeComponents($a,$b)),c11.types.CBool())
+    => base.Typed(c11.types.CBool(),base.Integer(or(c11.constants.truth($a),c11.constants.truth($b))));
+effect c11.complex.constant_conversion(base.Typed(ComplexBridge($real,$record),BridgeComponents($a,$b)),$to) when and(not(c11.complex.is_complex($to)),not(eq($to,c11.types.CBool())))
+    => c11.sema.constant_convert($a,$to);
+effect c11.constants.truth(base.Typed(ComplexBridge($real,$record),BridgeComponents($a,$b))) => or(c11.constants.truth($a),c11.constants.truth($b));
+
+// UCRT construction helpers are pure component constructors. Recognize them
+// only with a declared, layout-checked carrier signature. Other declarations
+// retain the ordinary call protocol, including their declared return type.
+effect c11.complex_crt.constructor_name($name) => text.contains(" _Cbuild _FCbuild _LCbuild ",concat(" ",concat($name," ")));
+effect c11.sema.named_call($name,$arguments,$env,$expected) when c11.complex_crt.constructor_name($name)
+    => c11.complex_crt.constructor_call($name,$arguments,c11.sema.lookup_name($env,$name),$env,$expected);
+effect c11.sema.named_call_at($frame,$name,$arguments,$env,$expected) when c11.complex_crt.constructor_name($name)
+    => c11.complex_crt.constructor_call($name,$arguments,c11.sema.lookup_at($frame,$name,$env),$env,$expected);
+effect c11.complex_crt.constructor_call($name,[$a,$b],c11.sema.CSignature($params,ComplexBridge($real,$record),$variadic,$definition),$env,$expected)
+    => c11.sema.contextual(base.Typed(c11.complex.ComplexType($real),c11.complex.ComplexComponents(c11.sema.convert_expression($a,$env,$real),c11.sema.convert_expression($b,$env,$real))),$expected);
+effect[fallback] c11.complex_crt.constructor_call($name,$arguments,$binding,$env,$expected) => c11.sema.call($name,$arguments,$binding,$env,$expected);
+effect c11.sema.constant_value(c11.syntax.Call($name,[$a,$b]),$env) when c11.complex_crt.constructor_name($name)
+    => c11.complex_crt.constant_constructor(c11.sema.lookup_name($env,$name),$a,$b,$env);
+effect c11.sema.constant_value(c11.names.CallAt($frame,$name,[$a,$b]),$env) when c11.complex_crt.constructor_name($name)
+    => c11.complex_crt.constant_constructor(c11.sema.lookup_at($frame,$name,$env),$a,$b,$env);
+effect c11.complex_crt.constant_constructor(c11.sema.CSignature($params,ComplexBridge($real,$record),$variadic,$definition),$a,$b,$env)
+    => base.Typed(c11.complex.ComplexType($real),c11.complex.ComplexComponents(c11.sema.constant_convert(c11.sema.constant_value($a,$env),$real),c11.sema.constant_convert(c11.sema.constant_value($b,$env),$real)));
+effect[fallback] c11.complex_crt.constant_constructor($signature,$a,$b,$env) => fail("C function call is not a constant initializer");

@@ -1,0 +1,126 @@
+// Multi-resource ownership with lexical loans and branch joins, entirely in
+// ordinary rules. The core does not know that these terms mean ownership.
+mod resources;
+use types;
+
+syntax resource_step `own $name:ident : $descriptor:typename;` => Own($name, $descriptor);
+syntax resource_step `move $name:ident;` => Move($name);
+syntax resource_step `touch $name:ident;` => Touch($name);
+syntax resource_step `borrow $name:ident as $loan:ident;` => Borrow($name, $loan);
+syntax resource_step `borrow mut $name:ident as $loan:ident;` => BorrowMut($name, $loan);
+syntax resource_step `end $loan:ident;` => End($loan);
+syntax resource_steps `$first:resource_step` => [$first];
+syntax resource_steps `$first:resource_step $rest:resource_steps` => list.prepend($first, $rest);
+syntax item `check { $steps:resource_steps }` => Program($steps);
+
+effect analyze(Program($steps)) => walk($steps, State(env.empty(), env.empty(), [], []));
+effect walk([], $state) => $state;
+effect walk($steps, $state) when lt(0, size($steps)) => walk(list.tail($steps), step(list.head($steps), $state));
+
+effect step(Own($name, $descriptor), State($values, $loans, $resources, $loan_names))
+    => choose(env.contains($values, $name),
+        fail("duplicate resource declaration"),
+        State(env.put($values, $name, Live($descriptor, 0, 0)), $loans,
+            list.prepend($name, $resources), $loan_names));
+effect step(Move($name), State($values, $loans, $resources, $loan_names))
+    => move($name, env.get($values, $name), $values, $loans, $resources, $loan_names);
+effect move($name, Live($descriptor, 0, 0), $values, $loans, $resources, $loan_names)
+    => State(env.put($values, $name, Moved($descriptor)), $loans, $resources, $loan_names);
+effect move($name, Live($descriptor, $shared, $unique), $values, $loans, $resources, $loan_names) when or($shared, $unique)
+    => fail("cannot move a borrowed resource");
+effect move($name, Moved($descriptor), $values, $loans, $resources, $loan_names)
+    => fail("resource was already moved");
+effect move($name, MaybeMoved($descriptor), $values, $loans, $resources, $loan_names)
+    => fail("resource may have been moved");
+
+effect step(Touch($name), State($values, $loans, $resources, $loan_names))
+    => touch(env.get($values, $name), State($values, $loans, $resources, $loan_names));
+effect touch(Live($descriptor, $shared, 0), $state) => $state;
+effect touch(Live($descriptor, $shared, 1), $state) => fail("resource is exclusively borrowed");
+effect touch(Moved($descriptor), $state) => fail("cannot use a moved resource");
+effect touch(MaybeMoved($descriptor), $state) => fail("resource may have been moved");
+
+effect step(Borrow($name, $loan), State($values, $loans, $resources, $loan_names))
+    => loan($name, $loan, 0, env.get($values, $name), $values, $loans, $resources, $loan_names);
+effect step(BorrowMut($name, $loan), State($values, $loans, $resources, $loan_names))
+    => loan($name, $loan, 1, env.get($values, $name), $values, $loans, $resources, $loan_names);
+effect loan($name, $loan, 0, Live($descriptor, $shared, 0), $values, $loans, $resources, $loan_names)
+    => start_loan($loan, Loan($name, 0), env.put($values, $name, Live($descriptor, add($shared, 1), 0)),
+        $loans, $resources, $loan_names);
+effect loan($name, $loan, 1, Live($descriptor, 0, 0), $values, $loans, $resources, $loan_names)
+    => start_loan($loan, Loan($name, 1), env.put($values, $name, Live($descriptor, 0, 1)),
+        $loans, $resources, $loan_names);
+effect loan($name, $loan, 0, Live($descriptor, $shared, 1), $values, $loans, $resources, $loan_names)
+    => fail("shared loan conflicts with exclusive loan");
+effect loan($name, $loan, 1, Live($descriptor, $shared, $unique), $values, $loans, $resources, $loan_names) when or($shared, $unique)
+    => fail("exclusive loan conflicts with existing loans");
+effect loan($name, $loan, $mode, Moved($descriptor), $values, $loans, $resources, $loan_names)
+    => fail("cannot borrow a moved resource");
+effect loan($name, $loan, $mode, MaybeMoved($descriptor), $values, $loans, $resources, $loan_names)
+    => fail("cannot borrow a possibly moved resource");
+effect start_loan($name, $value, $values, $loans, $resources, $loan_names)
+    => choose(env.contains($loans, $name),
+        reuse_loan($name, $value, $values, $loans, $resources, $loan_names, env.get($loans, $name)),
+        State($values, env.put($loans, $name, $value), $resources, list.prepend($name, $loan_names)));
+effect reuse_loan($name, $value, $values, $loans, $resources, $loan_names, Closed())
+    => State($values, env.put($loans, $name, $value), $resources, $loan_names);
+effect reuse_loan($name, $value, $values, $loans, $resources, $loan_names, Loan($resource, $mode))
+    => fail("loan name is already active");
+
+effect step(End($loan), State($values, $loans, $resources, $loan_names))
+    => close($loan, env.get($loans, $loan), $values, $loans, $resources, $loan_names);
+effect close($loan, Loan($name, $mode), $values, $loans, $resources, $loan_names)
+    => release($loan, $name, $mode, env.get($values, $name), $values, $loans, $resources, $loan_names);
+effect close($loan, Closed(), $values, $loans, $resources, $loan_names)
+    => fail("loan has already ended");
+effect release($loan, $name, 0, Live($descriptor, $shared, 0), $values, $loans, $resources, $loan_names)
+    => State(env.put($values, $name, Live($descriptor, sub($shared, 1), 0)),
+        env.put($loans, $loan, Closed()), $resources, $loan_names);
+effect release($loan, $name, 1, Live($descriptor, 0, 1), $values, $loans, $resources, $loan_names)
+    => State(env.put($values, $name, Live($descriptor, 0, 0)),
+        env.put($loans, $loan, Closed()), $resources, $loan_names);
+
+// A resource branch is a real abstract-state join. Both sides must declare
+// the same identities, and a loan cannot remain active on only one side.
+effect step(If($yes, $no), State($values, $loans, $resources, $loan_names))
+    => join_states(walk($yes, State($values, $loans, $resources, $loan_names)),
+        walk($no, State($values, $loans, $resources, $loan_names)));
+effect join_states(State($left_values, $left_loans, $left_resources, $left_loan_names),
+        State($right_values, $right_loans, $right_resources, $right_loan_names))
+    => choose(eq($left_resources, $right_resources),
+        choose(eq($left_loan_names, $right_loan_names),
+            bind($values, join_values($left_resources, $left_values, $right_values),
+                bind($loans, join_loans($left_loan_names, $left_loans, $right_loans),
+                    State($values, $loans, $left_resources, $left_loan_names))),
+            fail("loan declarations differ across branches")),
+        fail("resource declarations differ across branches"));
+effect join_values([], $left, $right) => env.empty();
+effect join_values($names, $left, $right) when lt(0, size($names))
+    => bind($name, list.head($names),
+        bind($tail, join_values(list.tail($names), $left, $right),
+            env.put($tail, $name, join_value(env.get($left, $name), env.get($right, $name)))));
+effect join_value(Live($left_descriptor, $left_shared, $left_unique),
+        Live($right_descriptor, $right_shared, $right_unique))
+    => Live($left_descriptor, max_count($left_shared, $right_shared), max_count($left_unique, $right_unique));
+effect join_value(Moved($descriptor), Moved($same)) => Moved($descriptor);
+effect join_value(Moved($descriptor), Live($same, $shared, $unique)) => MaybeMoved($descriptor);
+effect join_value(Live($same, $shared, $unique), Moved($descriptor)) => MaybeMoved($descriptor);
+effect join_value(MaybeMoved($descriptor), $other) => MaybeMoved($descriptor);
+effect join_value($other, MaybeMoved($descriptor)) => MaybeMoved($descriptor);
+effect max_count($left, $right) => choose(lt($left, $right), $right, $left);
+effect join_loans([], $left, $right) => env.empty();
+effect join_loans($names, $left, $right) when lt(0, size($names))
+    => bind($name, list.head($names),
+        bind($tail, join_loans(list.tail($names), $left, $right),
+            env.put($tail, $name, join_loan(loan_at($left, $name), loan_at($right, $name)))));
+effect loan_at($loans, $name) => choose(env.contains($loans, $name), env.get($loans, $name), Closed());
+effect join_loan(Closed(), Closed()) => Closed();
+effect join_loan(Loan($left_resource, $left_mode), Loan($right_resource, $right_mode))
+    => choose(and(eq($left_resource, $right_resource), eq($left_mode, $right_mode)),
+        fail("loan remains active after branch; end it in every branch"),
+        fail("loan meaning differs across branches"));
+effect join_loan(Loan($resource, $mode), Closed())
+    => fail("loan remains active after branch; end it in every branch");
+effect join_loan(Closed(), Loan($resource, $mode))
+    => fail("loan remains active after branch; end it in every branch");
+

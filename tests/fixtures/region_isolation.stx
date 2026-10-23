@@ -1,0 +1,9 @@
+mod region_isolation;
+use base;
+
+syntax item `probe $name:ident` => Probe($name);
+effect base.emit(Probe($name))
+    => mlir.op("func.func", [], [],
+        [Attr("sym_name", $name), RawAttr("function_type", "() -> i32")],
+        [mlir.region(base.ret(choose(eq(1, 1), base.emit(Int(42)),
+            seq(base.emit(Int(999)), base.emit(Int(0))))))]);

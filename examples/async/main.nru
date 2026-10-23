@@ -1,0 +1,17 @@
+async fn compute(value: i32) -> i32 {
+    await sleep(1);
+    return value * 2;
+}
+
+async fn answer() -> i32 {
+    let value = spawn(compute(20));
+    defer destroy(value);
+    return await value + 2;
+}
+
+fn main() -> i32 {
+    let task = spawn(answer());
+    let result = block_on(task);
+    destroy(task);
+    return result;
+}

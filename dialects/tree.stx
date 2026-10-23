@@ -1,0 +1,55 @@
+// Post-order traversal preserves constructors belonging to unknown libraries.
+mod tree;
+effect rewrite($value,$relation,$context)
+    => arg(rewrite_with($value,"tree.post_enter","tree.post_leave",[$relation,$context],0),0);
+effect post_enter($value,$context,$state) when or(eq(term.kind($value),0),eq(term.kind($value),5))
+    => Descend(term.children($value),$context,$value,$state);
+effect[fallback] post_enter($value,[$relation,$context],$state)
+    => Stop(apply($relation,[$value,$context]),$state);
+effect post_leave($original,$children,[$relation,$context],$state)
+    => [choose(eq(term.kind($original),5),term.rebuild($original,$children),
+        apply($relation,[term.rebuild($original,$children),$context])),$state];
+
+// Enter may prune before visiting children, replace the child context, and
+// carry an opaque cookie to leave. State flows through siblings left to right;
+// leave sees the parent's context. The rule stack is independent of tree depth.
+effect rewrite_with($value,$enter,$leave,$context,$state)
+    => rewrite_with($value,$enter,$leave,$context,$state,1000000);
+effect rewrite_with($value,$enter,$leave,$context,$state,$limit)
+    => bind(Traversal(Finished($result,$final),$pre,$post),
+        rule.iterate("tree.rewrite_step",Traversal(Entering($value,$context,$state,[]),$enter,$leave),$limit),
+        [$result,$final]);
+effect rewrite_step(Traversal(Entering($value,$context,$state,$stack),$enter,$leave))
+    => [1,Traversal(open(apply($enter,[$value,$context,$state]),$context,$stack,$leave),$enter,$leave)];
+effect open(Stop($value,$state),$context,$stack,$leave) => Returning($value,$state,$stack);
+effect open(Descend([],$child_context,$cookie,$state),$context,$stack,$leave)
+    => bind([$value,$final],apply($leave,[$cookie,[],$context,$state]),Returning($value,$final,$stack));
+effect open(Descend($children,$child_context,$cookie,$state),$context,$stack,$leave) when lt(0,size($children))
+    => Entering(list.head($children),$child_context,$state,
+        list.prepend(Frame($cookie,list.tail($children),[],$child_context,$context),$stack));
+effect rewrite_step(Traversal(Returning($value,$state,[]),$enter,$leave))
+    => [0,Traversal(Finished($value,$state),$enter,$leave)];
+effect rewrite_step(Traversal(Returning($value,$state,$stack),$enter,$leave)) when lt(0,size($stack))
+    => [1,Traversal(resume(list.head($stack),$value,$state,list.tail($stack),$leave),$enter,$leave)];
+effect resume(Frame($cookie,[],$out,$child_context,$context),$value,$state,$stack,$leave)
+    => bind([$result,$final],apply($leave,[$cookie,list.reverse(list.prepend($value,$out)),$context,$state]),
+        Returning($result,$final,$stack));
+effect resume(Frame($cookie,$remaining,$out,$child_context,$context),$value,$state,$stack,$leave) when lt(0,size($remaining))
+    => Entering(list.head($remaining),$child_context,$state,
+        list.prepend(Frame($cookie,list.tail($remaining),list.prepend($value,$out),$child_context,$context),$stack));
+
+// Pre-order stateful folds use an explicit work list. Wide lists and deeply
+// nested syntax do not add a recursive rule call for each child.
+effect fold($value,$relation,$state) => bind(Walking($pending,$callback,$result),
+    rule.iterate("tree.fold_step",Walking([$value],$relation,$state),1000000),$result);
+effect fold_step(Walking([],$relation,$state)) => [0,Walking([],$relation,$state)];
+effect fold_step(Walking($pending,$relation,$state)) when lt(0,size($pending)) => bind($value,list.head($pending),
+    [1,Walking(list.concat(raw_children($value),list.tail($pending)),$relation,apply($relation,[$state,$value]))]);
+effect raw_children($value) when or(eq(term.kind($value),5),eq(term.kind($value),0)) => term.children($value);
+effect[fallback] raw_children($value) => [];
+// A language can delimit nested scopes without teaching this traversal its AST.
+effect fold_with($value,$relation,$state,$children) => bind(Pruned($pending,$callback,$result,$policy),
+    rule.iterate("tree.pruned_step",Pruned([$value],$relation,$state,$children),1000000),$result);
+effect pruned_step(Pruned([],$relation,$state,$children)) => [0,Pruned([],$relation,$state,$children)];
+effect pruned_step(Pruned($pending,$relation,$state,$children)) when lt(0,size($pending)) => bind($value,list.head($pending),
+    [1,Pruned(list.concat(apply($children,[$value]),list.tail($pending)),$relation,apply($relation,[$state,$value]),$children)]);

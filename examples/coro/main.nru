@@ -1,0 +1,17 @@
+coro fn count(limit: i32) -> i32 {
+    var i = 0;
+    while i < limit {
+        yield i * 7;
+        i = i + 1;
+    }
+}
+
+fn main() -> i32 {
+    let values = count(4);
+    var total = 0;
+    while resume(values) {
+        total = total + current(values);
+    }
+    destroy(values);
+    return total;
+}

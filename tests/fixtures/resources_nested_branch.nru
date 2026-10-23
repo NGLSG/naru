@@ -1,0 +1,13 @@
+check {
+    own value: i32;
+    if ready {
+        if inner {
+            touch value;
+        } else {
+            touch value;
+        };
+    } else {
+        touch value;
+    };
+    move value;
+}

@@ -1,0 +1,17 @@
+extern "C" {
+    fn puts(s: *char) -> i32;
+    fn strlen(s: *char) -> i64;
+}
+fn sum(n: i32) -> i32 {
+    var i = 0;
+    var result = 0;
+    while i < n {
+        result = result + i;
+        i = i + 1;
+    }
+    return result;
+}
+
+fn main() -> i32 {
+return sum(7) * 2;
+ }

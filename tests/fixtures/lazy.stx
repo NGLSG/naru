@@ -1,0 +1,2 @@
+mod lazy_test;
+effect branch($flag) => choose($flag, Kept(), fail("unchosen branch evaluated"));

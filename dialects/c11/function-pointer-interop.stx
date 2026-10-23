@@ -1,0 +1,9 @@
+// Explicit host extension: function addresses stored in void* objects.
+// Used by unchanged TinyExpr sources on Naru's Windows x64 LLVM pointer ABI.
+// This does not claim ISO C11 implicit function/object-pointer compatibility.
+mod c11.function_pointer_interop;
+use c11.types;
+use control;
+
+effect c11.types.pointer_compatible(c11.types.FunctionType($r,$p,$v,$x),control.Void()) => 1;
+effect c11.types.pointer_compatible(control.Void(),c11.types.FunctionType($r,$p,$v,$x)) => 1;

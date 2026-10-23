@@ -1,0 +1,8 @@
+mod parse;
+
+// Opt-in local disambiguation. A language can compose this score with its own
+// context/type/AST facts, or use a different resolver with the same protocol.
+effect specific($category,$candidates,$context)
+    => rule.select($candidates,"parse.specific_rank",$context);
+effect specific_rank([$tree,$literals,$captures,$file,$line],$context)
+    => [$literals,sub(0,$captures)];

@@ -1,0 +1,4 @@
+mod pkg.inner;
+use shared;
+
+effect answer() => choose(eq(shared.answer(),42),Nested(),fail("shared namespace root import failed"));

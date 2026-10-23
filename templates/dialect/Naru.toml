@@ -1,0 +1,22 @@
+[package]
+name = "__PACKAGE_NAME__"
+version = "0.1.0"
+entry = "examples/main.nru"
+
+[exports]
+"__MODULE_NAME__" = "rules/main.stx"
+
+[dependencies]
+std = { path = ".naru/packages/naru-stdlib", package = "naru-stdlib", version = "^0.2.0" }
+
+[language]
+dialects = ["std/base", "__MODULE_NAME__"]
+relation = "base.emit_program"
+unit = "program"
+
+[backend]
+target = "exe"
+opt_level = 2
+
+[build]
+output_dir = "target"

@@ -1,0 +1,2 @@
+mod shared;
+fn shared_b() -> i32 { return 2; }

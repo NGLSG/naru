@@ -1,0 +1,5 @@
+mod operator_conflict;
+use operators;
+use types;
+effect operators.extension("+", [Signed(32), Unsigned(8)], $environment)
+    => operators.Candidate([Signed(32), Unsigned(8)], Signed(32), operators.FunctionTarget("other"));

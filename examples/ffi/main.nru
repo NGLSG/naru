@@ -1,0 +1,9 @@
+extern "C" {
+    fn puts(text: *char) -> i32;
+}
+
+fn main() -> i32 {
+    let written = puts("Naru: project dialects and automatic C linking");
+    if written < 0 { return 1; }
+    return 42;
+}

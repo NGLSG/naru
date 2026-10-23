@@ -1,0 +1,518 @@
+{
+  "format": 1,
+  "target": "windows-x86_64-llp64",
+  "scope": "C11 declaration/linkage and obsolescent function model; partial clause acceptance",
+  "cases": [
+    {
+      "id": "block-extern-inherits-static",
+      "source": "static int n=42;int main(void){extern int n;return n;}",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "block-extern-relinks-shadow",
+      "source": "int n=42;int main(void){int n=1;{extern int n;return n;}}",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "block-extern-repeat",
+      "source": "int n=42;int main(void){extern int n;extern int n;return n;}",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "block-prototype-before-later-definition",
+      "source": "int main(void){int answer(void);return answer();}int answer(void){return 42;}",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "block-extern-only-linker",
+      "source": "int main(void){extern int abs(int);return abs(-42);}",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "composite-recursive-pointer-array",
+      "source": "extern int(*p)[];extern int(*p)[2];int a[2]={20,22};int(*p)[2]=&a;int main(void){return (*p)[0]+(*p)[1];}",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "incomplete-return-address",
+      "source": "struct S;struct S f(void);struct S(*p)(void)=f;struct S{int n;};struct S f(void){struct S s={42};return s;}int main(void){return p().n;}",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "later-array-must-not-repair-sizeof",
+      "source": "extern int a[];int f(void){return sizeof a;}int a[2];int main(void){return 42;}",
+      "reject": "complete C array",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "later-tag-must-not-repair-call",
+      "source": "struct S;struct S f(void);int g(void){(void)f();return 42;}struct S{int n;};struct S f(void){struct S s={42};return s;}int main(void){return g();}",
+      "reject": "incomplete C aggregate",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "block-extern-initializer-rejected",
+      "source": "int main(void){extern int n=42;return n;}",
+      "reject": "block linked declaration",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "block-static-function-rejected",
+      "source": "int main(void){static int f(void);return 42;}",
+      "reject": "block function declaration",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "block-auto-extern-conflict",
+      "source": "int main(void){int n=1;extern int n;return 42;}",
+      "reject": "another local declaration",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "incompatible-array-bounds",
+      "source": "extern int a[2];extern int a[3];int main(void){return 42;}",
+      "reject": "incompatible C types",
+      "feature": "linkage",
+      "work_item": "linkage-and-local-extern",
+      "clause": "6.2.2; 6.2.7; 6.7"
+    },
+    {
+      "id": "old-char-abi",
+      "source": "int answer(n) char n;{return n;}int main(void){return answer((char)42);}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "old-float-abi",
+      "source": "int answer(n) float n;{return n==42.0f?42:1;}int main(void){return answer(42.0f);}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "old-reordered-parameters",
+      "source": "int answer(a,b) int b;char a;{return a+b;}int main(void){return answer((char)20,22);}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "old-prototype-before-char",
+      "source": "int answer(int);int answer(n) char n;{return n;}int main(void){return answer(42);}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "old-prototype-after-char",
+      "source": "int answer(n) char n;{return n;}int answer(int);int main(void){return answer(42);}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "old-prototype-before-float",
+      "source": "int answer(double);int answer(n) float n;{return n==42.0f?42:1;}int main(void){return answer(42.0);}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "old-array-parameter",
+      "source": "int answer(a) int a[2];{return a[0]+a[1];}int main(void){int a[]={20,22};return answer(a);}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "old-recursive-call",
+      "source": "int answer(n) int n;{return n==0?42:answer(n-1);}int main(void){return answer(2);}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "old-empty-definition",
+      "source": "int answer(){return 42;}int main(void){return answer();}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "old-function-pointer",
+      "source": "int answer(n) char n;{return n;}int main(void){int(*p)(int)=answer;return p(42);}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "nonprototype-float-promotion",
+      "source": "int answer();int main(void){return answer(42.0f);}int answer(double x){return x==42.0?42:1;}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "nonprototype-char-promotion",
+      "source": "int answer();int main(void){char x=42;return answer(x);}int answer(int x){return x;}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "nonprototype-pointer-call",
+      "source": "int answer();int main(void){int(*p)()=answer;return p(42);}int answer(int n){return n;}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "nonprototype-block-declaration",
+      "source": "int answer(int n){return n;}int main(void){int answer();return answer(42);}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "nonprototype-system-link",
+      "source": "int main(void){extern int abs();return abs(-42);}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1; 6.5.2.2",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ],
+      "reference_note": "C11 obsolescent functions are permitted; suppress only their deprecation warnings."
+    },
+    {
+      "id": "old-char-incompatible-prototype",
+      "source": "int answer(char);int answer(n) char n;{return n;}int main(void){return 42;}",
+      "reject": "incompatible",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "old-float-incompatible-prototype",
+      "source": "int answer(float);int answer(n) float n;{return 42;}int main(void){return 42;}",
+      "reject": "incompatible",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "old-count-incompatible-prototype",
+      "source": "int answer(int,int);int answer(n) int n;{return n;}int main(void){return 42;}",
+      "reject": "incompatible",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "old-missing-parameter-type",
+      "source": "int answer(n){return n;}int main(void){return 42;}",
+      "reject": "requires a declaration",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "old-undeclared-parameter-name",
+      "source": "int answer(n) int x;{return 42;}int main(void){return 42;}",
+      "reject": "names no parameter",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "old-duplicate-parameter-type",
+      "source": "int answer(n) int n;int n;{return 42;}int main(void){return 42;}",
+      "reject": "duplicate C old-style",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "old-illegal-storage",
+      "source": "int answer(n) static int n;{return 42;}int main(void){return 42;}",
+      "reject": "storage must be register",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "identifier-list-nondefinition",
+      "source": "int answer(n);int main(void){return 42;}",
+      "reject": "requires a function definition",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "unspecified-to-float-prototype",
+      "source": "int answer();int answer(float n){return 42;}int main(void){return 42;}",
+      "reject": "incompatible",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "unspecified-to-variadic-prototype",
+      "source": "int answer();int answer(int,...);int main(void){return 42;}",
+      "reject": "incompatible",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "type-use-after-definition-in-expression",
+      "source": "int main(void){int n=sizeof(struct S{int n;})+sizeof(struct S);return n+34;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.7.2.3; 6.5.2.3",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "member-use-after-definition-in-expression",
+      "source": "int main(void){struct S*p=0;int n=sizeof(struct S{int n;})+sizeof(p->n);return n+34;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.7.2.3; 6.5.2.3",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "compound-type-point-member",
+      "source": "int main(void){return ((struct S{int n;}){42}).n;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.7.2.3; 6.5.2.3",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "member-point-static-address",
+      "source": "struct S{int n;};struct S s={42};int*p=&s.n;int main(void){return *p;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.7.2.3; 6.5.2.3",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "nested-incomplete-return-pointer-size",
+      "source": "struct S;int main(void){return sizeof(struct S(*)(void))+34;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.7.2.3; 6.5.2.3",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "old-static-address",
+      "source": "int answer(n) int n;{return n;}int(*p)(int)=&answer;int main(void){return p(42);}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.7.2.3; 6.5.2.3",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "unspecified-static-address",
+      "source": "int answer();int(*p)()=&answer;int answer(int n){return n;}int main(void){return p(42);}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.7.2.3; 6.5.2.3",
+      "reference_flags": [
+        "-Wno-strict-prototypes",
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "type-use-before-definition-in-expression",
+      "source": "int main(void){int n=sizeof(struct S)+sizeof(struct S{int n;});return 42;}",
+      "reject": "incomplete C aggregate",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.7.2.3; 6.5.2.3"
+    },
+    {
+      "id": "member-use-before-definition-in-expression",
+      "source": "int main(void){struct S*p=0;int n=p->n+sizeof(struct S{int n;});return 42;}",
+      "reject": "incomplete C aggregate",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.7.2.3; 6.5.2.3"
+    },
+    {
+      "id": "old-register-abi",
+      "source": "int answer(n) register char n;{return n;}int main(void){return answer((char)42);}",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.7.6.3; 6.9.1",
+      "reference_flags": [
+        "-Wno-deprecated-non-prototype"
+      ]
+    },
+    {
+      "id": "old-register-address-rejected",
+      "source": "int answer(n) register int n;{return *(&n);}int main(void){return 42;}",
+      "reject": "address of a C register object",
+      "feature": "functions",
+      "work_item": "function-declaration-model",
+      "clause": "6.5.3.2; 6.9.1",
+      "reference_flags": [
+        "-Wno-deprecated-non-prototype"
+      ]
+    }
+  ]
+}

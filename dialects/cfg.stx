@@ -1,0 +1,40 @@
+// Labels and dispatch are shared CFG tools, independent of source syntax.
+mod cfg;
+use base;
+use tree;
+use types;
+
+effect base.prepare_storage(Label($identity,$next),$entry,$env)
+    => base.prepare_storage($next,$entry,env.put($env,TargetKey($identity),mlir.block([])));
+effect base.prepare_storage(Jump($identity),$entry,$env) => $env;
+effect base.prepare_storage(Detached($terminal,$next),$entry,$env)
+    => base.prepare_storage($next,$entry,base.prepare_storage($terminal,$entry,$env));
+effect base.lower_flow(Label($identity,$next),$env,$block,$continuation)
+    => bind($target,env.get($env,TargetKey($identity)),seq(mlir.in_block($block,base.jump($target)),
+        list.prepend($block,base.lower_flow($next,$env,$target,$continuation))));
+effect base.lower_flow(Jump($identity),$env,$block,$continuation)
+    => seq(mlir.in_block($block,base.jump(env.get($env,TargetKey($identity)))),[$block]);
+effect base.lower_flow(Detached($terminal,$next),$env,$block,$continuation)
+    => list.concat(base.lower_flow($terminal,$env,$block,$continuation),base.lower_flow($next,$env,mlir.block([]),$continuation));
+effect base.flow_terminal(Jump($identity)) => 1;
+effect base.flow_terminal(Label($identity,$next)) => base.flow_terminal($next);
+effect base.flow_terminal(Detached($terminal,$next)) => base.flow_terminal($next);
+effect base.keep_continuation($next) => tree.fold($next,"cfg.has_label",0);
+effect has_label($seen,Label($identity,$next)) => 1;
+effect[fallback] has_label($seen,$node) => $seen;
+
+// cases contain [integerValue, identity]. The default identity is optional.
+// All targets have been predeclared by storage planning before dispatch.
+effect dispatch($selector,$cases,$default,$exit,$env) => bind($count,size($cases),
+    mlir.op("cf.switch",[base.lower($selector,$env)],[],list.concat([
+        RawAttr("operandSegmentSizes","array<i32: 1, 0, 0>"),
+        RawAttr("case_operand_segments",concat("array<i32",concat(choose(eq($count,0),"",concat(": ",types.join(list.map("cfg.zero_segment",$cases)))),">")))],
+        choose(eq($count,0),[],[RawAttr("case_values",concat("dense<[",concat(types.join(list.map("cfg.case_value",$cases)),
+            concat("]> : vector<",concat(text($count),concat("x",concat(types.repr(arg($selector,0)),">")))))))])),[],
+        list.prepend(default_target($default,$exit,$env),case_targets($cases,$env))));
+effect zero_segment($case) => "0";
+effect case_value([$value,$identity]) => text($value);
+effect case_targets($cases,$env) => bind(Targets($out,$scope),list.fold("cfg.case_target",$cases,Targets([],$env)),list.reverse($out));
+effect case_target(Targets($out,$env),[$value,$identity]) => Targets(list.prepend(env.get($env,TargetKey($identity)),$out),$env);
+effect default_target([],$exit,$env) => $exit;
+effect default_target([$identity],$exit,$env) => env.get($env,TargetKey($identity));

@@ -1,0 +1,5 @@
+// A second surface grammar reuses base.Function and all its lowering rules.
+mod alternate;
+use base;
+
+syntax item `def $name:ident = $e:expr;` => Function($name, $e);

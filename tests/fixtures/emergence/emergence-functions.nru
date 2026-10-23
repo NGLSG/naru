@@ -1,0 +1,3 @@
+fn plus(x: i32) -> i32 { return x + 2; }
+fn apply(f: fn(i32) -> i32, x: i32) -> i32 { return f(x); }
+fn main() -> i32 { let f = fn plus; return apply(f,40); }

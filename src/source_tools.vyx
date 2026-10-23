@@ -1,0 +1,497 @@
+module naru;
+use std.collections;
+use std.string;
+use std.fs;
+
+extern "C" {
+    fn naru_target_toolchain(json: rawptr, length: i64) -> rawptr;
+    fn naru_target_error() -> rawptr;
+    fn naru_host_clock_snapshot() -> rawptr;
+}
+
+// Source data facilities. All language policy is supplied by ordinary rules.
+public fn source_tool_name(name: string) -> bool {
+    return name == "source.read" || name == "source.exists" || name == "source.path"
+        || name == "source.directory" || name == "source.rule_path" || name == "source.error"
+        || name == "source.parse_tokens" || name == "source.parse_expression"
+        || name == "text.lex" || name == "text.replace" || name == "text.split"
+        || name == "text.lines" || name == "text.line_spans" || name == "text.columns" || name == "text.expand_tabs"
+        || name == "text.join" || name == "text.trim" || name == "text.byte"
+        || name == "text.lower" || name == "text.quote" || name == "text.unquote"
+        || name == "text.codepoints" || name == "text.from_codepoints" || name == "text.from_bytes" || name == "text.is_ascii"
+        || name == "list.reverse" || name == "list.slice" || name == "target.toolchain" || name == "source.clock_snapshot";
+}
+
+public fn lexical_at(source: string, offset: i64, text: string) -> bool {
+    return text.len > 0 && offset + text.len <= source.len && source.substring(offset, offset + text.len) == text;
+}
+public fn lexical_member(chars: string, code: i32) -> bool {
+    var i: i64 = 0;
+    while (i < chars.len) { if (str_char_at(chars, i) == code) { return true; } i = i + 1; }
+    return false;
+}
+// Token row: [kind, raw spelling, file, line, column, preceding whitespace].
+public fn lexical_row(e: &mut Engine, rows: i64, kind: i32, raw: string,
+    path: string, line: i64, column: i64, space: bool) {
+    let row = e.add_node(5, "", path, line, column);
+    e.add_child(row, e.add_node(2, naru_number(kind as i64), path, line, column));
+    e.add_child(row, e.add_node(1, raw, path, line, column));
+    e.add_child(row, e.add_node(1, path, path, line, column));
+    e.add_child(row, e.add_node(2, naru_number(line), path, line, column));
+    e.add_child(row, e.add_node(2, naru_number(column), path, line, column));
+    e.add_child(row, bool_node(e, space)); e.complete_value(row); e.add_child(rows, row);
+}
+
+// Eight configuration fields: identifier start/continuation, number start/
+// continuation, sign predecessors, punctuators, comment pairs, quote characters.
+// No keyword, preprocessing directive, source type or operator meaning here.
+public fn lexical_scan(e: &mut Engine, source: string, path: string, config: i64) -> i64 {
+    if (!ir_list(e, config) || e.node(config).count != 8) { e.reject("text.lex requires eight configuration fields"); return -1; }
+    let starts = scalar_text(e, e.child(config, 0)); let parts = scalar_text(e, e.child(config, 1));
+    let num_starts = scalar_text(e, e.child(config, 2)); let num_parts = scalar_text(e, e.child(config, 3));
+    let signs = scalar_text(e, e.child(config, 4)); let punctuation = e.child(config, 5);
+    let comments = e.child(config, 6); let quotes = scalar_text(e, e.child(config, 7));
+    if (!ir_list(e, punctuation) || !ir_list(e, comments) || !e.good()) { return -1; }
+    let result = e.add_node(5, "", path, 1, 1);
+    var offset: i64 = 0; var line: i64 = 1; var column: i64 = 1; var space = false;
+    while (offset < source.len && e.good()) {
+        let c = str_char_at(source, offset);
+        if (c == 10) {
+            lexical_row(e, result, 7, "\n", path, line, column, space);
+            offset = offset + 1; line = line + 1; column = 1; space = true; continue;
+        }
+        if (c == 32 || c == 9 || c == 13 || c == 11 || c == 12) {
+            offset = offset + 1; column = column + 1; space = true; continue;
+        }
+        var open = ""; var close = ""; var edge = e.node(comments).first;
+        while (edge >= 0 && e.good()) {
+            let item = e.edge(edge); let pair = item.value;
+            if (!ir_list(e, pair) || e.node(pair).count != 2) { e.reject("comment configuration requires delimiter pairs"); break; }
+            let candidate = scalar_text(e, e.child(pair, 0)); let end = scalar_text(e, e.child(pair, 1));
+            if (candidate.len == 0 || end.len == 0) { e.reject("comment delimiters must be nonempty"); break; }
+            if (candidate.len > open.len && lexical_at(source, offset, candidate)) { open = candidate; close = end; }
+            edge = item.next;
+        }
+        if (!e.good()) { return -1; }
+        if (open.len > 0) {
+            let start_line = line; let start_column = column;
+            offset = offset + open.len; column = column + open.len;
+            while (offset < source.len && !lexical_at(source, offset, close)) {
+                if (str_char_at(source, offset) == 10) {
+                    lexical_row(e, result, 7, "\n", path, line, column, true); line = line + 1; column = 1;
+                } else { column = column + 1; }
+                offset = offset + 1;
+            }
+            if (close == "\n") { space = true; continue; }
+            if (offset >= source.len) { e.at_error(path, start_line, start_column, "unterminated block comment"); return -1; }
+            offset = offset + close.len; column = column + close.len; space = true; continue;
+        }
+        let start = offset; let token_line = line; let token_column = column; var kind: i32 = 5;
+        if (lexical_member(starts, c)) {
+            kind = 1; offset = offset + 1;
+            while (offset < source.len && lexical_member(parts, str_char_at(source, offset))) { offset = offset + 1; }
+        } else if (lexical_member(num_starts, c) && (c != 46 || naru_digit(str_char_at(source, offset + 1)))) {
+            kind = 2; offset = offset + 1;
+            while (offset < source.len) {
+                let next = str_char_at(source, offset);
+                if (lexical_member(num_parts, next) || ((next == 43 || next == 45) && lexical_member(signs, str_char_at(source, offset - 1)))) { offset = offset + 1; }
+                else { break; }
+            }
+        } else if (lexical_member(quotes, c)) {
+            kind = 3; offset = offset + 1; var closed = false;
+            while (offset < source.len) {
+                let next = str_char_at(source, offset);
+                if (next == 10 || next == 13) { break; }
+                if (next == c) { offset = offset + 1; closed = true; break; }
+                if (next == 92) { offset = offset + 2; } else { offset = offset + 1; }
+            }
+            if (!closed || offset > source.len) { e.at_error(path, token_line, token_column, "unterminated quotation"); return -1; }
+        } else {
+            var longest: i64 = 0; edge = e.node(punctuation).first;
+            while (edge >= 0 && e.good()) {
+                let item = e.edge(edge); let spelling = scalar_text(e, item.value);
+                if (spelling.len > longest && lexical_at(source, offset, spelling)) { longest = spelling.len; }
+                edge = item.next;
+            }
+            if (longest == 0) { e.at_error(path, line, column, "unrecognized source byte"); return -1; }
+            offset = offset + longest;
+        }
+        column = column + offset - start;
+        lexical_row(e, result, kind, source.substring(start, offset), path, token_line, token_column, space); space = false;
+    }
+    return e.good() ? e.complete_value(result) : -1;
+}
+
+public fn source_rows_stream(e: &mut Engine, rows: i64) -> Stream {
+    var stream = Stream { tokens: Vec::<Token>.new(), pos: 0, path: "<dialect-source>", diagnostic: "" };
+    if (!ir_list(e, rows)) { return stream; }
+    var edge = e.node(rows).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edge(edge); let row = item.value;
+        if (!ir_list(e, row) || e.node(row).count < 5) { e.reject("source token requires kind, spelling, file, line and column"); break; }
+        let kind = scalar_int(e, e.child(row, 0)); let raw = scalar_text(e, e.child(row, 1));
+        let path = scalar_text(e, e.child(row, 2)); let line = scalar_int(e, e.child(row, 3)); let column = scalar_int(e, e.child(row, 4));
+        if (line < 1 || column < 1 || (kind != 1 && kind != 2 && kind != 3 && kind != 5 && kind != 6 && kind != 8 && kind != 14)) { e.reject("invalid parser token kind or location"); break; }
+        if (stream.tokens.len == 0) { stream.path = str_dup(path); }
+        if (kind == 5) {
+            // Syntax templates use the core's punctuation segmentation. An
+            // external lexer may keep a longer punctuator as one data token;
+            // normalize only its punctuation, without interpreting its meaning.
+            let punctuation = tokenize(raw, path); var index: i64 = 0;
+            while (index + 1 < punctuation.tokens.len) {
+                let part = punctuation.tokens.get(index);
+                stream.tokens.push(Token { kind: part.kind, text: part.text, file: str_dup(path), line: line, column: column + part.column - 1 });
+                index = index + 1;
+            }
+        } else { stream.tokens.push(Token { kind: kind == 2 ? 6 : kind as i32, text: str_dup(raw), file: str_dup(path), line: line, column: column }); }
+        edge = item.next;
+    }
+    var file = stream.path; var line: i64 = 1; var column: i64 = 1;
+    if (stream.tokens.len > 0) { let last = stream.tokens.get(stream.tokens.len - 1); file = last.file; line = last.line; column = last.column + last.text.len; }
+    stream.tokens.push(Token { kind: 0, text: "", file: file, line: line, column: column }); return stream;
+}
+
+public fn decode_quotation(e: &mut Engine, raw: string, origin: Node) -> string {
+    if (raw.len < 2 || str_char_at(raw, 0) != str_char_at(raw, raw.len - 1)) { e.reject("quotation delimiters do not match"); return ""; }
+    var out = std.string.StringBuilder.create(); var i: i64 = 1;
+    while (i < raw.len - 1 && e.good()) {
+        let c = str_char_at(raw, i); i = i + 1;
+        if (c != 92) { out.appendChar(c); continue; }
+        if (i >= raw.len - 1) { e.reject("incomplete escape sequence"); break; }
+        let esc = str_char_at(raw, i); i = i + 1;
+        if (esc == 110) { out.appendChar(10); } else if (esc == 114) { out.appendChar(13); }
+        else if (esc == 116) { out.appendChar(9); } else if (esc == 97) { out.appendChar(7); }
+        else if (esc == 98) { out.appendChar(8); } else if (esc == 102) { out.appendChar(12); }
+        else if (esc == 118) { out.appendChar(11); }
+        else if (esc == 92 || esc == 34 || esc == 39 || esc == 63) { out.appendChar(esc); }
+        else if (esc == 120 || (esc >= 48 && esc <= 55)) {
+            var value: i32 = 0; var count: i64 = 0; let hex = esc == 120;
+            if (!hex) { value = esc - 48; count = 1; }
+            while (i < raw.len - 1 && (hex || count < 3)) {
+                let digit = str_char_at(raw, i); var number: i32 = -1;
+                if (digit >= 48 && digit <= (hex ? 57 : 55)) { number = digit - 48; }
+                else if (hex && digit >= 97 && digit <= 102) { number = digit - 97 + 10; }
+                else if (hex && digit >= 65 && digit <= 70) { number = digit - 65 + 10; }
+                if (number < 0) { break; }
+                value = value * (hex ? 16 : 8) + number; count = count + 1; i = i + 1;
+                if (value > 255) { e.at_error(origin.file, origin.line, origin.column, "byte escape outside 0..255"); break; }
+            }
+            if (count == 0) { e.reject("hexadecimal escape requires a digit"); break; }
+            out.appendChar(value);
+        } else { e.reject("unsupported escape sequence"); }
+    }
+    let value = out.build(); return str_dup(value.as_str());
+}
+
+// Validate UTF-8 while building code-point boundaries once. Byte columns do
+// not allocate this index and can process arbitrary source bytes.
+public fn text_unicode_offsets(e: &mut Engine, value: string) -> Vec<i64> {
+    var offsets = Vec::<i64>.new(); var i: i64 = 0;
+    while (i < value.len && e.good()) {
+        offsets.push(i); let c = str_char_at(value,i); var width: i64 = 1;
+        if (c >= 128) {
+            if (c >= 194 && c <= 223) { width = 2; }
+            else if (c >= 224 && c <= 239) { width = 3; }
+            else if (c >= 240 && c <= 244) { width = 4; }
+            else { e.reject("invalid UTF-8 in Unicode columns"); return offsets; }
+            if (i + width > value.len) { e.reject("truncated UTF-8 in Unicode columns"); return offsets; }
+            var j: i64 = 1;
+            while (j < width) { let continuation = str_char_at(value,i+j);
+                if (continuation < 128 || continuation > 191) { e.reject("invalid UTF-8 continuation in Unicode columns"); return offsets; }
+                j = j + 1;
+            }
+            let second = str_char_at(value,i+1);
+            if ((c == 224 && second < 160) || (c == 237 && second > 159)
+                || (c == 240 && second < 144) || (c == 244 && second > 143)) { e.reject("invalid UTF-8 scalar in Unicode columns"); return offsets; }
+        }
+        i = i + width;
+    }
+    offsets.push(value.len); return offsets;
+}
+// Unicode representation only. Escape spellings, identifier ranges and
+// execution character-set policy remain in language-library rules.
+public fn text_codepoints(e: &mut Engine, value: string, origin: Node) -> i64 {
+    let offsets = text_unicode_offsets(e,value);
+    if (!e.good()) { return -1; }
+    let result = e.add_node(5,"",origin.file,origin.line,origin.column); var index: i64 = 0;
+    while (index + 1 < offsets.len) {
+        let start = offsets.get(index); let end = offsets.get(index + 1);
+        let first = str_char_at(value,start) as i64; var scalar = first;
+        if (end - start > 1) {
+            scalar = first % (end - start == 2 ? 32 : end - start == 3 ? 16 : 8);
+            var part = start + 1;
+            while (part < end) { scalar = scalar * 64 + (str_char_at(value,part) as i64) % 64; part = part + 1; }
+        }
+        e.add_child(result,e.add_node(2,naru_number(scalar),origin.file,origin.line,origin.column)); index = index + 1;
+    }
+    return e.complete_value(result);
+}
+public fn text_from_units(e: &mut Engine, values: i64, bytes: bool, origin: Node) -> i64 {
+    if (!ir_list(e,values)) { return -1; }
+    var out = std.string.StringBuilder.create(); var edge = e.node(values).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edge(edge); let value = scalar_int(e,item.value);
+        if (!e.good()) { return -1; }
+        if (value < 0 || (bytes && value > 255) || (!bytes && (value > 1114111 || (value >= 55296 && value <= 57343)))) {
+            e.reject(bytes ? "byte value outside 0..255" : "invalid Unicode scalar"); return -1;
+        }
+        if (bytes || value < 128) { out.appendChar(value as i32); }
+        else if (value < 2048) {
+            out.appendChar((192 + value / 64) as i32); out.appendChar((128 + value % 64) as i32);
+        } else if (value < 65536) {
+            out.appendChar((224 + value / 4096) as i32); out.appendChar((128 + (value / 64) % 64) as i32); out.appendChar((128 + value % 64) as i32);
+        } else {
+            out.appendChar((240 + value / 262144) as i32); out.appendChar((128 + (value / 4096) % 64) as i32);
+            out.appendChar((128 + (value / 64) % 64) as i32); out.appendChar((128 + value % 64) as i32);
+        }
+        edge = item.next;
+    }
+    let value = out.build(); return e.add_node(1,value.as_str(),origin.file,origin.line,origin.column);
+}
+public fn text_table_tool(e: &mut Engine, call: i64) -> i64 {
+    let n = e.node(call); let name = n.text;
+    let columns = name == "text.columns";
+    if (columns) {
+        if (n.count != 2 && n.count != 3) { e.reject("text.columns requires text, ranges and optional column unit"); return -1; }
+    } else if (!expect_arity(e,call,name == "text.expand_tabs" ? 2 : 1)) { return -1; }
+    let value = scalar_text(e,e.child(call,0)); if (!e.good()) { return -1; }
+    if (columns) {
+        let ranges = e.child(call,1); if (!ir_list(e,ranges)) { return -1; }
+        var unit = "byte";
+        if (n.count == 3) { unit = scalar_text(e,e.child(call,2)); }
+        if (unit != "byte" && unit != "unicode") { e.reject("column unit must be byte or unicode"); return -1; }
+        var offsets = Vec::<i64>.new(); var length = value.len;
+        if (unit == "unicode") { offsets = text_unicode_offsets(e,value); length = offsets.len - 1; }
+        let result = e.add_node(5,"",n.file,n.line,n.column); var edge = e.node(ranges).first;
+        while (edge >= 0 && e.good()) {
+            let item = e.edge(edge); let range = item.value;
+            if (!ir_list(e,range) || e.node(range).count != 2) { e.reject("column ranges must be [start, end] pairs"); return -1; }
+            var start = scalar_int(e,e.child(range,0)); var end = scalar_int(e,e.child(range,1));
+            if (!e.good()) { return -1; }
+            if (start < 0 || end < start) { e.reject("invalid column range"); return -1; }
+            if (start > length) { start = length; } if (end > length) { end = length; }
+            if (unit == "unicode" && e.good()) { start = offsets.get(start); end = offsets.get(end); }
+            e.add_child(result,e.add_node(1,value.substring(start,end),n.file,n.line,n.column)); edge = item.next;
+        }
+        return e.good() ? e.complete_value(result) : -1;
+    }
+    if (name == "text.expand_tabs") {
+        let width = scalar_int(e,e.child(call,1));
+        if (width < 1 || width > 1024) { e.reject("tab width must be between 1 and 1024"); return -1; }
+        let offsets = text_unicode_offsets(e,value); if (!e.good()) { return -1; }
+        var out = std.string.StringBuilder.create(); var column: i64 = 0; var i: i64 = 0;
+        while (i + 1 < offsets.len) {
+            let start = offsets.get(i); let end = offsets.get(i+1); let c = str_char_at(value,start);
+            if (c == 9) { let count = width - column % width; var j: i64 = 0;
+                while (j < count) { out.append(" "); j = j + 1; } column = column + count;
+            } else { out.append(value.substring(start,end)); column = c == 10 || c == 13 ? 0 : column + 1; }
+            i = i + 1;
+        }
+        let text = out.build(); return e.add_node(1,text.as_str(),n.file,n.line,n.column);
+    }
+    let result = e.add_node(5,"",n.file,n.line,n.column);
+    var start: i64 = 0; var i: i64 = 0; var line: i64 = 1;
+    while (start < value.len) {
+        while (i < value.len && str_char_at(value,i) != 10 && str_char_at(value,i) != 13) { i = i + 1; }
+        if (name == "text.lines") { e.add_child(result,e.add_node(1,value.substring(start,i),n.file,line,1)); }
+        else { let span = e.add_node(5,"",n.file,line,1);
+            e.add_child(span,e.add_node(2,naru_number(start),n.file,line,1));
+            e.add_child(span,e.add_node(2,naru_number(i),n.file,line,1));
+            e.add_child(span,e.add_node(2,naru_number(line),n.file,line,1));
+            e.add_child(result,e.complete_value(span));
+        }
+        if (i < value.len) { let cr = str_char_at(value,i) == 13; i = i + 1;
+            if (cr && i < value.len && str_char_at(value,i) == 10) { i = i + 1; } }
+        start = i; line = line + 1;
+    }
+    return e.complete_value(result);
+}
+
+// Parser callbacks share the caller's remaining rule budget in every API form.
+public fn source_parse(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64) -> i64 {
+    let n = e.node(call); let expression = n.text == "source.parse_expression";
+    let contextual = expression ? n.count == 4 : (n.count == 4 || n.count == 5);
+    if ((n.count < 2) || (n.count > (expression ? 4 : 5))) { e.reject("invalid source parser arity"); return -1; }
+    var stream = source_rows_stream(e,e.child(call,0)); if (!e.good()) { return -1; }
+    let category = scalar_text(e,e.child(call,1)); var grammar = new_grammar(e);
+    grammar.runtime.depth_limit = rt.depth_limit;
+    var context: i64 = -1; var commit = "";
+    if (contextual) { context = e.child(call,2); }
+    if (!expression && contextual) { commit = scalar_text(e,e.child(call,3)); }
+    if (n.count == 3 || (expression && n.count == 4) || (!expression && n.count == 5)) {
+        grammar.resolver = scalar_text(e,e.child(call,n.count - 1));
+    }
+    let items = e.add_node(5,"",n.file,n.line,n.column);
+    while ((expression || stream.peek().kind != 0) && e.good()) {
+        // Grammar steps are cumulative for this parser invocation, so the
+        // grammar's own parse budget remains independent from the caller's
+        // semantic rule budget.  Resolver/commit callbacks use the latter and
+        // are charged back separately after each item.
+        grammar.context = context;
+        let syntax_before = grammar.steps;
+        let remaining = rt.limit - rt.steps;
+        grammar.limit = e.parse_limit;
+        grammar.caller_limit = remaining;
+        grammar.caller_parser_steps = grammar.steps;
+        grammar.runtime.limit = remaining;
+        let before = stream.pos; let item = parse_category(e,&mut grammar,&mut stream,category,0,0);
+        rt.steps = rt.steps + (grammar.steps - syntax_before) + grammar.runtime.steps;
+        grammar.runtime.steps = 0;
+        if (rt.steps > rt.limit) { e.reject("rule evaluation budget exhausted"); return -1; }
+        if (item < 0 || stream.pos == before || (expression && stream.peek().kind != 0)) {
+            if (e.good()) { let at = stream.tokens.get(grammar.farthest < stream.tokens.len ? grammar.farthest : stream.tokens.len - 1);
+                e.at_error(at.file,at.line,at.column,"cannot parse " + (expression ? "complete " : "") + category + " near '" + at.text + "'"); }
+            return -1;
+        }
+        if (expression) { return item; }
+        if (!contextual) { e.add_child(items,item); }
+        else {
+            let saved = rt.parse_context; rt.parse_context = context;
+            let value = eval_term(e,rt,item,depth + 1);
+            let arguments = e.add_node(5,"",n.file,n.line,n.column);
+            e.add_child(arguments,context); e.add_child(arguments,value);
+            let result = e.good() ? rule_apply(e,rt,commit,arguments,depth + 1,n) : -1;
+            rt.parse_context = saved; e.release_frame(arguments);
+            if (!e.good() || result < 0 || !ir_list(e,result)) { return -1; }
+            if (e.node(result).count != 2) { e.reject("parser commit must return [context, item-list]"); return -1; }
+            context = e.child(result,0); let chunk = e.child(result,1);
+            if (!ir_list(e,chunk)) { return -1; }
+            var edge = e.node(chunk).first;
+            while (edge >= 0) { let part = e.edge(edge); e.add_child(items,part.value); edge = part.next; }
+        }
+    }
+    return e.good() ? e.complete_value(items) : -1;
+}
+
+public fn eval_source_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64) -> i64 {
+    let n = e.node(call); let name = n.text;
+    if (name.starts_with("source.") && rt.guard_depth > 0
+        && name != "source.path" && name != "source.directory" && name != "source.rule_path") {
+        e.reject("rule guards cannot perform source IO or invoke a parser"); return -1;
+    }
+    if (name == "source.clock_snapshot") {
+        if (!expect_arity(e, call, 0)) { return -1; }
+        if (e.host_clock_snapshot.len == 0) {
+            let pointer = naru_host_clock_snapshot();
+            if (pointer == null) { e.reject(str_dup(from_cstr(naru_target_error()))); return -1; }
+            e.host_clock_snapshot = str_dup(from_cstr(pointer));
+        }
+        var stream = tokenize(e.host_clock_snapshot, "<host-clock-snapshot>");
+        let facts = stx_term(e, &mut stream, 0);
+        if (stream.diagnostic.len > 0) { e.reject(stream.diagnostic); }
+        if (stream.peek().kind != 0 || facts < 0 || !ir_list(e, facts) || e.node(facts).count != 8) {
+            e.reject("invalid native host clock facts"); return -1;
+        }
+        return facts;
+    }
+    if (name == "target.toolchain") {
+        if (rt.guard_depth > 0) { e.reject("rule guards cannot discover host SDK installations"); return -1; }
+        if (!expect_arity(e, call, 1)) { return -1; }
+        let configuration = scalar_text(e, e.child(call, 0));
+        let pointer = naru_target_toolchain(configuration.c_str(), configuration.len);
+        if (pointer == null) { e.reject(str_dup(from_cstr(naru_target_error()))); return -1; }
+        let text = str_dup(from_cstr(pointer));
+        var stream = tokenize(text, "<target-toolchain>");
+        let pairs = stx_term(e, &mut stream, 0);
+        if (stream.diagnostic.len > 0) { e.reject(stream.diagnostic); }
+        if (stream.peek().kind != 0 || pairs < 0 || !ir_list(e, pairs)) { e.reject("invalid native target facts"); return -1; }
+        var result = e.add_node(11, "env", n.file, n.line, n.column);
+        var edge = e.node(pairs).first;
+        while (edge >= 0 && e.good()) {
+            let item = e.edge(edge); let pair = item.value;
+            if (!ir_list(e, pair) || e.node(pair).count != 2) { e.reject("invalid target fact pair"); return -1; }
+            result = env_insert(e, result, e.child(pair, 0), e.child(pair, 1));
+            edge = item.next;
+        }
+        return result;
+    }
+    if (name == "source.read" || name == "source.exists" || name == "source.directory" || name == "source.rule_path") {
+        if (!expect_arity(e, call, 1)) { return -1; }
+        let value = scalar_text(e, e.child(call, 0));
+        if (name == "source.rule_path") {
+            let id = naru_module_index(e, value);
+            if (id < 0) { e.reject("unknown rule module: " + value); return -1; }
+            return e.add_node(1, e.modules.get(id).path, n.file, n.line, n.column);
+        }
+        if (name == "source.directory") { return e.add_node(1, naru_dirname(value), n.file, n.line, n.column); }
+        if (name == "source.exists") { return bool_node(e, value.len > 0 && !naru_contains_nul(value) && fileExists(value) && !isDir(value)); }
+        let path = naru_absolute_path(value); var seen = false; var i: i64 = 0;
+        while (i < e.source_paths.len) { if (same_path(e.source_paths.get(i), path)) { seen = true; } i = i + 1; }
+        if (!seen) { e.source_paths.push(str_dup(path)); }
+        return e.add_node(1, naru_read_text(e, path), n.file, n.line, n.column);
+    }
+    if (name == "source.path") {
+        if (!expect_arity(e, call, 2)) { return -1; }
+        return e.add_node(1, naru_absolute_path(naru_join_path(scalar_text(e, e.child(call, 0)), scalar_text(e, e.child(call, 1)))), n.file, n.line, n.column);
+    }
+    if (name == "source.error") {
+        if (!expect_arity(e, call, 4)) { return -1; }
+        e.at_error(scalar_text(e, e.child(call, 0)), scalar_int(e, e.child(call, 1)), scalar_int(e, e.child(call, 2)), scalar_text(e, e.child(call, 3))); return -1;
+    }
+    if (name == "source.parse_tokens" || name == "source.parse_expression") { return source_parse(e,rt,call,depth); }
+    if (name == "text.lines" || name == "text.line_spans" || name == "text.columns" || name == "text.expand_tabs") { return text_table_tool(e,call); }
+    if (name == "text.codepoints" || name == "text.from_codepoints" || name == "text.from_bytes") {
+        if (!expect_arity(e,call,1)) { return -1; }
+        if (name == "text.codepoints") { return text_codepoints(e,scalar_text(e,e.child(call,0)),n); }
+        return text_from_units(e,e.child(call,0),name == "text.from_bytes",n);
+    }
+    if (name == "text.lex") {
+        if (!expect_arity(e, call, 3)) { return -1; }
+        return lexical_scan(e, scalar_text(e, e.child(call, 0)), scalar_text(e, e.child(call, 1)), e.child(call, 2));
+    }
+    if (name == "list.reverse" || name == "list.slice") {
+        if (!expect_arity(e, call, name == "list.reverse" ? 1 : 3)) { return -1; }
+        let list = e.child(call, 0); if (!ir_list(e, list)) { return -1; }
+        let count = e.node(list).count; var start: i64 = 0; var end = count;
+        if (name == "list.slice") { start = scalar_int(e, e.child(call, 1)); end = scalar_int(e, e.child(call, 2)); }
+        if (start < 0 || end < start || end > count) { e.reject("invalid list slice bounds"); return -1; }
+        var values = Vec::<i64>.new(); var edge = e.node(list).first;
+        while (edge >= 0) { let item = e.edge(edge); values.push(item.value); edge = item.next; }
+        let result = e.add_node(5, "", n.file, n.line, n.column); var i = start;
+        while (i < end) { e.add_child(result, values.get(name == "list.reverse" ? count - i - 1 : i)); i = i + 1; } return e.complete_value(result);
+    }
+    let arity: i64 = name == "text.replace" ? 3 : (name == "text.split" || name == "text.join" || name == "text.byte" ? 2 : 1);
+    if (!expect_arity(e, call, arity)) { return -1; }
+    if (name == "text.join") {
+        let rows = e.child(call, 0); if (!ir_list(e, rows)) { return -1; }
+        let separator = scalar_text(e, e.child(call, 1)); var out = std.string.StringBuilder.create(); var first = true;
+        var edge = e.node(rows).first;
+        while (edge >= 0 && e.good()) { let item = e.edge(edge); if (!first) { out.append(separator); } out.append(scalar_text(e, item.value)); first = false; edge = item.next; }
+        let value = out.build(); return e.add_node(1, value.as_str(), n.file, n.line, n.column);
+    }
+    let value = scalar_text(e, e.child(call, 0));
+    if (name == "text.is_ascii") {
+        var index: i64 = 0;
+        while (index < value.len) {
+            if (str_char_at(value,index) >= 128) { return e.add_node(2,"0",n.file,n.line,n.column); }
+            index = index + 1;
+        }
+        return e.add_node(2,"1",n.file,n.line,n.column);
+    }
+    if (name == "text.byte") {
+        let index = scalar_int(e, e.child(call, 1));
+        if (index < 0 || index >= value.len) { e.reject("text byte index outside input"); return -1; }
+        return e.add_node(2, naru_number(str_char_at(value, index) as i64), n.file, n.line, n.column);
+    }
+    if (name == "text.replace") { return e.add_node(1, str_replace(value, scalar_text(e, e.child(call, 1)), scalar_text(e, e.child(call, 2))), n.file, n.line, n.column); }
+    if (name == "text.lower") { return e.add_node(1, str_to_lower(value), n.file, n.line, n.column); }
+    if (name == "text.quote") { return e.add_node(1, quoted(value), n.file, n.line, n.column); }
+    if (name == "text.unquote") { return e.add_node(1, decode_quotation(e, value, n), n.file, n.line, n.column); }
+    if (name == "text.trim") {
+        var start: i64 = 0; var end = value.len;
+        while (start < end && str_char_at(value, start) <= 32) { start = start + 1; }
+        while (start < end && str_char_at(value, end - 1) <= 32) { end = end - 1; }
+        return e.add_node(1, value.substring(start, end), n.file, n.line, n.column);
+    }
+    if (name == "text.split") {
+        let separator = scalar_text(e, e.child(call, 1));
+        if (separator.len == 0) { e.reject("text.split requires a nonempty separator"); return -1; }
+        let result = e.add_node(5, "", n.file, n.line, n.column); var start: i64 = 0; var i: i64 = 0;
+        while (i + separator.len <= value.len) {
+            if (lexical_at(value, i, separator)) { e.add_child(result, e.add_node(1, value.substring(start, i), n.file, n.line, n.column)); i = i + separator.len; start = i; }
+            else { i = i + 1; }
+        }
+        e.add_child(result, e.add_node(1, value.substring(start, value.len), n.file, n.line, n.column)); return e.complete_value(result);
+    }
+    return -2;
+}

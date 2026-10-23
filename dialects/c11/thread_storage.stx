@@ -1,0 +1,96 @@
+// Thread duration is an object storage fact, independent of its C type/linkage.
+mod c11.thread_storage;
+use c11.specifiers;
+use c11.syntax;
+use c11.types;
+use c11.sema;
+use c11.scopes;
+use c11.objects;
+use c11.names;
+use c11.constants;
+use c11.initializers;
+use c11.functions;
+use c11.layout;
+use c11.msvc;
+use externc;
+use tree;
+use base;
+use control;
+
+syntax c11.declaration_piece `_Thread_local` => c11.specifiers.Storage(ThreadStorage("none"));
+effect c11.specifiers.storage(ThreadStorage("none"),"static") => ThreadStorage("static");
+effect c11.specifiers.storage(ThreadStorage("none"),"extern") => ThreadStorage("extern");
+effect c11.specifiers.storage("static",ThreadStorage("none")) => ThreadStorage("static");
+effect c11.specifiers.storage("extern",ThreadStorage("none")) => ThreadStorage("extern");
+effect c11.specifiers.storage_type($type,ThreadStorage($class)) => c11.thread_storage.object_type(c11.types.unqualified($type));
+effect object_type(c11.types.FunctionType($result,$params,$variadic,$prototype)) => fail("C _Thread_local cannot declare a function");
+effect object_type(control.Void()) => fail("C _Thread_local requires an object type");
+effect[fallback] object_type($type) => 1;
+effect c11.syntax.file_storage(ThreadStorage($class)) => c11.syntax.file_storage($class);
+effect c11.syntax.make_declaration($name,$type,$value,ThreadStorage($class))
+    => ThreadObject(c11.syntax.make_declaration($name,$type,$value,$class));
+effect c11.syntax.local_declaration($name,$type,$value,ThreadStorage("static"),$body)
+    => ThreadDeclare($name,$type,choose(eq($value,c11.syntax.Uninitialized()),c11.syntax.Zero($type),$value),$body);
+effect c11.syntax.local_declaration($name,$type,$value,ThreadStorage("none"),$body)
+    => fail("C block _Thread_local declaration requires static or extern");
+effect c11.scopes.linked_local($type,ThreadStorage("extern")) => 1;
+effect c11.scopes.link_storage(ThreadStorage("extern"),$type) => c11.thread_storage.object_type(c11.types.unqualified($type));
+effect c11.scopes.link_declaration($item,c11.syntax.Specifiers($type,ThreadStorage("extern"),$flags))
+    => ThreadObject($item);
+effect c11.syntax.append(ThreadDeclare($name,$type,$value,$rest),$next)
+    => ThreadDeclare($name,$type,$value,c11.syntax.append($rest,$next));
+effect c11.sema.for_continues(ThreadDeclare($name,$type,$value,$rest),$step)
+    => ThreadDeclare($name,$type,$value,c11.sema.for_continues($rest,$step));
+effect c11.objects.block_link_children(ThreadDeclare($name,$type,$value,$rest)) => [$rest];
+
+effect c11.sema.item_name(ThreadObject($item)) => c11.sema.item_name($item);
+effect c11.scopes.file_binding($context,ThreadObject($item)) => c11.scopes.file_binding($context,$item);
+effect c11.objects.declared_names(ThreadObject($item)) => c11.objects.declared_names($item);
+effect c11.objects.point_item(ThreadObject($item),$tags) => ThreadObject(c11.objects.point_item($item,$tags));
+effect c11.objects.block_link_children(ThreadObject($item)) => [$item];
+effect c11.sema.declare(ThreadObject($item),$rest,$env)
+    => bind($prior,choose(env.contains($env,DeclaringThreadKey()),env.get($env,DeclaringThreadKey()),0),
+        bind($declared,c11.sema.declare($item,[],env.put($env,DeclaringThreadKey(),1)),
+            c11.sema.declarations($rest,env.put($declared,DeclaringThreadKey(),$prior))));
+effect c11.sema.object_storage_environment($name,$env)
+    => bind($thread,choose(env.contains($env,DeclaringThreadKey()),env.get($env,DeclaringThreadKey()),0),
+        seq(choose(env.contains($env,StorageKey($name)),
+            choose(eq(env.get($env,StorageKey($name)),$thread),1,fail("C object declarations disagree on _Thread_local storage")),1),
+            env.put($env,StorageKey($name),$thread)));
+effect c11.sema.prepare_item(ThreadObject($item),$rest,$env,$seen) => c11.sema.prepare_item($item,$rest,$env,$seen);
+effect thread_symbol($name,$env) => choose(env.contains($env,StorageKey($name)),env.get($env,StorageKey($name)),0);
+// Guarded so function annotations and object storage annotations never compete.
+effect c11.sema.language_annotations($item,$name,$env) when thread_symbol($name,$env) => CheckedThreadObject($item);
+effect base.lower_function(CheckedThreadObject($item)) => c11.sema.lower_symbol(CheckedThreadObject($item),env.empty());
+effect c11.sema.lower_symbol(CheckedThreadObject($item),$policy)
+    => c11.sema.lower_symbol($item,c11.sema.symbol_attr($policy,"tls_mode",Attr("tls_mode",1,"i64")));
+
+// Hoist one symbol per lexical declaration. The native TLS global supplies
+// per-thread storage and constant initialization; calls do not reinitialize it.
+effect externc.rewrite_enter(ThreadDeclare($name,$type,$value,$next),$context,externc.Hoisting($globals,$pool))
+    => bind([$symbol,$next_pool,$shared],c11.sema.static_symbol($pool),
+        tree.Descend([$value,$next],$context,
+            ThreadCookie($name,$type,$symbol,$shared,c11.initializers.static_identity($context,$name),c11.initializers.static_tags($context)),
+            externc.Hoisting($globals,$next_pool)));
+effect externc.rewrite_leave(ThreadCookie($name,$type,$symbol,$shared,$identity,$tags),[$initializer,$body],$context,externc.Hoisting($globals,$pool))
+    => [c11.sema.StaticBinding($name,$type,$symbol,$body),externc.Hoisting(
+        list.prepend(c11.initializers.static_item($identity,$tags,ThreadObject(
+            choose($shared,c11.syntax.InlineObject(c11.syntax.Global($symbol,$type,$initializer)),
+                c11.syntax.Internal(c11.syntax.Global($symbol,$type,$initializer))))),$globals),$pool)];
+effect c11.functions.source_fact($out,ThreadDeclare($name,$type,$value,$next)) => list.prepend(c11.functions.StaticObject($type),$out);
+effect c11.functions.source_children(ThreadDeclare($name,$type,$value,$next)) => [$value,$next];
+
+// A thread object's address is evaluated for the executing thread. C address
+// constants require static duration; reject TLS relocations in initializers.
+effect c11.constants.storage_address_constant(c11.sema.GlobalSlot($type,$symbol),$name,$env) when thread_symbol($symbol,$env)
+    => fail("C thread object address is not a static address constant");
+effect c11.constants.static_binding_environment(c11.sema.GlobalSlot($type,$symbol),$env) when thread_symbol($symbol,$env)
+    => fail("C thread object address is not a static address constant");
+
+// System header spelling uses the same storage facts, including redeclarations.
+syntax c11.msvc.advisory `thread` => c11.msvc.Advisory("thread");
+effect c11.msvc.apply_advisory(c11.msvc.Advisory("thread"),$items) => list.map("c11.thread_storage.mark_thread",$items);
+effect mark_thread($item) => ThreadObject($item);
+effect c11.msvc.validate_leaf_advisory(c11.msvc.Advisory("thread"),c11.syntax.Global($symbol,$type,$value)) => c11.thread_storage.object_type(c11.types.unqualified($type));
+effect c11.msvc.validate_leaf_advisory(c11.msvc.Advisory("thread"),c11.syntax.ExternalGlobal($symbol,$type)) => c11.thread_storage.object_type(c11.types.unqualified($type));
+effect c11.msvc.validate_advisory($attribute,ThreadObject($item)) => c11.msvc.validate_advisory($attribute,$item);

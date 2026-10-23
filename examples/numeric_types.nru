@@ -1,0 +1,26 @@
+mod numeric_types;
+
+fn wide() -> u128 {
+    return 340282366920938463463374607431768211455u128;
+}
+fn precise() -> f64 {
+    let a: f64 = 1.25;
+    return a + 2.5;
+}
+fn signed_div(a: i64, b: i64) -> i64 { return a / b; }
+fn unsigned_div(a: u64, b: u64) -> u64 { return a / b; }
+fn negative() -> i8 { return -128; }
+fn odd_width() -> i<257> { return 115792089237316195423570985008687907853269984665640564039457584007913129639935; }
+fn vector_identity(a: vector<4, f32>) -> vector<4, f32> { return a; }
+fn tensor_identity(a: tensor<4, f32>) -> tensor<4, f32> { return a; }
+fn matrix_vector_identity(a: vector<2 x 3, f32>) -> vector<2 x 3, f32> { return a; }
+fn matrix_tensor_identity(a: tensor<2 x 3, f32>) -> tensor<2 x 3, f32> { return a; }
+fn tuple_identity(a: tuple<i32, f64>) -> tuple<i32, f64> { return a; }
+fn fp8_e5m2() -> f8E5M2 { return 1.5f8E5M2; }
+fn fp8_e4m3fn() -> f8E4M3FN { return 1.5f8E4M3FN; }
+fn fp8_e4m3fnuz() -> f8E4M3FNUZ { return 1.5f8E4M3FNUZ; }
+fn fp8_e8m0() -> f8E8M0FNU { return 1.5f8E8M0FNU; }
+fn fp6_e2m3() -> f6E2M3FN { return 1.5f6E2M3FN; }
+fn fp6_e3m2() -> f6E3M2FN { return 1.5f6E3M2FN; }
+fn fp4_e2m1() -> f4E2M1FN { return 1.5f4E2M1FN; }
+fn tf32_literal() -> tf32 { return 1.5tf32; }

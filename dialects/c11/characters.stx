@@ -1,0 +1,198 @@
+// C character policy over reusable byte/Unicode representation facilities.
+mod c11.characters;
+use unicode;
+use c11.lex;
+use c11.pp;
+use c11.syntax;
+use c11.types;
+use c11.sema;
+use c11.objects;
+use c11.initializers;
+use c11.constants;
+use externc;
+use tree;
+use types;
+use base;
+
+// Translation-time character encodings are target facts, also available before
+// uchar.h is included. A UTF-16 wchar_t does not imply ISO 10646 scalar wchar_t.
+effect c11.pp.capability_provider() => c11.pp.MacroProvider("source-character-policy","c11.characters.predefine");
+effect c11.characters.predefine($macros) => list.fold("c11.pp.predefine",[
+    ["__STDC_UTF_16__","1"],["__STDC_UTF_32__","1"]],$macros);
+
+// Preserve raw preprocessing spellings. Only lookup/parser identities decode
+// UCNs; stringification and token pasting retain the spelling written by users.
+// Identifier spellings originate in c11.lex.config. Its ASCII token policy
+// has already checked their characters; decoding is needed only for UCN/UTF8.
+effect c11.lex.identifier_key($raw) => choose(and(text.is_ascii($raw),not(text.contains($raw,"\\"))),$raw,
+    bind($values,list.map("c11.characters.scalar_fact",facts($raw,"identifier")),
+        seq(identifier_values($values,1),text.from_codepoints($values))));
+effect scalar_fact(Scalar($value)) => $value;
+effect identifier_values($values,$first) => seq(choose(and($first,eq(size($values),0)),fail("empty C identifier"),1),
+    seq(rule.iterate("c11.characters.identifier_step",IdentifierScan($values,$first),1000000),1));
+effect identifier_step(IdentifierScan([],$first)) => [0,IdentifierScan([],0)];
+effect identifier_step(IdentifierScan($values,$first)) when lt(0,size($values))
+    => seq(choose(identifier_scalar(list.head($values),$first),1,fail("character is not permitted in a C11 identifier")),
+        [1,IdentifierScan(list.tail($values),0)]);
+effect identifier_scalar($value,$first) => or(eq($value,95),or(and(not(lt($value,65)),lt($value,91)),
+    or(and(not(lt($value,97)),lt($value,123)),or(and(not($first),and(not(lt($value,48)),lt($value,58))),
+        and(allowed_extended($value),or(not($first),not(disallowed_initial($value))))))));
+// N1570 Annex D: explicit historical ranges, not today's Unicode categories.
+effect allowed_extended($value) => or(in_ranges($value,[[168,168],[170,170],[173,173],[175,175],[178,181],[183,186],[188,190],
+    [192,214],[216,246],[248,255],[256,5759],[5761,6157],[6159,8191],[8203,8205],[8234,8238],[8255,8256],[8276,8276],
+    [8288,8303],[8304,8591],[9312,9471],[10102,10131],[11264,11775],[11904,12287],[12292,12295],[12321,12335],
+    [12337,12351],[12352,55295],[63744,64829],[64832,64975],[65008,65092],[65095,65533]]),
+    and(and(not(lt($value,65536)),lt($value,983040)),lt(int.and($value,65535),65534)));
+effect disallowed_initial($value) => in_ranges($value,[[768,879],[7616,7679],[8400,8447],[65056,65071]]);
+effect in_ranges($value,[]) => 0;
+effect in_ranges($value,$ranges) when lt(0,size($ranges)) => bind([$lo,$hi],list.head($ranges),
+    or(and(not(lt($value,$lo)),not(lt($hi,$value))),in_ranges($value,list.tail($ranges))));
+
+effect facts($raw,$mode) => bind(Content($remaining,$out,$policy),
+    rule.iterate("c11.characters.content_step",Content(text.codepoints($raw),[],$mode),1000000),list.reverse($out));
+effect content_step(Content([],$out,$mode)) => [0,Content([],$out,$mode)];
+effect content_step(Content($values,$out,$mode)) when lt(0,size($values)) => choose(eq(list.head($values),92),
+    bind(Escape($fact,$rest),escape(list.tail($values),$mode),[1,Content($rest,list.prepend($fact,$out),$mode)]),
+    [1,Content(list.tail($values),list.prepend(Scalar(list.head($values)),$out),$mode)]);
+effect escape([],$mode) => fail("incomplete C escape sequence");
+effect escape($values,$mode) when lt(0,size($values)) => bind($head,list.head($values),
+    choose(or(eq($head,117),eq($head,85)),bind(Digits($value,$rest),fixed_hex(list.tail($values),choose(eq($head,117),4,8),0),
+        Escape(Scalar(ucn($value)),$rest)),choose(eq($mode,"identifier"),fail("C identifier escape must be a universal character name"),literal_escape($head,list.tail($values)))));
+effect ucn($value) => seq(choose(or(not(lt($value,160)),or(eq($value,36),or(eq($value,64),eq($value,96)))),1,
+    fail("C universal character name designates a forbidden basic character")),unicode.scalar($value));
+effect digit($value,$base) => choose(and(not(lt($value,48)),lt($value,58)),choose(lt(sub($value,48),$base),sub($value,48),-1),
+    choose(and(eq($base,16),and(not(lt($value,65)),lt($value,71))),sub($value,55),
+        choose(and(eq($base,16),and(not(lt($value,97)),lt($value,103))),sub($value,87),-1)));
+effect fixed_hex($values,0,$value) => Digits($value,$values);
+effect fixed_hex([],$count,$value) when lt(0,$count) => fail("incomplete C universal character name");
+effect fixed_hex($values,$count,$value) when and(lt(0,$count),lt(0,size($values))) => bind($digit,digit(list.head($values),16),
+    choose(lt($digit,0),fail("C universal character name requires hexadecimal digits"),fixed_hex(list.tail($values),sub($count,1),add(mul($value,16),$digit))));
+effect literal_escape(120,$values) => bind(Digits($value,$rest),variable_digits($values,16,0,0,2147483647),Escape(Unit($value),$rest));
+effect literal_escape($head,$values) when and(not(lt($head,48)),lt($head,56))
+    => bind(Digits($value,$rest),variable_digits($values,8,sub($head,48),1,3),Escape(Unit($value),$rest));
+effect literal_escape(97,$values) => Escape(Scalar(7),$values);
+effect literal_escape(98,$values) => Escape(Scalar(8),$values);
+effect literal_escape(102,$values) => Escape(Scalar(12),$values);
+effect literal_escape(110,$values) => Escape(Scalar(10),$values);
+effect literal_escape(114,$values) => Escape(Scalar(13),$values);
+effect literal_escape(116,$values) => Escape(Scalar(9),$values);
+effect literal_escape(118,$values) => Escape(Scalar(11),$values);
+effect literal_escape($head,$values) when or(eq($head,39),or(eq($head,34),or(eq($head,63),eq($head,92)))) => Escape(Scalar($head),$values);
+effect[fallback] literal_escape($head,$values) => fail("unsupported C escape sequence");
+effect variable_digits($values,$base,$value,$count,$limit) => bind(DigitScan($rest,$radix,$integer,$size,$maximum),
+    rule.iterate("c11.characters.digit_step",DigitScan($values,$base,$value,$count,$limit),1000000),finish_digits($integer,$rest,$size));
+effect digit_step(DigitScan($values,$base,$value,$count,$limit)) => choose(or(eq(size($values),0),eq($count,$limit)),
+    [0,DigitScan($values,$base,$value,$count,$limit)],bind($digit,digit(list.head($values),$base),
+        choose(lt($digit,0),[0,DigitScan($values,$base,$value,$count,$limit)],
+            [1,DigitScan(list.tail($values),$base,add(mul($value,$base),$digit),add($count,1),$limit)])));
+effect finish_digits($value,$rest,0) => fail("C hexadecimal escape requires at least one digit");
+effect finish_digits($value,$rest,$count) when lt(0,$count) => Digits($value,$rest);
+
+// The generic scanner returns prefix identifiers and quotes separately. Merge
+// only lexically adjacent tokens, before preprocessing can manufacture spaces.
+effect c11.lex.literal_tokens($tokens) => list.unfold("c11.characters.prefix_step",$tokens,1000000);
+effect prefix_step([]) => [0,[],[]];
+effect prefix_step($tokens) when lt(0,size($tokens)) => bind($head,list.head($tokens),
+    choose(and(lt(1,size($tokens)),prefix_word(c11.lex.spelling($head))),
+        bind($next,list.head(list.tail($tokens)),choose(and(eq(c11.lex.kind($head),1),and(eq(c11.lex.kind($next),3),not(c11.lex.space($next)))),
+            [1,list.tail(list.tail($tokens)),[c11.lex.made(3,concat(c11.lex.spelling($head),c11.lex.spelling($next)),$head)]],
+            [1,list.tail($tokens),[$head]])),[1,list.tail($tokens),[$head]]));
+effect prefix_word($raw) => or(eq($raw,"u8"),or(eq($raw,"u"),or(eq($raw,"U"),eq($raw,"L"))));
+effect literal_prefix($raw) => choose(or(text.starts($raw,"\""),text.starts($raw,"'")),"",choose(text.starts($raw,"u8"),"u8",text.slice($raw,0,1)));
+effect quote_offset($prefix) => text.len($prefix);
+effect is_string_raw($raw) => bind($prefix,literal_prefix($raw),eq(text.slice($raw,quote_offset($prefix),add(quote_offset($prefix),1)),"\""));
+effect c11.syntax.character_quotation($raw) => not(is_string_raw($raw));
+effect c11.syntax.quotation($raw) when not(is_string_raw($raw)) => c11.syntax.Character($raw);
+effect c11.types.character($raw) => c11.characters.character($raw);
+effect c11.pp.is_character($raw) => not(is_string_raw($raw));
+effect string_literal($raw) => bind($prefix,literal_prefix($raw),
+    StringLiteral($prefix,facts(text.slice($raw,add(quote_offset($prefix),1),sub(text.len($raw),1)),"literal")));
+syntax c11.string_sequence `$raw:string` when is_string_raw($raw) => string_literal($raw);
+syntax c11.string_sequence `$raw:string $rest:c11.string_sequence` when is_string_raw($raw) => join_string(string_literal($raw),$rest);
+syntax c11.expr `$strings:c11.string_sequence` => string_expression($strings);
+effect join_string(StringLiteral($left,$a),StringLiteral($right,$b))
+    => StringLiteral(join_prefix($left,$right),list.concat($a,$b));
+effect join_prefix("",$right) => $right;
+effect join_prefix($left,"") when not(eq($left,"")) => $left;
+effect join_prefix($left,$right) when and(not(eq($left,"")),eq($left,$right)) => $left;
+effect[fallback] join_prefix($left,$right) => fail("C target policy rejects adjacent string literals with different nonempty prefixes");
+effect encode_units($prefix,$facts) => bind(Encoding($out,$mode),list.fold("c11.characters.encode_fact",$facts,Encoding([],$prefix)),list.flatten(list.reverse($out)));
+effect encode_fact(Encoding($out,$mode),Scalar($value)) => Encoding(list.prepend(scalar_units($mode,$value),$out),$mode);
+effect encode_fact(Encoding($out,$mode),Unit($value)) => Encoding(list.prepend([numeric_unit($mode,$value)],$out),$mode);
+effect scalar_units("",$value) => unicode.utf8($value);
+effect scalar_units("u8",$value) => unicode.utf8($value);
+effect scalar_units("u",$value) => unicode.utf16($value);
+effect scalar_units("L",$value) => unicode.utf16($value);
+effect scalar_units("U",$value) => unicode.utf32($value);
+effect unit_width("") => 8;
+effect unit_width("u8") => 8;
+effect unit_width("u") => 16;
+effect unit_width("L") => 16;
+effect unit_width("U") => 32;
+effect numeric_unit($prefix,$value) => choose(int.fits($value,unit_width($prefix),0),$value,fail("C numeric escape does not fit the target character type"));
+effect element_type("u") => c11.types.integer("unsigned short");
+effect element_type("L") => c11.types.integer("unsigned short");
+effect element_type("U") => c11.types.integer("unsigned int");
+effect string_expression(StringLiteral($prefix,$facts)) => bind($units,encode_units($prefix,$facts),
+    choose(or(eq($prefix,""),eq($prefix,"u8")),c11.syntax.String(text.from_bytes($units)),WideString(element_type($prefix),$units)));
+effect character($raw) => bind($prefix,literal_prefix($raw),seq(choose(eq($prefix,"u8"),fail("C11 has no u8 character constant"),1),
+    bind($units,encode_units($prefix,facts(text.slice($raw,add(quote_offset($prefix),1),sub(text.len($raw),1)),"literal")),
+        choose(eq(size($units),0),fail("empty C character constant"),character_value($prefix,$units)))));
+effect character_value("",[$unit]) => c11.sema.constant_convert(c11.sema.constant_convert(
+    base.Typed(c11.types.integer("unsigned int"),base.Integer($unit)),c11.types.integer("char")),c11.types.integer("int"));
+effect character_value("",$units) when not(eq(size($units),1)) => c11.sema.constant_convert(
+    base.Typed(c11.types.integer("unsigned int"),base.Integer(list.fold("c11.characters.pack_character",$units,0))),c11.types.integer("int"));
+effect pack_character($value,$unit) => int.and(add(int.shl($value,8),$unit),4294967295);
+effect character_value($prefix,[$unit]) when not(eq($prefix,"")) => base.Typed(element_type($prefix),base.Integer($unit));
+effect character_value($prefix,$units) when and(not(eq($prefix,"")),not(eq(size($units),1)))
+    => base.Typed(element_type($prefix),base.Integer(65533));
+
+// Wide literals use ordinary C aggregates and module storage, preserving their
+// element type and array extent in sizeof, &literal and pointer conversions.
+effect c11.syntax.initializer_leaf(WideString($element,$units)) => WideInitializer($element,$units);
+effect c11.syntax.initialized_type(c11.types.IncompleteArray($element),WideInitializer($literal_type,$units)) => c11.types.Array(add(size($units),1),$element);
+effect c11.initializers.is_string(WideInitializer($element,$units)) => 1;
+effect c11.initializers.is_string(WideInitializer($element,$units,$address)) => 1;
+effect c11.initializers.string_text(WideInitializer($element,$units)) => WideText($element,$units);
+effect c11.initializers.string_text(WideInitializer($element,$units,$address)) => WideText($element,$units);
+effect c11.initializers.string_length(WideText($element,$units)) => size($units);
+effect c11.initializers.string_element_type(c11.types.IntType(2,16,1)) => 1;
+effect c11.initializers.string_element_type(c11.types.IntType(3,32,1)) => 1;
+effect c11.initializers.string_element_type(c11.types.Qualified($type,$c,$v,$r)) => c11.initializers.string_element_type($type);
+effect c11.initializers.string_value(WideText($literal_type,$units),c11.types.Array($count,$element))
+    => seq(choose(c11.types.compatible($literal_type,c11.types.unqualified($element)),1,fail("C string prefix does not match the array element type")),
+        choose(lt($count,size($units)),fail("C string initializer is too long for the array"),
+            bind(Fill($out,$index,$limit,$type,$text),rule.iterate("c11.characters.fill_step",Fill([],0,$count,c11.types.unqualified($element),$units),1000000),
+                base.Typed(c11.types.Array($count,$element),c11.objects.Packed(list.reverse($out))))));
+effect fill_step(Fill($out,$index,$count,$type,$units)) when eq($index,$count) => [0,Fill($out,$index,$count,$type,$units)];
+effect fill_step(Fill($out,$index,$count,$type,$units)) when lt($index,$count)
+    => [1,Fill(list.prepend(base.Typed($type,base.Integer(choose(lt($index,size($units)),arg($units,$index),0))),$out),add($index,1),$count,$type,$units)];
+effect c11.initializers.string_value(WideText($element,$units),c11.types.IncompleteArray($target))
+    => c11.initializers.string_value(WideText($element,$units),c11.types.Array(add(size($units),1),$target));
+effect c11.sema.initializer(WideInitializer($element,$units,$address),$env,$type)
+    => choose(c11.initializers.string_array($type),c11.initializers.string_value(WideText($element,$units),c11.sema.value_type($type)),c11.sema.convert_expression($address,$env,c11.sema.value_type($type)));
+effect c11.sema.constant_initializer(WideInitializer($element,$units,$address),$type,$env) when not(c11.sema.pointer_type(c11.sema.value_type($type)))
+    => c11.initializers.string_value(WideText($element,$units),c11.sema.value_type($type));
+effect base.check(WideInitializer($element,$units,$address),$env,$expected) => base.check($address,$env,$expected);
+effect c11.sema.constant_value(WideInitializer($element,$units,$address),$env) => c11.sema.constant_value($address,$env);
+effect c11.sema.object_type(WideInitializer($element,$units,$address),$env) => c11.sema.object_type($address,$env);
+effect externc.rewrite_enter(WideInitializer($element,$units),$context,$state)
+    => bind(tree.Stop($address,$next),externc.rewrite_enter(WideString($element,$units),$context,$state),tree.Stop(WideInitializer($element,$units,$address),$next));
+effect externc.rewrite_enter(WideString($element,$units),$context,externc.Hoisting($globals,$pool)) => bind($key,LiteralKey($element,$units),
+    bind($name,choose(env.contains($pool,$key),env.get($pool,$key),text(symbol(".naru.c.wide"))),
+        tree.Stop(WideAddress($name,$element,add(size($units),1)),choose(env.contains($pool,$key),externc.Hoisting($globals,$pool),
+            externc.Hoisting(list.prepend(c11.syntax.Internal(WideGlobal($name,$element,$units)),$globals),env.put($pool,$key,$name))))));
+effect c11.sema.item_name(WideGlobal($name,$element,$units)) => $name;
+effect c11.objects.declared_names(WideGlobal($name,$element,$units)) => [];
+effect c11.sema.declare(WideGlobal($name,$element,$units),$rest,$env) => c11.sema.declarations($rest,$env);
+effect c11.sema.prepare_item(WideGlobal($name,$element,$units),$rest,$env,$seen)
+    => list.prepend(c11.sema.CheckedGlobal($name,c11.types.Array(add(size($units),1),$element),
+        c11.initializers.string_value(WideText($element,$units),c11.types.Array(add(size($units),1),$element))),c11.sema.prepare_items($rest,$env,$seen));
+effect base.check(WideAddress($name,$element,$count),$env,$expected)
+    => c11.sema.contextual(base.Typed(c11.types.Pointer($element),c11.sema.GlobalAddress($name)),$expected);
+effect c11.sema.constant_value(WideAddress($name,$element,$count),$env) => base.Typed(c11.types.Pointer($element),c11.sema.GlobalAddress($name));
+effect c11.sema.object_type(WideAddress($name,$element,$count),$env) => c11.types.Array($count,$element);
+effect c11.sema.lvalue(WideAddress($name,$element,$count),$env) => c11.sema.GlobalReference(c11.types.Array($count,$element),$name);
+effect c11.constants.static_reference(WideAddress($name,$element,$count),$env) => c11.sema.GlobalReference(c11.types.Array($count,$element),$name);
+effect base.check(c11.syntax.Address(WideAddress($name,$element,$count)),$env,$expected)
+    => c11.sema.contextual(base.Typed(c11.types.Pointer(c11.types.Array($count,$element)),c11.sema.GlobalAddress($name)),$expected);

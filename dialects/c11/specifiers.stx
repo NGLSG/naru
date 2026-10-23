@@ -1,0 +1,104 @@
+// Declaration specifiers are a sequence of facts, not keyword permutations.
+// Grammar distinguishes a builtin multiset from one nominal type. Its pure
+// family guard prevents a visible typedef used as a declarator from being
+// swallowed as a second type (`T T;`). Target words can extend the atom rules.
+mod c11.specifiers;
+use c11.syntax;
+use c11.types;
+use c11.declarators;
+use c11.layout;
+use c11.storage;
+use base;
+
+syntax c11.qualifier `const` => c11.specifiers.Qualifier(1,0,0);
+syntax c11.qualifier `volatile` => c11.specifiers.Qualifier(0,1,0);
+syntax c11.qualifier `restrict` => c11.specifiers.Qualifier(0,0,1);
+syntax c11.qualifiers `$q:c11.qualifier` => $q;
+syntax c11.qualifiers `$q:c11.qualifier $rest:c11.qualifiers` => c11.specifiers.merge($q,$rest);
+effect c11.specifiers.merge(c11.specifiers.Qualifier($ac,$av,$ar),c11.specifiers.Qualifier($bc,$bv,$br)) => c11.specifiers.Qualifier(or($ac,$bc),or($av,$bv),or($ar,$br));
+
+syntax c11.type_piece `$word:c11.builtin_word` => c11.specifiers.Word($word);
+syntax c11.type_piece `$type:c11.atom_type` => c11.specifiers.Named($type);
+syntax c11.type_piece `$q:c11.qualifier` => $q;
+syntax c11.type_pieces `$part:c11.type_piece` => c11.specifiers.Pieces($part,c11.specifiers.EndPieces());
+syntax c11.type_pieces[10,left] `$parts:c11.type_pieces $part:c11.type_piece` when c11.specifiers.can_extend($part,$parts) => c11.specifiers.Pieces($part,$parts);
+syntax c11.specifier `$parts:c11.type_pieces` when c11.specifiers.valid_family($parts) => c11.specifiers.type($parts);
+
+syntax c11.declaration_piece `$part:c11.type_piece` => $part;
+syntax c11.declaration_piece `typedef` => c11.specifiers.Storage("typedef");
+syntax c11.declaration_piece `extern` => c11.specifiers.Storage("extern");
+syntax c11.declaration_piece `static` => c11.specifiers.Storage("static");
+syntax c11.declaration_piece `auto` => c11.specifiers.Storage("auto");
+syntax c11.declaration_piece `register` => c11.specifiers.Storage("register");
+syntax c11.declaration_piece `inline` => c11.specifiers.Inline(1);
+syntax c11.declaration_piece `_Noreturn` => c11.specifiers.NoReturn();
+syntax c11.declaration_pieces `$part:c11.declaration_piece` => c11.specifiers.Pieces($part,c11.specifiers.EndPieces());
+syntax c11.declaration_pieces[10,left] `$parts:c11.declaration_pieces $part:c11.declaration_piece` when c11.specifiers.can_extend($part,$parts) => c11.specifiers.Pieces($part,$parts);
+syntax c11.specifiers `$parts:c11.declaration_pieces` when c11.specifiers.valid_family($parts) => c11.specifiers.declaration($parts);
+
+effect c11.specifiers.valid_family($parts) => bind(c11.specifiers.Family($words,$names),c11.specifiers.fold_parts($parts,"c11.specifiers.family",c11.specifiers.Family(0,0)),
+    or(and(lt(0,$words),eq($names,0)),and(eq($words,0),eq($names,1))));
+effect c11.specifiers.can_extend($part,$rest)
+    => bind(c11.specifiers.Family($words,$names),c11.specifiers.fold_parts($rest,"c11.specifiers.family",c11.specifiers.family(c11.specifiers.Family(0,0),$part)),
+        and(not(lt(1,$names)),or(eq($names,0),eq($words,0))));
+effect c11.specifiers.family(c11.specifiers.Family($words,$names),c11.specifiers.Word($word)) => c11.specifiers.Family(add($words,1),$names);
+effect c11.specifiers.family(c11.specifiers.Family($words,$names),c11.specifiers.Named($type)) => c11.specifiers.Family($words,add($names,1));
+effect[fallback] c11.specifiers.family($state,$part) => $state;
+
+// Guard inputs are unevaluated syntax trees. Structural cons cells keep this
+// walk pure without requiring list.prepend semantic actions to run first.
+effect c11.specifiers.fold_parts(c11.specifiers.EndPieces(),$relation,$state) => $state;
+effect c11.specifiers.fold_parts(c11.specifiers.Pieces($part,$rest),$relation,$state)
+    => c11.specifiers.fold_parts($rest,$relation,apply($relation,[$state,$part]));
+effect c11.specifiers.state($parts) => c11.specifiers.fold_parts($parts,"c11.specifiers.part",c11.specifiers.State([],c11.specifiers.Missing(),c11.specifiers.Qualifier(0,0,0),"none",0,[]));
+effect c11.specifiers.part(c11.specifiers.State($words,$named,$q,$storage,$inline,$align),c11.specifiers.Word($word)) => c11.specifiers.State(list.prepend($word,$words),$named,$q,$storage,$inline,$align);
+effect c11.specifiers.part(c11.specifiers.State($words,$named,$q,$storage,$inline,$align),c11.specifiers.Named($type)) => c11.specifiers.State($words,$type,$q,$storage,$inline,$align);
+effect c11.specifiers.part(c11.specifiers.State($words,$named,$q,$storage,$inline,$align),c11.specifiers.Qualifier($c,$v,$r)) => c11.specifiers.State($words,$named,c11.specifiers.merge($q,c11.specifiers.Qualifier($c,$v,$r)),$storage,$inline,$align);
+effect c11.specifiers.part(c11.specifiers.State($words,$named,$q,$storage,$inline,$align),c11.specifiers.Storage($class))
+    => c11.specifiers.State($words,$named,$q,c11.specifiers.storage($storage,$class),$inline,$align);
+effect c11.specifiers.storage("none",$class) => $class;
+effect[fallback] c11.specifiers.storage($prior,$class) => fail("multiple C storage classes in declaration");
+effect c11.specifiers.part(c11.specifiers.State($words,$named,$q,$storage,$inline,$align),c11.specifiers.Inline($mode)) => c11.specifiers.State($words,$named,$q,$storage,c11.specifiers.add_inline($inline,$mode),$align);
+effect c11.specifiers.part(c11.specifiers.State($words,$named,$q,$storage,$inline,$align),c11.specifiers.NoReturn())
+    => bind(c11.specifiers.FunctionFlags($mode,$noreturn),c11.specifiers.function_flags($inline),
+        c11.specifiers.State($words,$named,$q,$storage,c11.specifiers.FunctionFlags($mode,1),$align));
+// Function properties are independent facts. Legacy numeric inline modes are
+// accepted at this boundary so independently loaded header rules still compose.
+effect c11.specifiers.function_flags(c11.specifiers.FunctionFlags($inline,$noreturn)) => c11.specifiers.FunctionFlags($inline,$noreturn);
+effect[fallback] c11.specifiers.function_flags($inline) => c11.specifiers.FunctionFlags($inline,0);
+effect c11.specifiers.add_inline($flags,$mode) => bind(c11.specifiers.FunctionFlags($inline,$noreturn),c11.specifiers.function_flags($flags),
+    c11.specifiers.FunctionFlags(choose(lt($inline,$mode),$mode,$inline),$noreturn));
+effect c11.specifiers.has_functions($flags) => bind(c11.specifiers.FunctionFlags($inline,$noreturn),c11.specifiers.function_flags($flags),or(lt(0,$inline),$noreturn));
+effect c11.specifiers.part(c11.specifiers.State($words,$named,$q,$storage,$inline,$align),c11.specifiers.Alignment($value)) => c11.specifiers.State($words,$named,$q,$storage,$inline,list.prepend($value,$align));
+effect c11.specifiers.type($parts) => c11.specifiers.state_type(c11.specifiers.state($parts));
+effect c11.specifiers.state_type(c11.specifiers.State($words,$named,c11.specifiers.Qualifier($c,$v,$r),$storage,$inline,$align))
+    => c11.specifiers.qualify(choose(eq($named,c11.specifiers.Missing()),c11.syntax.builtin_type(list.reverse($words)),$named),c11.specifiers.Qualifier($c,$v,$r));
+effect c11.specifiers.qualify($type,c11.specifiers.Qualifier($c,$v,$r)) => seq(choose($r,c11.specifiers.restrict_target(c11.types.unqualified($type)),1),c11.types.qualify($type,[$c,$v,$r]));
+effect c11.specifiers.restrict_target(c11.types.Pointer($element)) => choose(c11.types.object_pointer_target(c11.types.unqualified($element)),1,fail("C restrict qualifier requires an object pointer"));
+effect[fallback] c11.specifiers.restrict_target($type) => fail("C restrict qualifier requires an object pointer");
+effect c11.specifiers.declaration($parts) => bind($state,c11.specifiers.state($parts),bind(c11.specifiers.State($words,$named,$q,$storage,$inline,$align),$state,
+    list.fold("c11.specifiers.alignment",list.reverse($align),c11.syntax.Specifiers(c11.specifiers.state_type($state),$storage,$inline))));
+effect c11.specifiers.alignment($spec,$alignment) => c11.layout.aligned_spec($spec,$alignment);
+
+effect c11.specifiers.pointer($inner,c11.specifiers.Qualifier($c,$v,$r)) => c11.declarators.PointerDecl($inner,$c,$v,$r);
+effect c11.specifiers.parameter(c11.syntax.Specifiers($type,$storage,$inline),$decl)
+    => seq(choose(c11.specifiers.has_functions($inline),fail("C parameter cannot have a function specifier"),1),
+        bind($param,c11.declarators.parameter($decl,$type),choose(eq($storage,"none"),$param,c11.storage.parameter_storage($storage,$param))));
+effect c11.specifiers.parameter(c11.layout.AlignedSpec($spec,$alignment),$decl) => fail("C alignment specifier cannot apply to a parameter");
+
+effect c11.specifiers.validate_declaration($type,$storage,$inline)
+    => seq(c11.specifiers.storage_type($type,$storage),seq(c11.declarators.validate_type($type),choose(c11.specifiers.has_functions($inline),
+        choose(and(not(eq($storage,"typedef")),c11.specifiers.function_type(c11.types.unqualified($type))),1,fail("C function specifier requires a function declaration")),1)));
+effect[fallback] c11.specifiers.storage_type($type,$storage) => 1;
+effect c11.specifiers.function_type(c11.types.FunctionType($result,$params,$variadic,$prototype)) => 1;
+effect[fallback] c11.specifiers.function_type($type) => 0;
+
+// The current C11 target declares __STDC_HOSTED__ == 1. Main may not carry
+// a function specifier in this hosted profile (6.7.4p4).
+effect c11.specifiers.validate_named_declaration($name,$type,$storage,$inline)
+    => seq(c11.specifiers.validate_declaration($type,$storage,$inline),
+        choose(and(c11.specifiers.has_functions($inline),eq($name,"main")),fail("C hosted main cannot have a function specifier"),1));
+effect c11.specifiers.validate_decls([],$base,$storage,$inline) => 1;
+effect c11.specifiers.validate_decls($decls,$base,$storage,$inline) when lt(0,size($decls))
+    => bind(c11.syntax.Initialized($decl,$value),list.head($decls),bind(c11.declarators.Resolved($name,$type),c11.declarators.resolve($decl,c11.syntax.record_base($base)),
+        seq(c11.specifiers.validate_named_declaration($name,$type,$storage,$inline),c11.specifiers.validate_decls(list.tail($decls),$base,$storage,$inline))));

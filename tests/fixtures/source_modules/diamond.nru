@@ -1,0 +1,4 @@
+mod diamond;
+use left;
+use right;
+fn main() -> i32 { return 42; }

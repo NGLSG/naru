@@ -1,0 +1,126 @@
+mod control;
+use base;
+use types;
+
+syntax typename `void` => Void();
+syntax body `return;` => ReturnVoid();
+syntax statement `return;` => ReturnVoidStatement();
+syntax statement `break;` => BreakStatement();
+syntax statement `continue;` => ContinueStatement();
+syntax statement `unless $condition:expr $body:block` => base.Branch(Not($condition), $body, base.End());
+syntax statement `for $name:ident in $begin:expr .. $end:expr $body:block` => For($name, $begin, $end, $body);
+syntax statement[fallback] `$value:expr;` => Expression($value);
+syntax expr[70,right] `! $value:expr` => Not($value);
+syntax expr[25,left] `$a:expr && $b:expr` => Logical("and", $a, $b);
+syntax expr[20,left] `$a:expr || $b:expr` => Logical("or", $a, $b);
+syntax expr[48,left] `$a:expr << $b:expr` => Shift("left", $a, $b);
+syntax expr[48,left] `$a:expr >> $b:expr` => Shift("right", $a, $b);
+
+effect base.continue(BreakStatement(), $next) => Break();
+effect base.continue(ReturnVoidStatement(), $next) => ReturnVoid();
+effect base.continue(ContinueStatement(), $next) => Continue();
+effect base.continue(Expression($value), $next) => Evaluate($value, $next);
+effect base.continue(For($name, $begin, $end, $body), $next)
+    => bind($limit, text(symbol("range.end")), bind($iterator, text(symbol("range.index")),
+        base.Let($limit, base.Any(), $end, base.Var($iterator, base.Any(), $begin,
+            base.While(base.Compare("lt", base.Name($iterator), base.Name($limit)),
+                base.Let($name, base.Any(), base.Name($iterator),
+                    bind($increment, base.Set($iterator, base.Add(base.Name($iterator), base.Int(1)), base.End()),
+                        append(range_continues($body, $increment), $increment))), $next)))));
+// The range increment also runs on continue. Break/return skip the suffix.
+effect append(base.End(), $suffix) => $suffix;
+effect append(Continue(), $suffix) => append($suffix, Continue());
+effect append(Break(), $suffix) => Break();
+effect append(base.Return($value), $suffix) => base.Return($value);
+effect append(ReturnVoid(), $suffix) => ReturnVoid();
+effect append(base.Let($name, $type, $value, $next), $suffix) => base.Let($name, $type, $value, append($next, $suffix));
+effect append(base.Var($name, $type, $value, $next), $suffix) => base.Var($name, $type, $value, append($next, $suffix));
+effect append(base.Set($name, $value, $next), $suffix) => base.Set($name, $value, append($next, $suffix));
+effect append(base.If($condition, $yes, $no, $next), $suffix) => base.If($condition, $yes, $no, append($next, $suffix));
+effect append(base.While($condition, $body, $next), $suffix) => base.While($condition, $body, append($next, $suffix));
+effect append(Evaluate($value, $next), $suffix) => Evaluate($value, append($next, $suffix));
+effect range_continues(Continue(), $increment) => append($increment, Continue());
+effect range_continues(base.Let($name, $type, $value, $next), $increment) => base.Let($name, $type, $value, range_continues($next, $increment));
+effect range_continues(base.Var($name, $type, $value, $next), $increment) => base.Var($name, $type, $value, range_continues($next, $increment));
+effect range_continues(base.Set($name, $value, $next), $increment) => base.Set($name, $value, range_continues($next, $increment));
+effect range_continues(base.If($condition, $yes, $no, $next), $increment)
+    => base.If($condition, range_continues($yes, $increment), range_continues($no, $increment), range_continues($next, $increment));
+// An inner loop owns its continues.
+effect range_continues(base.While($condition, $body, $next), $increment) => base.While($condition, $body, range_continues($next, $increment));
+effect range_continues(Evaluate($value, $next), $increment) => Evaluate($value, range_continues($next, $increment));
+effect[fallback] range_continues($body, $increment) => $body;
+
+effect base.loop_scope($environment) => env.put($environment, "control.loop", 1);
+effect base.loop_values($environment, $head, $exit)
+    => base.flow_targets(env.put(env.put($environment, "control.head", $head), "control.exit", $exit),[$head,$exit]);
+effect base.check_body(Break(), $environment, $result) => choose(or(env.contains($environment, "control.loop"),env.contains($environment,"control.break")), Break(), fail("break outside a loop or switch"));
+effect base.check_body(Continue(), $environment, $result) => choose(env.contains($environment, "control.loop"), Continue(), fail("continue outside a loop"));
+effect base.check_body(ReturnVoid(), $environment, $result) => choose(eq($result, Void()), ReturnVoid(), fail("empty return requires void"));
+effect base.check_body(Evaluate($value, $next), $environment, $result)
+    => Evaluate(base.check($value, $environment, base.Any()), base.check_body($next, $environment, $result));
+effect base.function_continuation(Void()) => VoidContinuation();
+effect base.result_repr(Void()) => "()";
+effect base.result_types(Void()) => [];
+effect base.finish(VoidContinuation()) => mlir.op("func.return", [], [], [], []);
+effect base.finish_context(VoidContinuation(),$environment) => base.return_in($environment,[]);
+effect base.prepare_storage(Break(), $entry, $environment) => $environment;
+effect base.prepare_storage(Continue(), $entry, $environment) => $environment;
+effect base.prepare_storage(ReturnVoid(), $entry, $environment) => $environment;
+effect base.prepare_storage(Evaluate($value, $next), $entry, $environment) => base.prepare_storage($next, $entry, $environment);
+effect base.lower_flow(Break(), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, base.jump_in($environment,env.get($environment, "control.exit"))), [$block]);
+effect base.lower_flow(Continue(), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, base.jump_in($environment,env.get($environment, "control.head"))), [$block]);
+effect base.lower_flow(ReturnVoid(), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, base.return_in($environment,[])), [$block]);
+effect base.lower_flow(Evaluate($value, $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, base.lower($value, $environment)), base.lower_flow($next, $environment, $block, $continuation));
+effect base.flow_terminal(Break()) => 1;
+effect base.flow_terminal(Continue()) => 1;
+effect base.flow_terminal(ReturnVoid()) => 1;
+effect base.flow_terminal(Evaluate($value, $next)) => base.flow_terminal($next);
+
+effect base.hint(Not($value), $environment) => Bool();
+effect base.hint(Logical($op, $a, $b), $environment) => Bool();
+effect base.hint(Shift($op, $a, $b), $environment) => shift_hint($op, $a, $b, $environment);
+effect[fallback] shift_hint($op, $a, $b, $environment) => base.hint($a, $environment);
+effect base.check(Not($value), $environment, $expected)
+    => base.expect(base.Typed(Bool(), Negated(base.check_condition($value, $environment))), $expected);
+effect base.check(Logical($op, $a, $b), $environment, $expected)
+    => base.expect(base.Typed(Bool(), ShortCircuit($op, base.check_condition($a, $environment), base.check_condition($b, $environment))), $expected);
+effect base.check(Shift($op, $a, $b), $environment, $expected)
+    => shift($op, $a, $b, $environment, $expected);
+effect[fallback] shift($op, $a, $b, $environment, $expected) => numeric_shift($op, $a, $b, $environment, $expected);
+effect numeric_shift($op, $a, $b, $environment, $expected)
+    => bind(base.Typed($type, $left), base.check($a, $environment, base.wanted($expected, base.hint($a, $environment))),
+        seq(shift_op($op, $type), base.Typed($type, Shifted($op, base.Typed($type, $left), base.check($b, $environment, $type)))));
+effect shift_op("left", Signed($width)) => "arith.shli";
+effect shift_op("left", Unsigned($width)) => "arith.shli";
+effect shift_op("right", Signed($width)) => "arith.shrsi";
+effect shift_op("right", Unsigned($width)) => "arith.shrui";
+effect base.lower(base.Typed(Bool(), Negated($value)), $environment)
+    => mlir.op("arith.xori", [base.lower($value, $environment), base.lower(base.Typed(Bool(), base.Integer(1)), $environment)], ["i1"], [], []);
+effect base.lower(base.Typed(Bool(), ShortCircuit($op, $a, $b)), $environment)
+    => mlir.op("scf.if", [base.lower($a, $environment)], ["i1"], [],
+        [mlir.region(yield_branch($op, 1, $b, $environment)), mlir.region(yield_branch($op, 0, $b, $environment))]);
+effect yield_branch("and", 1, $value, $environment) => yield(base.lower($value, $environment));
+effect yield_branch("and", 0, $value, $environment) => yield(base.lower(base.Typed(Bool(), base.Integer(0)), $environment));
+effect yield_branch("or", 1, $value, $environment) => yield(base.lower(base.Typed(Bool(), base.Integer(1)), $environment));
+effect yield_branch("or", 0, $value, $environment) => yield(base.lower($value, $environment));
+effect yield($value) => mlir.op("scf.yield", [$value], [], [], []);
+effect base.lower(base.Typed($type, Shifted($op, $a, $b)), $environment)
+    => mlir.op(shift_op($op, $type), [base.lower($a, $environment), base.lower($b, $environment)], [types.repr($type)], [], []);
+effect base.cast_opcode(Signed($width), Real($format)) => "arith.sitofp";
+effect base.cast_opcode(Unsigned($width), Real($format)) => "arith.uitofp";
+effect base.cast_opcode(Real($format), Signed($width)) => "arith.fptosi";
+effect base.cast_opcode(Real($format), Unsigned($width)) => "arith.fptoui";
+effect base.cast_opcode(Real($from),Real($to)) when not(eq($from,$to))
+    => choose(lt(float_width($from),float_width($to)),"arith.extf","arith.truncf");
+effect float_width("f16") => 16;
+effect float_width("f32") => 32;
+effect float_width("f64") => 64;
+effect base.cast_opcode(Index(),Signed($width)) => "arith.index_cast";
+effect base.cast_opcode(Signed($width),Index()) => "arith.index_cast";
+effect base.cast_opcode(Index(),Unsigned($width)) => "arith.index_castui";
+effect base.cast_opcode(Unsigned($width),Index()) => "arith.index_castui";
+effect base.predicate("ne",Bool()) => ["arith.cmpi",1];

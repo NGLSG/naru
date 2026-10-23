@@ -1,0 +1,24 @@
+name: 编译器 / 方言缺陷
+description: 提交可复现的解析、语义、代码生成或工具链问题。
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境与版本
+      description: 操作系统、Naru/Vyx 版本或哈希，以及选定方言。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 最小输入与完整命令
+      description: 包括必要的 .stx、用户代码和项目配置；请移除凭据。
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 实际结果与预期结果
+      description: 附诊断、退出码；标准或历史方言问题请给出处。
+    validations:
+      required: true

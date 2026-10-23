@@ -1,0 +1,27 @@
+[package]
+name = "std_logger_package"
+version = "0.1.0"
+entry = "src/log.vyx"
+
+[build]
+cache_dir = ".cache"
+output_dir = "out"
+threads = 4
+
+[dependencies]
+core = { path = "std:core", target = "std_core" }
+
+[target.std_logger]
+type = "static"
+entry = "src/log.vyx"
+auto_sources = false
+dci_stub_backend = "clang-cpp"
+dci_file = "contracts/spdlog.dcib"
+cxx = "clang++"
+sources = ["native/spdlog_support.cpp"]
+include_paths = ["native", "vendor/spdlog/include"]
+cxxflags = ["-std=c++17", "-DSPDLOG_COMPILED_LIB", "-fexceptions", "-fms-runtime-lib=static"]
+lib_paths = ["vendor/build/Release", "vendor/build"]
+libs = ["spdlog"]
+public_lib_paths = ["vendor/build/Release", "vendor/build"]
+public_libs = ["spdlog"]

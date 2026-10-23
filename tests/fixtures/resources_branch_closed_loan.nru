@@ -1,0 +1,5 @@
+check {
+    own value: i32;
+    if ready { borrow value as loan; end loan; } else { touch value; };
+    touch value;
+}

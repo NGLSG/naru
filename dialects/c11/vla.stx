@@ -1,0 +1,302 @@
+// VM descriptors retain source bounds; captured bounds are immutable values
+// for one execution of the declaration, rather than reads of the source name.
+mod c11.vla;
+use c11.syntax;
+use c11.types;
+use c11.declarators;
+use c11.parameter_arrays;
+use c11.specifiers;
+use c11.scopes;
+use c11.names;
+use c11.objects;
+use c11.sema;
+use c11.storage;
+use c11.initializers;
+use c11.thread_storage;
+use c11.functions;
+use c11.atomics;
+use base;
+use types;
+use control;
+use tree;
+use allocation;
+use stack_regions;
+
+effect c11.declarators.array_type($count,$element)
+    => seq(c11.declarators.array_element($element),choose(c11.sema.integer_constant_expression($count,syntax.context()),
+        c11.types.Array(c11.declarators.array_count($count),$element),
+        VariableArray(BoundSource(symbol("c.vla.bound"),c11.vla.capture_source($count,syntax.context())),$element)));
+effect c11.vla.capture_source($source,$context)
+    => arg(tree.rewrite_with($source,"c11.vla.capture_enter","c11.vla.capture_leave",c11.names.frame($context),0),0);
+effect c11.vla.capture_enter(c11.syntax.Name($name),$frame,$state) => tree.Stop(c11.names.NameAt($frame,$name),$state);
+effect c11.vla.capture_enter(c11.syntax.Call($name,$arguments),$frame,$state) => tree.Descend([$arguments],$frame,CallBound($name),$state);
+effect c11.vla.capture_enter(c11.names.NameAt($frame,$name),$context,$state) => tree.Stop(c11.names.NameAt($frame,$name),$state);
+effect[fallback] c11.vla.capture_enter($node,$frame,$state) => choose(or(eq(term.kind($node),0),eq(term.kind($node),5)),
+    tree.Descend(term.children($node),$frame,$node,$state),tree.Stop($node,$state));
+effect c11.vla.capture_leave(CallBound($name),[$arguments],$frame,$state) => [c11.names.CallAt($frame,$name,$arguments),$state];
+effect[fallback] c11.vla.capture_leave($node,$children,$frame,$state) => [term.rebuild($node,$children),$state];
+effect c11.objects.rewrite_enter(BoundSource($identity,$source),$context,$state) => tree.Stop(BoundSource($identity,$source),$state);
+
+syntax c11.declarator[30,left] `$decl:c11.declarator[*]` => StarDecl($decl);
+syntax c11.abstract_decl `[*]` => StarDecl(c11.declarators.Named(""));
+syntax c11.abstract_decl[30,left] `$decl:c11.abstract_decl[*]` => StarDecl($decl);
+effect c11.declarators.resolve(StarDecl($inner),$element) => seq(c11.declarators.array_element($element),c11.declarators.resolve($inner,PrototypeArray($element)));
+effect c11.declarators.array_element_type(VariableArray($bound,$element)) => c11.declarators.array_element($element);
+effect c11.declarators.array_element_type(RuntimeArray($bound,$element)) => c11.declarators.array_element($element);
+effect c11.declarators.array_element_type(PrototypeArray($element)) => c11.declarators.array_element($element);
+effect c11.declarators.function_result(VariableArray($bound,$element)) => fail("C function cannot return an array or function type");
+effect c11.declarators.function_result(RuntimeArray($bound,$element)) => fail("C function cannot return an array or function type");
+effect c11.declarators.function_result(PrototypeArray($element)) => fail("C function cannot return an array or function type");
+effect c11.declarators.validate_type(VariableArray($bound,$element)) => c11.declarators.validate_type($element);
+effect c11.declarators.validate_type(RuntimeArray($bound,$element)) => c11.declarators.validate_type($element);
+effect c11.declarators.validate_type(PrototypeArray($element)) => fail("C [*] array derivation requires function prototype scope");
+effect c11.declarators.adjust_parameter(VariableArray($bound,$element)) => c11.types.Pointer($element);
+effect c11.declarators.adjust_parameter(RuntimeArray($bound,$element)) => c11.types.Pointer($element);
+effect c11.declarators.adjust_parameter(PrototypeArray($element)) => c11.types.Pointer($element);
+effect c11.declarators.adjust_parameter(c11.types.Qualified(VariableArray($bound,$element),$c,$v,$r)) => c11.types.Pointer(c11.types.qualify($element,[$c,$v,$r]));
+effect c11.declarators.adjust_parameter(c11.types.Qualified(RuntimeArray($bound,$element),$c,$v,$r)) => c11.types.Pointer(c11.types.qualify($element,[$c,$v,$r]));
+effect c11.declarators.adjust_parameter(c11.types.Qualified(PrototypeArray($element),$c,$v,$r)) => c11.types.Pointer(c11.types.qualify($element,[$c,$v,$r]));
+effect c11.parameter_arrays.bound_source(c11.parameter_arrays.UnspecifiedBound()) => c11.parameter_arrays.UnspecifiedBound();
+effect c11.parameter_arrays.bound_source(c11.parameter_arrays.PrototypeBound()) => c11.parameter_arrays.PrototypeBound();
+effect c11.parameter_arrays.bound_source($source) when and(not(eq($source,c11.parameter_arrays.UnspecifiedBound())),not(eq($source,c11.parameter_arrays.PrototypeBound())))
+    => c11.vla.capture_source($source,syntax.context());
+effect c11.parameter_arrays.parameter_element($type) => c11.vla.prototype_inner($type);
+effect c11.parameter_arrays.bound_constraint($source)
+    => choose(c11.sema.integer_constant_expression($source,syntax.context()),c11.declarators.array_count($source),1);
+effect c11.vla.has_vm(VariableArray($bound,$element)) => 1;
+effect c11.vla.has_vm(RuntimeArray($bound,$element)) => 1;
+effect c11.vla.has_vm(PrototypeArray($element)) => 1;
+effect c11.vla.has_vm(c11.parameter_arrays.ParameterArray($count,$element,$quals,$static)) => 1;
+effect c11.vla.has_vm(c11.types.Array($count,$element)) => c11.vla.has_vm($element);
+effect c11.vla.has_vm(c11.types.Pointer($element)) => c11.vla.has_vm($element);
+effect c11.vla.has_vm(c11.types.Qualified($type,$c,$v,$r)) => c11.vla.has_vm($type);
+effect c11.vla.has_vm(c11.types.AlignedType($type,$alignment)) => c11.vla.has_vm($type);
+effect c11.vla.has_vm(c11.names.TypeAt($type,$tags)) => c11.vla.has_vm($type);
+effect c11.vla.has_vm(c11.atomics.Atomic($type)) => c11.vla.has_vm($type);
+// Prototype parameters have their own scope; only a VM return derivation
+// makes a function declaration itself an illegal file-scope VM identifier.
+effect c11.vla.has_vm(c11.types.FunctionType($result,$params,$variadic,$prototype)) => c11.vla.has_vm($result);
+effect[fallback] c11.vla.has_vm($type) => 0;
+effect c11.vla.array_object(VariableArray($bound,$element)) => 1;
+effect c11.vla.array_object(RuntimeArray($bound,$element)) => 1;
+effect c11.vla.array_object(c11.types.Array($count,$element)) => c11.vla.array_object($element);
+effect c11.vla.array_object(c11.types.Qualified($type,$c,$v,$r)) => c11.vla.array_object($type);
+effect c11.vla.array_object(c11.types.AlignedType($type,$alignment)) => c11.vla.array_object($type);
+effect[fallback] c11.vla.array_object($type) => 0;
+effect c11.vla.contains_star(PrototypeArray($element)) => 1;
+effect c11.vla.contains_star(VariableArray($bound,$element)) => c11.vla.contains_star($element);
+effect c11.vla.contains_star(c11.types.Array($count,$element)) => c11.vla.contains_star($element);
+effect c11.vla.contains_star(c11.types.Pointer($element)) => c11.vla.contains_star($element);
+effect c11.vla.contains_star(c11.types.Qualified($type,$c,$v,$r)) => c11.vla.contains_star($type);
+effect c11.vla.contains_star(c11.atomics.Atomic($type)) => c11.vla.contains_star($type);
+effect c11.vla.contains_star(c11.parameter_arrays.ParameterArray($count,$element,$quals,$static)) => or(eq($count,c11.parameter_arrays.PrototypeBound()),c11.vla.contains_star($element));
+effect[fallback] c11.vla.contains_star($type) => 0;
+
+effect c11.sema.complete_type(VariableArray(BoundSource($identity,$source),$element),$env)
+    => choose(env.contains($env,BoundKey($identity)),RuntimeArray(env.get($env,BoundKey($identity)),c11.sema.complete_type($element,$env)),
+        VariableArray(BoundSource($identity,$source),c11.sema.complete_type($element,$env)));
+effect c11.sema.complete_type(RuntimeArray($bound,$element),$env) => RuntimeArray($bound,c11.sema.complete_type($element,$env));
+effect c11.objects.declaration_type(VariableArray($bound,$element),$tags) => VariableArray($bound,c11.objects.declaration_type($element,$tags));
+effect c11.objects.declaration_type(RuntimeArray($bound,$element),$tags) => RuntimeArray($bound,c11.objects.declaration_type($element,$tags));
+effect c11.sema.declaration_type_fact($type,$env) when c11.vla.has_vm($type) => c11.vla.materialize_type($type,$env);
+effect c11.vla.materialize_type($type,$env)
+    => bind(Materialized($result,$scope,$bounds),c11.vla.materialize($type,$env),c11.sema.TypeFact($result,$scope,$bounds));
+effect c11.vla.materialize(VariableArray(BoundSource($identity,$source),$element),$env)
+    => bind(Captured($bound,$scope,$captures),c11.vla.capture_bound($identity,$source,$env),
+        bind(Materialized($item,$next,$bounds),c11.vla.materialize($element,$scope),Materialized(RuntimeArray($bound,$item),$next,list.concat($captures,$bounds))));
+effect c11.vla.capture_bound($identity,$source,$env)
+    => choose(env.contains($env,BoundKey($identity)),Captured(env.get($env,BoundKey($identity)),$env,[]),
+        bind($value,base.check($source,$env,base.Any()),choose(c11.types.is_integer(arg($value,0)),
+            bind($bound,CapturedBound($identity),Captured($bound,env.put($env,BoundKey($identity),$bound),
+                [BoundCapture($identity,c11.sema.convert($value,c11.types.size_type()))])),fail("C VLA bound must have integer type"))));
+effect c11.vla.materialize(c11.types.Array($count,$element),$env)
+    => bind(Materialized($item,$scope,$bounds),c11.vla.materialize($element,$env),Materialized(c11.types.Array($count,$item),$scope,$bounds));
+effect c11.vla.materialize(c11.types.Pointer($element),$env)
+    => bind(Materialized($item,$scope,$bounds),c11.vla.materialize($element,$env),Materialized(c11.types.Pointer($item),$scope,$bounds));
+effect c11.vla.materialize(c11.types.Qualified($type,$c,$v,$r),$env)
+    => bind(Materialized($item,$scope,$bounds),c11.vla.materialize($type,$env),Materialized(c11.types.Qualified($item,$c,$v,$r),$scope,$bounds));
+effect c11.vla.materialize(c11.types.AlignedType($type,$alignment),$env)
+    => bind(Materialized($item,$scope,$bounds),c11.vla.materialize($type,$env),Materialized(c11.types.AlignedType($item,$alignment),$scope,$bounds));
+effect c11.vla.materialize(c11.atomics.Atomic($type),$env)
+    => bind(Materialized($item,$scope,$bounds),c11.vla.materialize($type,$env),Materialized(c11.atomics.Atomic($item),$scope,$bounds));
+effect c11.vla.materialize(c11.names.TypeAt($type,$tags),$env) => c11.vla.materialize(c11.sema.complete_type(c11.names.TypeAt($type,$tags),$env),$env);
+effect c11.vla.materialize(PrototypeArray($element),$env) => fail("C function definition cannot use prototype [*] arrays");
+effect[fallback] c11.vla.materialize($type,$env) => Materialized(c11.sema.complete_type($type,$env),$env,[]);
+effect types.repr(RuntimeArray($bound,$element)) => fail("runtime C array requires dynamic storage rather than a static IR type");
+effect types.repr(VariableArray($bound,$element)) => fail("uncaptured C VLA used as a static IR object");
+effect c11.types.bytes(RuntimeArray($bound,$element)) => fail("C VLA size is a runtime value");
+effect c11.types.bytes(VariableArray($bound,$element)) => fail("C VLA size is a runtime value");
+effect c11.types.alignment(RuntimeArray($bound,$element)) => c11.types.alignment($element);
+effect c11.types.alignment(VariableArray($bound,$element)) => c11.types.alignment($element);
+effect c11.sema.object_layout_complete($type) when c11.vla.array_object($type) => c11.types.alignment($type);
+effect c11.sema.size_is_constant($type) when c11.vla.array_object($type) => 0;
+effect c11.sema.size_value($type,$env) when c11.vla.array_object($type)
+    => bind(c11.sema.TypeFact($resolved,$scope,$bounds),c11.vla.materialize_type($type,$env),
+        base.Typed(c11.types.size_type(),BoundSize($bounds,c11.vla.size_term($resolved),NoOperand())));
+effect c11.sema.size_expression($source,$type,$env) when c11.vla.array_object($type)
+    => bind(c11.sema.TypeFact($resolved,$scope,$bounds),c11.vla.materialize_type($type,$env),
+        base.Typed(c11.types.size_type(),BoundSize($bounds,c11.vla.size_term($resolved),base.check($source,$env,base.Any()))));
+effect c11.vla.size_term(RuntimeArray($bound,$element)) => c11.sema.binary("mul",c11.vla.bound_value($bound),c11.vla.size_term($element));
+effect c11.vla.size_term(c11.types.Array($count,$element)) => c11.sema.binary("mul",base.Typed(c11.types.size_type(),base.Integer($count)),c11.vla.size_term($element));
+effect c11.vla.size_term(c11.types.Qualified($type,$c,$v,$r)) => c11.vla.size_term($type);
+effect c11.vla.size_term(c11.types.AlignedType($type,$alignment)) => c11.vla.size_term($type);
+effect[fallback] c11.vla.size_term($type) => base.Typed(c11.types.size_type(),base.Integer(c11.types.sizeof($type)));
+effect c11.vla.bound_value(CapturedBound($identity)) => base.Typed(c11.types.size_type(),BoundRead($identity));
+effect allocation.site(BoundCapture($identity,$value)) => allocation.Site($identity,"c11.sema.allocate",[c11.types.size_type()]);
+effect allocation.children(BoundCapture($identity,$value)) => [$value];
+effect base.lower(base.Typed($type,BoundRead($identity)),$env) => mlir.op("llvm.load",[allocation.lookup($env,$identity)],["i64"],[],[]);
+effect c11.vla.lower_bounds($bounds,$env) => seq(list.fold("c11.vla.lower_capture",$bounds,$env),1);
+effect c11.vla.lower_capture($env,BoundCapture($identity,$value)) => seq(c11.sema.store($value,allocation.lookup($env,$identity),$env,c11.types.size_type()),$env);
+effect base.lower(base.Typed($type,BoundSize($bounds,$size,$operand)),$env)
+    => seq(c11.vla.lower_bounds($bounds,$env),seq(c11.vla.lower_operand($operand,$env),base.lower($size,$env)));
+effect c11.vla.lower_operand(NoOperand(),$env) => 1;
+effect[fallback] c11.vla.lower_operand($operand,$env) => base.lower($operand,$env);
+
+effect c11.scopes.object_statement($name,$type,$value,$storage,$context) when c11.vla.has_vm($type)
+    => SourceDeclaration(symbol("c.vm.declaration"),c11.syntax.local_declaration($name,$type,$value,$storage,base.End()),base.End());
+effect c11.scopes.typedef_statement($name,$type) when c11.vla.has_vm($type)
+    => SourceDeclaration(symbol("c.vm.typedef"),c11.scopes.LocalTypedef($name,$type,base.End()),base.End());
+effect c11.syntax.append(SourceDeclaration($marker,$body,$rest),$next) => SourceDeclaration($marker,$body,c11.syntax.append($rest,$next));
+effect c11.sema.for_continues(SourceDeclaration($marker,$body,$rest),$step)
+    => SourceDeclaration($marker,c11.sema.for_continues($body,$step),c11.sema.for_continues($rest,$step));
+effect c11.objects.block_link_children(SourceDeclaration($marker,$body,$next)) => [$body,$next];
+effect base.check_body(SourceDeclaration($marker,$body,$next),$env,$result)
+    => base.check_body(c11.syntax.append($body,$next),env.put($env,MarkerKey(),$marker),$result);
+effect c11.sema.declared_fact($identity,$name,$source,$type,$value,$bounds,$env) when c11.vla.has_vm($source)
+    => BoundsDeclaration(choose(env.contains($env,MarkerKey()),env.get($env,MarkerKey()),$identity),$bounds,
+        c11.sema.Declared($identity,$type,$value,base.End()),base.End());
+effect c11.sema.append_declaration(BoundsDeclaration($marker,$bounds,$declaration,base.End()),$next)
+    => BoundsDeclaration($marker,$bounds,$declaration,$next);
+effect c11.scopes.check_typedef($name,$type,$next,$env,$result) when c11.vla.has_vm($type)
+    => bind(c11.sema.TypeFact($resolved,$scope,$bounds),c11.vla.materialize_type($type,$env),
+        BoundsDeclaration(choose(env.contains($env,MarkerKey()),env.get($env,MarkerKey()),symbol("c.vm.typedef")),$bounds,NoDeclaration(),
+            base.check_body($next,env.put($scope,$name,c11.scopes.TypeNameBinding($resolved)),$result)));
+// A block static pointer may point into a VLA type. Its pointer storage is
+// static, but the pointed-to bound is evaluated on reaching the declaration.
+effect c11.sema.check_static_binding($name,$type,$symbol,$next,$env,$result) when c11.vla.has_vm($type)
+    => seq(choose(c11.vla.array_object($type),fail("C VLA object requires automatic storage"),1),
+        bind(c11.sema.TypeFact($resolved,$scope,$bounds),c11.vla.materialize_type($type,$env),
+            BoundsDeclaration(choose(env.contains($env,MarkerKey()),env.get($env,MarkerKey()),symbol("c.vm.static.pointer")),$bounds,NoDeclaration(),
+                c11.sema.check_static_body($name,c11.sema.GlobalSlot($resolved,$symbol),$next,$scope,$result))));
+effect base.prepare_storage(BoundsDeclaration($marker,$bounds,c11.sema.Declared($identity,$type,$value,$ignored),$next),$entry,$env)
+    => bind($slot,mlir.with_block($entry,c11.sema.allocate(choose(c11.vla.array_object($type),c11.types.Pointer(control.Void()),$type))),
+        base.prepare_storage($next,$entry,env.put($env,$identity,$slot)));
+effect base.prepare_storage(BoundsDeclaration($marker,$bounds,NoDeclaration(),$next),$entry,$env) => base.prepare_storage($next,$entry,$env);
+effect base.lower_flow(BoundsDeclaration($marker,$bounds,c11.sema.Declared($identity,$type,$value,$ignored),$next),$env,$block,$continuation)
+    => seq(mlir.in_block($block,c11.vla.lower_bounds($bounds,$env)),choose(c11.vla.array_object($type),
+        bind($scope,mlir.with_block($block,stack_regions.begin($env,$marker)),
+            seq(mlir.in_block($block,c11.vla.allocate_array($identity,$type,$scope)),
+                base.lower_flow($next,$scope,$block,stack_regions.continuation($continuation,$env)))),
+        base.lower_flow(c11.sema.Declared($identity,$type,$value,$next),$env,$block,$continuation)));
+effect base.lower_flow(BoundsDeclaration($marker,$bounds,NoDeclaration(),$next),$env,$block,$continuation)
+    => seq(mlir.in_block($block,c11.vla.lower_bounds($bounds,$env)),base.lower_flow($next,$env,$block,$continuation));
+effect c11.vla.allocate_array($identity,$type,$env)
+    => bind($pointer,mlir.op("llvm.alloca",[base.lower(c11.vla.size_term($type),$env)],["!llvm.ptr"],
+        [RawAttr("elem_type","i8"),Attr("alignment",c11.types.alignment($type),"i64")],[]),
+            mlir.op("llvm.store",[$pointer,env.get($env,$identity)],[],[],[]));
+effect base.flow_terminal(BoundsDeclaration($marker,$bounds,$declaration,$next)) => base.flow_terminal($next);
+effect c11.sema.local_pointer($type,$identity,$env) when c11.vla.array_object($type)
+    => mlir.op("llvm.load",[env.get($env,$identity)],["!llvm.ptr"],[],[]);
+effect c11.sema.object_read(RuntimeArray($bound,$element),$reference)
+    => seq(c11.sema.array_decay_allowed($reference),base.Typed(c11.types.Pointer($element),c11.objects.ArrayDecay($reference)));
+effect c11.objects.qualified_read(RuntimeArray($bound,$element),$qualifiers,$reference)
+    => seq(c11.sema.array_decay_allowed($reference),base.Typed(c11.types.Pointer(c11.types.qualify($element,$qualifiers)),c11.objects.ArrayDecay($reference)));
+effect c11.sema.writable_type(RuntimeArray($bound,$element)) => fail("C array is not a modifiable lvalue");
+effect c11.sema.initializer($value,$env,$type) when c11.vla.array_object($type)
+    => choose(eq($value,c11.syntax.Uninitialized()),c11.sema.NoInitializer(),fail("C variable length array cannot have an initializer"));
+effect c11.initializers.initialization_type($type,$env) when c11.vla.array_object($type) => fail("C variable length array cannot have an initializer");
+effect c11.objects.lower_offset($element,$pointer,$index,$env) when c11.vla.array_object($element)
+    => mlir.op("llvm.getelementptr",[base.lower($pointer,$env),mlir.op("arith.muli",[base.lower($index,$env),base.lower(c11.vla.size_term($element),$env)],["i64"],[],[])],
+        ["!llvm.ptr"],[RawAttr("elem_type","i8"),RawAttr("rawConstantIndices","array<i32: -2147483648>")],[]);
+effect c11.objects.divide_pointer_difference($delta,$type,$env) when c11.vla.array_object($type)
+    => mlir.op("arith.divsi",[$delta,base.lower(c11.vla.size_term($type),$env)],["i64"],[],[]);
+
+// Parameter metadata owns declaration-time bound evaluation, but its ABI is
+// the ordinary adjusted pointer. Prototype [*] facts never reach a definition.
+effect c11.declarators.parameter_value($name,$type) when c11.vla.has_vm($type)
+    => seq(c11.vla.prototype_parameter($type),VmParam($name,c11.declarators.adjust_parameter($type),$type,"none"));
+effect c11.declarators.validate_parameter(VmParam($name,$type,$source,$storage)) => c11.vla.prototype_parameter($source);
+effect c11.vla.prototype_parameter(c11.parameter_arrays.ParameterArray($count,$element,$quals,$static))
+    => seq(c11.vla.prototype_inner($element),c11.parameter_arrays.check_bound($count));
+effect[fallback] c11.vla.prototype_parameter($type) => c11.vla.prototype_inner($type);
+effect c11.vla.prototype_inner(c11.parameter_arrays.ParameterArray($count,$element,$quals,$static))
+    => fail("C static and qualifiers inside array brackets require the outermost array derivation of a function parameter");
+effect c11.vla.prototype_inner(PrototypeArray($element)) => c11.vla.prototype_inner($element);
+effect c11.vla.prototype_inner(VariableArray($bound,$element)) => c11.vla.prototype_inner($element);
+effect c11.vla.prototype_inner(RuntimeArray($bound,$element)) => c11.vla.prototype_inner($element);
+effect c11.vla.prototype_inner(c11.types.Array($count,$element)) => c11.vla.prototype_inner($element);
+effect c11.vla.prototype_inner(c11.types.IncompleteArray($element)) => c11.vla.prototype_inner($element);
+effect c11.vla.prototype_inner(c11.types.Pointer($element)) => c11.vla.prototype_inner($element);
+effect c11.vla.prototype_inner(c11.types.Qualified($type,$c,$v,$r)) => c11.vla.prototype_inner($type);
+effect c11.vla.prototype_inner(c11.types.AlignedType($type,$alignment)) => c11.vla.prototype_inner($type);
+effect[fallback] c11.vla.prototype_inner($type) => c11.declarators.validate_type($type);
+effect base.param_type(VmParam($name,$type,$source,$storage)) => $type;
+effect c11.sema.function_parameter(VmParam($name,$type,$source,$storage),$env) => VmParam($name,$type,$source,$storage);
+effect base.bind_param(VmParam($name,$type,$source,$storage),$rest,$env,$seen) => base.bind_param(base.Param($name,$type),$rest,$env,$seen);
+effect c11.types.signature_parameter(VmParam($name,$type,$source,$storage)) => c11.types.unqualified($type);
+effect c11.sema.parameter_type(VmParam($name,$type,$source,$storage)) => c11.types.unqualified($type);
+effect c11.sema.parameter_repr(VmParam($name,$type,$source,$storage)) => types.repr($type);
+effect c11.sema.parameter_policy(VmParam($name,$type,$source,$storage)) => c11.sema.ParameterPolicy($name,$type,$storage);
+effect c11.scopes.parameter_binding($context,VmParam($name,$type,$source,$storage)) => c11.scopes.parameter_binding($context,base.Param($name,$type));
+effect c11.scopes.add_parameter_name($seen,VmParam($name,$type,$source,$storage)) => c11.scopes.add_parameter_name($seen,base.Param($name,$type));
+effect c11.objects.declaration_parameter(VmParam($name,$type,$source,$storage),$tags)
+    => VmParam($name,c11.objects.declaration_type($type,$tags),$source,$storage);
+effect c11.storage.parameter_storage("register",VmParam($name,$type,$source,"none")) => VmParam($name,$type,$source,"register");
+effect c11.types.promoted_parameter(VmParam($name,$type,$source,$storage)) => base.Param($name,c11.types.default_argument(c11.types.unqualified($type)));
+effect c11.sema.old_abi_parameter(VmParam($name,$type,$source,$storage)) => c11.types.promoted_parameter(VmParam($name,$type,$source,$storage));
+effect c11.sema.parameter_fact(c11.sema.ParameterFacts($declarations,$scope),VmParam($name,$type,$source,$storage))
+    => seq(choose(c11.vla.contains_star($source),fail("C function definition cannot use prototype [*] arrays"),1),
+        bind(c11.sema.TypeFact($original,$typed_scope,$bounds),c11.vla.materialize_parameter($source,$scope),
+            bind([$declaration,$next],c11.sema.declaration_fact($name,c11.declarators.adjust_parameter($original),c11.syntax.Name($name),$typed_scope,1,$storage),
+                c11.sema.ParameterFacts(list.prepend(c11.vla.parameter_bounds($bounds,$declaration),$declarations),$next))));
+effect c11.vla.parameter_bounds($bounds,BoundsDeclaration($marker,$inner,$declaration,base.End())) => BoundsDeclaration($marker,list.concat($bounds,$inner),$declaration,base.End());
+effect[fallback] c11.vla.parameter_bounds($bounds,$declaration) => BoundsDeclaration(symbol("c.vm.parameter"),$bounds,$declaration,base.End());
+effect c11.vla.materialize_parameter(c11.parameter_arrays.ParameterArray($count,$element,$quals,$static),$env)
+    => bind(Materialized($item,$scope,$bounds),c11.vla.materialize($element,$env),
+        bind($captures,choose(eq($count,c11.parameter_arrays.UnspecifiedBound()),[],
+            choose(c11.sema.integer_constant_expression($count,$env),seq(c11.sema.integer_constant_value($count,$env),[]),
+                arg(c11.vla.capture_bound(symbol("c.vm.parameter.bound"),$count,$scope),2))),
+            c11.sema.TypeFact(c11.parameter_arrays.ParameterArray(c11.parameter_arrays.UnspecifiedBound(),$item,$quals,$static),$scope,list.concat($captures,$bounds))));
+effect[fallback] c11.vla.materialize_parameter($source,$env) => c11.vla.materialize_type($source,$env);
+
+// Bounds do not participate in compatible VLA types. Known constant extents
+// still use the ordinary Array/Array compatibility rules.
+effect c11.types.compatibility_shape(VariableArray($bound,$element)) => VmArray(SourceBoundary($bound),$element);
+effect c11.types.compatibility_shape(RuntimeArray($bound,$element)) => VmArray(RuntimeBoundary($bound),$element);
+effect c11.types.compatibility_shape(PrototypeArray($element)) => VmArray(PrototypeBoundary(),$element);
+effect c11.types.compatibility_qualified(VariableArray($bound,$element),$quals) => VmArray(SourceBoundary($bound),c11.types.qualify($element,$quals));
+effect c11.types.compatibility_qualified(RuntimeArray($bound,$element),$quals) => VmArray(RuntimeBoundary($bound),c11.types.qualify($element,$quals));
+effect c11.types.compatibility_qualified(PrototypeArray($element),$quals) => VmArray(PrototypeBoundary(),c11.types.qualify($element,$quals));
+effect c11.types.compatible_shape(VmArray($ab,$a),VmArray($bb,$b)) => c11.types.compatible($a,$b);
+effect c11.types.compatible_shape(VmArray($bound,$a),c11.types.Array($count,$b)) => c11.types.compatible($a,$b);
+effect c11.types.compatible_shape(c11.types.Array($count,$a),VmArray($bound,$b)) => c11.types.compatible($a,$b);
+effect c11.types.compatible_shape(VmArray($bound,$a),c11.types.IncompleteArray($b)) => c11.types.compatible($a,$b);
+effect c11.types.compatible_shape(c11.types.IncompleteArray($a),VmArray($bound,$b)) => c11.types.compatible($a,$b);
+effect c11.types.composite_shape(VmArray($ab,$a),VmArray($bb,$b))
+    => c11.vla.composite_vm(choose(eq($bb,PrototypeBoundary()),$ab,$bb),c11.types.composite($a,$b));
+effect c11.types.composite_shape(c11.types.Array($count,$a),VmArray($bound,$b)) => c11.types.Array($count,c11.types.composite($a,$b));
+effect c11.types.composite_shape(VmArray($bound,$a),c11.types.Array($count,$b)) => c11.types.Array($count,c11.types.composite($a,$b));
+effect c11.types.composite_shape(VmArray($bound,$a),c11.types.IncompleteArray($b)) => c11.vla.composite_vm($bound,c11.types.composite($a,$b));
+effect c11.types.composite_shape(c11.types.IncompleteArray($a),VmArray($bound,$b)) => c11.vla.composite_vm($bound,c11.types.composite($a,$b));
+effect c11.vla.composite_vm(SourceBoundary($bound),$element) => VariableArray($bound,$element);
+effect c11.vla.composite_vm(RuntimeBoundary($bound),$element) => RuntimeArray($bound,$element);
+effect c11.vla.composite_vm(PrototypeBoundary(),$element) => PrototypeArray($element);
+effect c11.scopes.local_type_constraints($type,$storage) when c11.vla.has_vm($type)
+    => seq(c11.declarators.validate_type($type),choose(or(eq($storage,"extern"),and(c11.vla.array_object($type),not(or(eq($storage,"none"),or(eq($storage,"auto"),eq($storage,"register")))))),
+        fail("C VM identifiers require block scope and no linkage; VLA objects require automatic storage"),1));
+effect c11.scopes.file_type_constraints(c11.syntax.Global($name,$type,$value)) when c11.vla.has_vm($type) => fail("C variably modified object cannot have file scope; array bounds require an integer constant expression");
+effect c11.scopes.file_type_constraints(c11.syntax.ExternalGlobal($name,$type)) when c11.vla.has_vm($type) => fail("C variably modified identifier cannot have linkage");
+effect c11.scopes.file_type_constraints(c11.syntax.TypeDefinition($type)) when c11.vla.has_vm($type) => fail("C variably modified typedef cannot have file scope");
+effect c11.scopes.file_type_constraints(c11.syntax.Internal($item)) => c11.scopes.file_type_constraints($item);
+effect c11.scopes.file_type_constraints(c11.thread_storage.ThreadObject($item)) => c11.scopes.file_type_constraints($item);
+effect c11.scopes.file_type_constraints(c11.functions.Specified($scope,$flags,$storage,$source,$item)) => c11.scopes.file_type_constraints($item);
+effect c11.scopes.file_type_constraints(c11.syntax.HeaderInline($item)) => c11.scopes.file_type_constraints($item);
+effect c11.scopes.file_type_constraints(c11.syntax.Function($name,$params,$result,$body)) when c11.vla.has_vm($result) => fail("C variably modified identifier cannot have file scope");
+effect c11.scopes.file_type_constraints(c11.syntax.OldFunction($name,$params,$result,$body)) when c11.vla.has_vm($result) => fail("C variably modified identifier cannot have file scope");
+effect c11.scopes.file_type_constraints(c11.syntax.VariadicFunction($name,$params,$result,$body)) when c11.vla.has_vm($result) => fail("C variably modified identifier cannot have file scope");
+effect c11.scopes.file_type_constraints(c11.syntax.Prototype($name,$params,$result,$variadic)) when c11.vla.has_vm($result) => fail("C variably modified identifier cannot have file scope");
+effect c11.scopes.linked_type_constraints($type) when c11.vla.has_vm($type) => fail("C variably modified identifier cannot have linkage");
+effect c11.sema.generic_object_unqualified($type) when c11.vla.has_vm($type) => fail("C generic association type cannot be variably modified");
+effect c11.atomics.atomic_target(VariableArray($bound,$element)) => fail("C atomic type cannot be an array or function");
+effect c11.atomics.atomic_target(RuntimeArray($bound,$element)) => fail("C atomic type cannot be an array or function");
+effect c11.atomics.atomic_target(PrototypeArray($element)) => fail("C atomic type cannot be an array or function");

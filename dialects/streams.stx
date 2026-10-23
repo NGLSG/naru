@@ -1,0 +1,88 @@
+// Pull-based async generators: awaiting next completes one production request.
+// Awaiting inside the producer suspends its frame without occupying a worker.
+mod streams;
+use coro;
+use tasks;
+use base;
+use control;
+use types;
+use defer;
+use affine;
+use allocation;
+use closures;
+use functions;
+use generics;
+use tree;
+use externc;
+
+syntax typename `async_generator<$element:typename>` => streams.Generator($element);
+effect externc.c_abi_type(streams.Generator($element)) => streams.Generator($element);
+syntax item `async coro fn $name:ident() -> $element:typename $body:block` => streams.Function($name,[],$element,$body);
+syntax item `async coro fn $name:ident($params:parameters) -> $element:typename $body:block` => streams.Function($name,$params,$element,$body);
+syntax item `async coro fn $name:ident<$variables:type_parameters>($params:parameters) -> $element:typename $body:block`
+    => generics.Template($name,$variables,$params,streams.Generator($element),streams.GenericBody($body),[]);
+syntax item `async coro fn $name:ident<$variables:type_parameters>() -> $element:typename $body:block`
+    => generics.Template($name,$variables,[],streams.Generator($element),streams.GenericBody($body),[]);
+effect generics.specialize_item($name,$params,streams.Generator($element),streams.GenericBody($body)) => streams.Function($name,$params,$element,$body);
+syntax expr `next($generator:expr)` => streams.Next($generator);
+effect types.repr(streams.Generator($element)) => "!llvm.ptr";
+effect coro.payload(streams.Generator($element)) => "!llvm.ptr";
+effect base.storage_alloc(streams.Generator($element)) => base.storage_alloc(coro.Generator($element));
+effect base.storage_load(streams.Generator($element),$slot) => base.storage_load(coro.Generator($element),$slot);
+effect base.storage_store(base.Typed(streams.Generator($element),$value),$slot,$env) => coro.store(base.lower(base.Typed(streams.Generator($element),$value),$env),$slot);
+effect base.signature_params(streams.Signature($params,$element)) => $params;
+effect base.signature_result(streams.Signature($params,$element)) => streams.Generator($element);
+effect base.declare(streams.Function($name,$params,$element,$body),$rest,$env)
+    => seq(coro.payload($element),base.declaration($name,streams.Signature(list.map("base.param_type",$params),$element),$rest,$env));
+effect base.call_checked($name,$args,streams.Signature($params,$element),$env,$expected)
+    => base.expect(base.Typed(streams.Generator($element),streams.Start($name,base.check_arguments($args,$params,$env))),$expected);
+effect functions.callable(streams.Signature($params,$element)) => functions.Callable($params,streams.Generator($element));
+effect tasks.normalize_function(streams.Function($name,$params,$element,$body)) => streams.Function($name,$params,$element,tasks.body(tasks.contextualize($body,control.Void(),$element)));
+effect closures.lift_item(streams.Function($name,$params,$element,$body),$env,$lifted)
+    => bind([$rewritten,$next],closures.lift_body($body,closures.param_scope($params,$env),$lifted),[streams.Function($name,$params,$element,$rewritten),$next]);
+effect defer.function(streams.Function($name,$params,$element,$body),$env) => streams.Function($name,$params,$element,
+    defer.expand(tree.rewrite($body,"coro.finish_node",[]),defer.Context([],[],defer.NoLoop()),defer.defer_scope($params,$env),control.Void()));
+effect affine.function(streams.Function($name,$params,$element,$body),$env)
+    => bind($state,affine.parameters($params,affine.State($env,env.empty(),env.empty(),env.empty(),[])),
+        bind([$rewritten,$last],affine.body($body,$state),streams.Function($name,$params,$element,affine.parameter_storage($params,$rewritten))));
+effect base.prepare(streams.Function($name,$params,$element,$body),$env) => bind([$bound,$scope],base.bind_params($params,$env,env.empty()),
+    seq(list.map("coro.parameter_safe",$params),bind($data,symbol("stream.data"),streams.Checked($name,$bound,$element,$data,
+        base.check_body($body,env.put(env.put($scope,coro.YieldTypeKey(),$element),tasks.TaskResultKey(),control.Void()),control.Void())))));
+effect allocation.children(streams.Checked($name,$params,$element,$data,$body)) => [];
+effect base.lower_function(streams.Checked($name,$params,$element,$data,$body)) => seq(mlir.op("func.func",[],[],[
+    Attr("sym_name",coro.body_symbol($name)),Attr("sym_visibility","private"),RawAttr("llvm.passthrough","[\"presplitcoroutine\"]"),
+    RawAttr("function_type",concat("(",concat(types.join(list.concat(list.map("base.bound_type",$params),["!llvm.ptr"])),") -> !async.coro.handle")))],
+    [coro.region(list.concat($params,[base.BoundParam(coro.DataPointer(),$data)]),$body,$element,$data)]),
+    coro.wrapper($name,$params,streams.Generator($element),streams.Start($name,list.map("coro.bound_read",$params))));
+effect base.lower(base.Typed(streams.Generator($element),streams.Start($name,$arguments)),$env)
+    => bind($data,coro.start_data($name,$arguments,$element,$env),seq(coro.store(coro.integer(0),coro.address($data,$element,3)),
+        seq(coro.native_call("naru_async_generator_attach",[$data,coro.load(coro.address($data,$element,0),"!llvm.ptr"),
+            coro.address($data,$element,1),coro.address($data,$element,3),coro.address($data,$element,2),tasks.result_size($element)],[]),$data)));
+effect base.hint(streams.Next($value),$env) => tasks.Task(types.Bool());
+effect streams.element(streams.Generator($element)) => $element;
+effect[fallback] streams.element($type) => fail("next requires an async generator");
+effect base.check(streams.Next($value),$env,$expected) => bind($checked,base.check($value,$env,base.Any()),
+    seq(streams.element(arg($checked,0)),base.expect(base.Typed(tasks.Task(types.Bool()),streams.NextValue($checked)),$expected)));
+effect tasks.fresh(streams.Next($value),$env) => 1;
+effect base.lower(base.Typed(tasks.Task(types.Bool()),streams.NextValue($value)),$env)
+    => bind($generator,base.lower($value,$env),bind($data,tasks.allocate(types.Bool()),seq(coro.native_call("naru_async_generator_next",
+        [$generator,$data,coro.address($data,types.Bool(),1),coro.address($data,types.Bool(),3),coro.address($data,types.Bool(),2)],[]),$data)));
+effect coro.element(streams.Generator($element)) => $element;
+effect tasks.element(streams.Generator($element)) => $element;
+effect base.lower(base.Typed($result,tasks.Operation($kind,base.Typed(streams.Generator($element),$value))),$env)
+    => tasks.operation($kind,base.lower(base.Typed(streams.Generator($element),$value),$env));
+effect coro.destroy_element(streams.Generator($element)) => $element;
+effect coro.destroy_element(affine.Owned(streams.Generator($element))) => $element;
+effect base.lower(base.Typed(control.Void(),coro.DestroyValue(base.Typed(affine.Owned(streams.Generator($element)),$value))),$env)
+    => coro.native_call("naru_task_destroy",[base.lower(base.Typed(affine.Owned(streams.Generator($element)),$value),$env)],[]);
+effect coro.check_current(base.Typed(streams.Generator($element),$value),$expected) => base.expect(base.Typed($element,
+    streams.Current(base.Typed(streams.Generator($element),$value),symbol("stream.result"))),$expected);
+effect allocation.site(base.Typed($type,streams.Current($value,$identity))) => allocation.Site($identity,"tasks.result_slot",[$type]);
+effect base.lower(base.Typed($element,streams.Current($value,$identity)),$env) => bind($slot,allocation.lookup($env,$identity),
+    seq(coro.native_call("naru_async_generator_current",[base.lower($value,$env),$slot,tasks.result_size($element)],[]),tasks.load_result($slot,$element)));
+effect base.lower(base.Typed(control.Void(),coro.DestroyValue(base.Typed(streams.Generator($element),$value))),$env)
+    => coro.native_call("naru_task_destroy",[base.lower(base.Typed(streams.Generator($element),$value),$env)],[]);
+effect coro.runtime_needed($found,streams.Generator($element)) => 1;
+effect coro.runtime_needed($found,streams.Checked($name,$params,$element,$data,$body)) => 1;
+effect tasks.needed($found,streams.Generator($element)) => 1;
+effect tasks.needed($found,streams.Checked($name,$params,$element,$data,$body)) => 1;

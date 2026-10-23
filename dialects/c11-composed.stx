@@ -1,0 +1,6 @@
+mod composed;
+use c11;
+use c11.initializers;
+effect composed.frontend($path,$source,$options) => c11.frontend($path,$source,$options);
+effect composed.analyze($items) => c11.analyze($items);
+effect composed.emit_program($items) => c11.emit_program($items);

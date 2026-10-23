@@ -1,0 +1,116 @@
+// Marked macro substitution preserves argument suppression across rescans.
+// Parameters are prescanned lazily once; #/## operands retain original tokens.
+mod c11.pp_macros;
+use c11.pp;
+use c11.lex;
+
+effect c11.pp_macros.validate(c11.pp.Object($body),$at) => seq(c11.pp_macros.paste_ends($body,$at),
+    seq(rule.iterate("c11.pp_macros.validate_object_step",c11.pp_macros.ObjectValidation($body,$at),1000000),1));
+effect c11.pp_macros.validate_object_step(c11.pp_macros.ObjectValidation([],$at)) => [0,c11.pp_macros.ObjectValidation([],$at)];
+effect c11.pp_macros.validate_object_step(c11.pp_macros.ObjectValidation($body,$at)) when lt(0,size($body))
+    => seq(choose(eq(c11.lex.macro_key(list.head($body)),"__VA_ARGS__"),c11.lex.error($at,"__VA_ARGS__ requires a variadic macro replacement list"),1),
+        [1,c11.pp_macros.ObjectValidation(list.tail($body),$at)]);
+effect c11.pp_macros.validate(c11.pp.Function($params,$variadic,$body),$at)
+    => seq(c11.pp_macros.paste_ends($body,$at),seq(rule.iterate("c11.pp_macros.validate_step",
+        c11.pp_macros.Validation($body,$params,$variadic,$at),1000000),1));
+effect c11.pp_macros.paste_ends([],$at) => 1;
+effect c11.pp_macros.paste_ends($body,$at) when lt(0,size($body))
+    => choose(or(eq(c11.lex.spelling(list.head($body)),"##"),eq(c11.lex.spelling(arg($body,sub(size($body),1))),"##")),
+        c11.lex.error($at,"token paste cannot begin or end a macro replacement list"),1);
+effect c11.pp_macros.validate_step(c11.pp_macros.Validation([],$params,$variadic,$at)) => [0,c11.pp_macros.Validation([],$params,$variadic,$at)];
+effect c11.pp_macros.validate_step(c11.pp_macros.Validation($body,$params,$variadic,$at)) when lt(0,size($body))
+    => bind($head,c11.lex.macro_key(list.head($body)),seq(choose(eq($head,"#"),
+        choose(choose(lt(1,size($body)),or(c11.pp.member(c11.lex.macro_key(arg($body,1)),$params),and($variadic,eq(c11.lex.macro_key(arg($body,1)),"__VA_ARGS__"))),0),
+            1,c11.lex.error($at,"stringification requires a macro parameter")),
+        choose(and(eq($head,"__VA_ARGS__"),not($variadic)),c11.lex.error($at,"__VA_ARGS__ requires a variadic macro replacement list"),1)),
+        [1,c11.pp_macros.Validation(list.tail($body),$params,$variadic,$at)]));
+
+effect c11.pp_macros.hide_union($left,$right) => list.fold("c11.pp_macros.hide_entry",env.entries($right),$left);
+effect c11.pp_macros.hide_entry($out,[$name,$value]) => env.put($out,$name,$value);
+effect c11.pp_macros.hide_intersection($left,$right) => arg(list.fold("c11.pp_macros.intersect_entry",env.entries($left),[env.empty(),$right]),0);
+effect c11.pp_macros.intersect_entry([$out,$right],[$name,$value]) => [choose(env.contains($right,$name),env.put($out,$name,$value),$out),$right];
+
+effect c11.pp_macros.marked_arguments($work,$at) => bind(c11.pp_macros.ArgumentsDone($args,$rest,$close_hide),
+    rule.iterate("c11.pp_macros.argument_step",c11.pp_macros.Arguments($work,[],[],0,$at),1000000),[$args,$rest,$close_hide]);
+effect c11.pp_macros.argument_step(c11.pp_macros.Arguments(c11.pp.EmptyWork(),$done,$current,$nesting,$at))
+    => c11.lex.error($at,"unterminated macro invocation");
+effect c11.pp_macros.argument_step(c11.pp_macros.Arguments(c11.pp.CursorWork($cursor,$tail),$done,$current,$nesting,$at))
+    => bind($work,c11.pp.CursorWork($cursor,$tail),bind(c11.pp.MarkedToken($token,$hide),c11.pp.work_head($work),bind($raw,c11.lex.spelling($token),
+        choose(and(eq($raw,")"),eq($nesting,0)),[0,c11.pp_macros.ArgumentsDone(list.reverse(list.prepend(list.reverse($current),$done)),c11.pp.work_next($work),$hide)],
+            choose(and(eq($raw,","),eq($nesting,0)),[1,c11.pp_macros.Arguments(c11.pp.work_next($work),list.prepend(list.reverse($current),$done),[],0,$at)],
+                [1,c11.pp_macros.Arguments(c11.pp.work_next($work),$done,list.prepend(c11.pp.MarkedToken($token,$hide),$current),
+                    add($nesting,choose(eq($raw,"("),1,choose(eq($raw,")"),-1,0))),$at)])))));
+effect c11.pp_macros.marked_bindings([],0,[[]],$at) => env.empty();
+effect[fallback] c11.pp_macros.marked_bindings($params,$variadic,$args,$at)
+    => choose(choose($variadic,not(lt(size($args),size($params))),eq(size($args),size($params))),
+        bind($bound,c11.pp.bind_fixed($params,$args,env.empty()),choose($variadic,
+            env.put($bound,"__VA_ARGS__",c11.pp_macros.join_arguments(list.slice($args,size($params),size($args)),$at)),$bound)),
+        c11.lex.error($at,"macro argument count mismatch"));
+effect c11.pp_macros.join_arguments([],$at) => [];
+effect c11.pp_macros.join_arguments([$arg],$at) => $arg;
+effect c11.pp_macros.join_arguments($args,$at) when lt(1,size($args))
+    => list.concat(list.head($args),list.prepend(c11.pp.MarkedToken(c11.lex.made(5,",",$at),env.empty()),c11.pp_macros.join_arguments(list.tail($args),$at)));
+
+effect c11.pp_macros.marked_substitution($body,$bindings,$macros,$at,$depth,$hide)
+    => bind(c11.pp_macros.Substitution($rest,$raw,$cache,$final,$origin,$level,$paste,$chunks),rule.iterate("c11.pp_macros.substitution_step",
+        c11.pp_macros.Substitution($body,$bindings,env.empty(),$macros,$at,$depth,0,[]),1000000),
+        [c11.pp_macros.argument_spacing(c11.pp_macros.add_hide(c11.pp_macros.paste(list.flatten(list.reverse($chunks)),$at),$hide),$at),$final]);
+effect c11.pp_macros.substitution_step(c11.pp_macros.Substitution([],$raw,$cache,$macros,$at,$depth,$paste,$out))
+    => [0,c11.pp_macros.Substitution([],$raw,$cache,$macros,$at,$depth,$paste,$out)];
+effect c11.pp_macros.substitution_step(c11.pp_macros.Substitution($body,$raw,$cache,$macros,$at,$depth,$paste,$out)) when lt(0,size($body))
+    => bind($token,list.head($body),bind($name,c11.lex.macro_key($token),choose(eq($name,"#"),
+        c11.pp_macros.stringify_step(list.tail($body),$raw,$cache,$macros,$at,$depth,$out),
+        choose(eq($name,"##"),[1,c11.pp_macros.Substitution(list.tail($body),$raw,$cache,$macros,$at,$depth,1,list.prepend([c11.pp_macros.PasteOperator()],$out))],
+            choose(env.contains($raw,$name),c11.pp_macros.parameter_step($body,$name,$raw,$cache,$macros,$at,$depth,$paste,$out),
+                [1,c11.pp_macros.Substitution(list.tail($body),$raw,$cache,$macros,$at,$depth,0,
+                    list.prepend([c11.pp.MarkedToken(c11.pp_macros.relocated($token,$at),env.empty())],$out))])))));
+effect c11.pp_macros.stringify_step([],$raw,$cache,$macros,$at,$depth,$out) => c11.lex.error($at,"stringification requires a macro parameter");
+effect c11.pp_macros.stringify_step($body,$raw,$cache,$macros,$at,$depth,$out) when lt(0,size($body))
+    => bind($name,c11.lex.macro_key(list.head($body)),choose(env.contains($raw,$name),
+        [1,c11.pp_macros.Substitution(list.tail($body),$raw,$cache,$macros,$at,$depth,0,list.prepend([
+            c11.pp.MarkedToken(c11.lex.made(3,c11.pp.stringified(c11.pp.unmark(env.get($raw,$name))),$at),env.empty())],$out))],
+        c11.lex.error($at,"stringification requires a macro parameter")));
+effect c11.pp_macros.parameter_step($body,$name,$raw,$cache,$macros,$at,$depth,$paste,$out)
+    => choose(or($paste,choose(lt(1,size($body)),eq(c11.lex.spelling(arg($body,1)),"##"),0)),
+        [1,c11.pp_macros.Substitution(list.tail($body),$raw,$cache,$macros,$at,$depth,0,
+            list.prepend(c11.pp_macros.argument_spacing(c11.pp_macros.paste_argument(env.get($raw,$name),$at),list.head($body)),$out))],
+        choose(env.contains($cache,$name),[1,c11.pp_macros.Substitution(list.tail($body),$raw,$cache,$macros,$at,$depth,0,list.prepend(c11.pp_macros.argument_spacing(env.get($cache,$name),list.head($body)),$out))],
+            bind([$expanded,$final],c11.pp.expand_marked_result(env.get($raw,$name),$macros,add($depth,1)),
+                [1,c11.pp_macros.Substitution(list.tail($body),$raw,env.put($cache,$name,$expanded),$final,$at,$depth,0,list.prepend(c11.pp_macros.argument_spacing($expanded,list.head($body)),$out))])));
+effect c11.pp_macros.relocated([$kind,$raw,$file,$line,$column,$space],[$ak,$ar,$af,$al,$ac,$as]) => [$kind,$raw,$af,$al,$ac,$space];
+effect c11.pp_macros.argument_spacing([],$at) => [];
+effect c11.pp_macros.argument_spacing($tokens,$at) when lt(0,size($tokens))
+    => bind(c11.pp.MarkedToken([$kind,$raw,$file,$line,$column,$space],$hide),list.head($tokens),
+        list.prepend(c11.pp.MarkedToken([$kind,$raw,$file,$line,$column,c11.lex.space($at)],$hide),list.tail($tokens)));
+effect c11.pp_macros.paste_argument([],$at) => [c11.pp.MarkedToken(c11.lex.made(8,"",$at),env.empty())];
+effect c11.pp_macros.paste_argument($tokens,$at) when lt(0,size($tokens)) => $tokens;
+
+// An operator is identified by its replacement-list origin, never merely by
+// a spelling manufactured by a previous expansion (WG14 DR 017 question 22).
+effect c11.pp_macros.object_replacement($body,$at,$hide)
+    => c11.pp_macros.argument_spacing(c11.pp_macros.add_hide(c11.pp_macros.paste(c11.pp_macros.object_tokens($body,$at),$at),$hide),$at);
+effect c11.pp_macros.object_tokens($body,$at) => bind(c11.pp_macros.ObjectTokens($chunks,$origin),
+    list.fold("c11.pp_macros.object_token",$body,c11.pp_macros.ObjectTokens([],$at)),list.reverse($chunks));
+effect c11.pp_macros.object_token(c11.pp_macros.ObjectTokens($out,$at),$token)
+    => c11.pp_macros.ObjectTokens(list.prepend(choose(eq(c11.lex.spelling($token),"##"),c11.pp_macros.PasteOperator(),
+        c11.pp.MarkedToken(c11.pp_macros.relocated($token,$at),env.empty())),$out),$at);
+effect c11.pp_macros.add_hide($tokens,$hide) => bind(c11.pp_macros.Hidden($out,$added),
+    list.fold("c11.pp_macros.hide_token",$tokens,c11.pp_macros.Hidden([],$hide)),list.reverse($out));
+effect c11.pp_macros.hide_token(c11.pp_macros.Hidden($out,$added),c11.pp.MarkedToken($token,$hide))
+    => c11.pp_macros.Hidden(list.prepend(c11.pp.MarkedToken($token,c11.pp.hide_union($hide,$added)),$out),$added);
+effect c11.pp_macros.paste($tokens,$at) => bind(c11.pp_macros.Pasting($out,$pending,$origin),
+    list.fold("c11.pp_macros.paste_step",$tokens,c11.pp_macros.Pasting([],0,$at)),
+        choose($pending,c11.lex.error($at,"token paste has no right operand"),c11.pp_macros.remove_placeholders(list.reverse($out))));
+effect c11.pp_macros.paste_step(c11.pp_macros.Pasting($out,0,$at),c11.pp_macros.PasteOperator())
+    => choose(eq(size($out),0),c11.lex.error($at,"token paste has no left operand"),c11.pp_macros.Pasting($out,1,$at));
+effect c11.pp_macros.paste_step(c11.pp_macros.Pasting($out,1,$at),c11.pp_macros.PasteOperator()) => c11.lex.error($at,"consecutive token paste operators");
+effect c11.pp_macros.paste_step(c11.pp_macros.Pasting($out,0,$at),c11.pp.MarkedToken($token,$hide))
+    => c11.pp_macros.Pasting(list.prepend(c11.pp.MarkedToken($token,$hide),$out),0,$at);
+effect c11.pp_macros.paste_step(c11.pp_macros.Pasting($out,1,$at),c11.pp.MarkedToken($token,$hide))
+    => c11.pp_macros.Pasting(list.prepend(c11.pp_macros.paste_pair(list.head($out),c11.pp.MarkedToken($token,$hide),$at),list.tail($out)),0,$at);
+effect c11.pp_macros.paste_pair(c11.pp.MarkedToken($a,$ah),c11.pp.MarkedToken($b,$bh),$at)
+    => choose(eq(c11.lex.kind($a),8),c11.pp.MarkedToken($b,$bh),choose(eq(c11.lex.kind($b),8),c11.pp.MarkedToken($a,$ah),
+        c11.pp.MarkedToken(c11.pp.paste_pair($a,$b,$at),c11.pp.hide_intersection($ah,$bh))));
+effect c11.pp_macros.remove_placeholders($tokens) => list.reverse(list.fold("c11.pp_macros.remove_placeholder",$tokens,[]));
+effect c11.pp_macros.remove_placeholder($out,c11.pp.MarkedToken($token,$hide))
+    => choose(eq(c11.lex.kind($token),8),$out,list.prepend(c11.pp.MarkedToken($token,$hide),$out));

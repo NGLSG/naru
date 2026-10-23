@@ -1,0 +1,80 @@
+// Target record-type alignment, distinct from C _Alignas on an object. The
+// decorated nominal name retains the tag's identity and carries layout facts
+// through typedefs, arrays, fields and ABI classification without global state.
+mod c11.aggregate_alignment;
+use c11.names;
+use c11.scopes;
+use c11.lex;
+use c11.syntax;
+use c11.types;
+use c11.objects;
+use c11.members;
+use c11.bitfields;
+use c11.sema;
+use c11.constants;
+use layout;
+
+syntax c11.aggregate_alignment.attribute `align($value:c11.expr)` => c11.aggregate_alignment.Request($value);
+syntax c11.aggregate_alignment.attribute `intrin_type` => c11.aggregate_alignment.IntrinsicRequest();
+effect c11.aggregate_alignment.prefix($nodes) => choose(lt(1,size($nodes)),
+    eq(c11.scopes.raw(arg($nodes,0)),"__declspec"),0);
+effect c11.names.tag_prefix($kind,$nodes,$context,$own) when c11.aggregate_alignment.prefix($nodes)
+    => seq(choose(eq($kind,"enum"),fail("MSVC alignment annotation requires a struct or union definition"),1),
+        bind(c11.scopes.Group($open,$parts,$close),arg($nodes,1),
+        c11.aggregate_alignment.apply_attribute(c11.scopes.expression($parts,"c11.aggregate_alignment.attribute",$context),
+            $kind,list.tail(list.tail($nodes)),$context,$own)));
+effect c11.aggregate_alignment.apply_attribute(c11.aggregate_alignment.Request($raw),$kind,$nodes,$context,$own)
+    => bind($alignment,c11.sema.alignment_value($raw,c11.constants.semantic_environment($context)),
+        seq(choose(and(lt(0,$alignment),not(lt(8192,$alignment))),1,fail("MSVC aggregate alignment must be a power of two from 1 to 8192")),
+            c11.aggregate_alignment.mark(c11.names.read_tag($kind,$nodes,$context,$own),$kind,$alignment)));
+// MSVC intrinsic records retain their declared member representation. Their
+// reserved operations validate that representation in c11.sdk_intrinsics;
+// unknown attributes are not accepted and ISO user records gain no operators.
+effect c11.aggregate_alignment.apply_attribute(c11.aggregate_alignment.IntrinsicRequest(),$kind,$nodes,$context,$own)
+    => c11.names.read_tag($kind,$nodes,$context,$own);
+effect c11.aggregate_alignment.tag_key(c11.syntax.RecordSpecifier($name,$fields,$origin)) => $name;
+effect c11.aggregate_alignment.tag_key(c11.syntax.UnionSpecifier($name,$fields,$origin)) => $name;
+effect c11.aggregate_alignment.tag_key(c11.types.Record($name,$fields)) => c11.types.nominal_identity($name);
+effect c11.aggregate_alignment.tag_key(c11.types.Union($name,$fields)) => c11.types.nominal_identity($name);
+effect c11.aggregate_alignment.tag_key(c11.types.RecordName($name)) => $name;
+effect c11.aggregate_alignment.tag_key(c11.types.UnionName($name)) => $name;
+effect c11.aggregate_alignment.mark(c11.names.TagRead($rest,$type,$items,$scope),$kind,$alignment)
+    => bind($key,c11.aggregate_alignment.tag_key($type),bind($tags,c11.names.tags($scope),
+        bind($updated,env.put($tags,$key,c11.aggregate_alignment.tag(env.get($tags,$key),$alignment)),
+            c11.names.TagRead($rest,c11.aggregate_alignment.type($type,$key,$kind,$updated,$alignment),
+                c11.aggregate_alignment.items($items,$alignment),env.put($scope,c11.objects.TagsKey(),$updated)))));
+effect c11.aggregate_alignment.tag(c11.objects.Tag($kind,$fields,$origin),$alignment)
+    => c11.objects.Tag($kind,$fields,c11.aggregate_alignment.origin($origin,$alignment));
+effect[fallback] c11.aggregate_alignment.tag($definition,$alignment) => fail("MSVC aggregate alignment annotation requires a definition");
+effect c11.aggregate_alignment.origin(c11.aggregate_alignment.AlignedOrigin($source,$prior),$alignment)
+    => c11.aggregate_alignment.AlignedOrigin($source,choose(lt($prior,$alignment),$alignment,$prior));
+effect[fallback] c11.aggregate_alignment.origin($origin,$alignment) => c11.aggregate_alignment.AlignedOrigin($origin,$alignment);
+effect c11.aggregate_alignment.type(c11.syntax.RecordSpecifier($name,$fields,$origin),$key,$kind,$tags,$alignment)
+    => c11.syntax.RecordSpecifier($name,$fields,c11.aggregate_alignment.origin($origin,$alignment));
+effect c11.aggregate_alignment.type(c11.syntax.UnionSpecifier($name,$fields,$origin),$key,$kind,$tags,$alignment)
+    => c11.syntax.UnionSpecifier($name,$fields,c11.aggregate_alignment.origin($origin,$alignment));
+effect[fallback] c11.aggregate_alignment.type($type,$key,$kind,$tags,$alignment) => c11.objects.complete_tag($key,$kind,$tags,[]);
+effect c11.aggregate_alignment.items([],$alignment) => [];
+effect c11.aggregate_alignment.items($items,$alignment) when lt(0,size($items))
+    => list.prepend(c11.aggregate_alignment.item(list.head($items),$alignment),c11.aggregate_alignment.items(list.tail($items),$alignment));
+effect c11.aggregate_alignment.item(c11.syntax.RecordDeclaration($name,$fields,$origin),$alignment)
+    => c11.syntax.RecordDeclaration($name,$fields,c11.aggregate_alignment.origin($origin,$alignment));
+effect c11.aggregate_alignment.item(c11.syntax.UnionDeclaration($name,$fields,$origin),$alignment)
+    => c11.syntax.UnionDeclaration($name,$fields,c11.aggregate_alignment.origin($origin,$alignment));
+effect[fallback] c11.aggregate_alignment.item($item,$alignment) => $item;
+
+effect c11.objects.defined_aggregate($kind,$name,$fields,c11.aggregate_alignment.AlignedOrigin($source,$alignment))
+    => c11.aggregate_alignment.aligned_type(c11.objects.defined_aggregate($kind,$name,$fields,$source),$alignment);
+effect c11.aggregate_alignment.aligned_type(c11.types.Record($name,$fields),$alignment)
+    => c11.types.Record(c11.aggregate_alignment.AlignedName($name,$alignment),$fields);
+effect c11.aggregate_alignment.aligned_type(c11.types.Union($name,$fields),$alignment)
+    => c11.types.Union(c11.aggregate_alignment.AlignedName($name,$alignment),$fields);
+effect c11.types.nominal_identity(c11.aggregate_alignment.AlignedName($name,$alignment)) => c11.types.nominal_identity($name);
+effect c11.types.aggregate_required_alignment(c11.aggregate_alignment.AlignedName($name,$alignment),$fields)
+    => layout.maximum($alignment,c11.types.aggregate_required_alignment($name,$fields));
+effect c11.types.named_aggregate_layout($kind,c11.aggregate_alignment.AlignedName($name,$alignment),$fields)
+    => layout.with_alignment(c11.types.named_aggregate_layout($kind,$name,$fields),$alignment);
+// Physical storage must include tail padding even if no member is over-aligned.
+// Bit-field records already use the shared physical representation themselves.
+effect c11.members.record_is_physical(c11.aggregate_alignment.AlignedName($name,$alignment),$fields)
+    => not(c11.bitfields.has_bits($fields));

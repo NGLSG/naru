@@ -1,0 +1,14 @@
+mod protocol;
+use pipeline;
+use types;
+use constraints;
+use resources;
+effect claims("yes") => "first";
+effect claims("yes") => "second";
+effect claims($value) when eq($value,"excluded") => "guarded";
+effect[fallback] claims($value) => "fallback";
+effect combine($state,$value) => list.concat($state,[$value]);
+effect pipeline.steps() => pipeline.Step("A",["B"],"protocol.a");
+effect pipeline.steps() => pipeline.Step("B",[],"protocol.b");
+effect a($items) => list.concat($items,["A"]);
+effect b($items) => list.concat($items,["B"]);

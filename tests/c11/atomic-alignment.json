@@ -1,0 +1,409 @@
+{
+  "format": 1,
+  "target": "windows-x86_64-llp64",
+  "scope": "Deferred aligned/native versus unaligned/locked atomic paths; target packed placement is asserted only by Naru. Explicit labeled aligned Clang oracles check operation semantics without claiming external misaligned helper interoperability.",
+  "full_conformance_claimed": false,
+  "cases": [
+    {
+      "id": "packed-atomic-implicit-load-store",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){value.n=42;return placement()?value.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-explicit-init",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){atomic_init(&value.n,42);return placement()?atomic_load(&value.n):1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-store-release-load-acquire",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){atomic_store_explicit(&value.n,42,memory_order_release);return placement()?atomic_load_explicit(&value.n,memory_order_acquire):1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-exchange",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){int old=atomic_exchange(&value.n,22);return placement()?old+value.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-strong-cas-success",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){int e=20;int ok=atomic_compare_exchange_strong(&value.n,&e,42);return placement()&&ok&&e==20?value.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-strong-cas-failure",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){int e=1;int ok=atomic_compare_exchange_strong(&value.n,&e,42);return placement()&&!ok&&e==20&&value.n==20?42:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-weak-cas",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){int e=20;while(!atomic_compare_exchange_weak_explicit(&value.n,&e,42,memory_order_acq_rel,memory_order_acquire))e=20;return placement()?value.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-fetch-add",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){int old=atomic_fetch_add_explicit(&value.n,22,memory_order_relaxed);return placement()&&old==20?value.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-fetch-sub",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=25};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){int old=atomic_fetch_sub(&value.n,8);return placement()?old+value.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-fetch-bitwise",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=34};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){int a=atomic_fetch_and(&value.n,31);int b=atomic_fetch_or(&value.n,8);int c=atomic_fetch_xor(&value.n,3);return placement()&&a==34&&b==2&&c==10&&value.n==9?42:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-language-compound",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){value.n+=22;return placement()?value.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-prefix-postfix",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){int a=value.n++;int b=++value.n;return placement()&&value.n==22?a+b:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-pointer-parameter",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint add(_Atomic int *p){return atomic_fetch_add(p,22);}int main(void){int old=add(&value.n);return placement()&&old==20?value.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-operands-evaluated-once",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint pointers,operands,orders;_Atomic int *get(void){++pointers;return &value.n;}int operand(void){++operands;return 22;}memory_order order(void){++orders;return memory_order_relaxed;}int main(void){int old=atomic_fetch_add_explicit(get(),operand(),order());return placement()&&old==20&&pointers==1&&operands==1&&orders==1?value.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-compare-operands-once",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint pc,ec,dc,sc,fc;int expected=20;_Atomic int *p(void){++pc;return &value.n;}int *e(void){++ec;return &expected;}int d(void){++dc;return 42;}memory_order s(void){++sc;return memory_order_acq_rel;}memory_order f(void){++fc;return memory_order_acquire;}int main(void){int ok=atomic_compare_exchange_strong_explicit(p(),e(),d(),s(),f());return placement()&&ok&&pc==1&&ec==1&&dc==1&&sc==1&&fc==1?value.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-volatile",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){volatile _Atomic int *p=&value.n;atomic_store(p,42);return placement()?atomic_load(p):1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-short",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(short) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){atomic_fetch_add(&value.n,22);return placement()?atomic_load(&value.n):1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-longlong-cross-cacheline",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad[63];_Atomic(long long) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){long long old=atomic_fetch_add(&value.n,22);return placement()&&old==20?(int)atomic_load(&value.n):1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-floating-compound",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(float) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20.0f};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){float old=value.n++;value.n+=21.0f;return placement()&&old==20.0f?(int)value.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-double-compound",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(double) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20.0};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){value.n+=22.0;return placement()?(int)atomic_load(&value.n):1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-small-record",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\nstruct V{int n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(struct V) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n={20}};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nstruct V make(int n){struct V s={n};return s;}int main(void){struct V old=atomic_exchange(&value.n,make(22));struct V now=atomic_load(&value.n);return placement()?old.n+now.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-address-query",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=20};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\nint main(void){\n#ifdef NARU_REFERENCE_ALIGNED\nint ok=atomic_is_lock_free(&value.n);\n#else\nint ok=!__c11_atomic_is_lock_free_address(&value.n);\n#endif\nreturn placement()&&ok?42:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-concurrent-mixed-access",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=0};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\n#include <threads.h>\nint worker(void *p){(void)p;for(int i=0;i<1000;++i)atomic_fetch_add_explicit(&value.n,1,memory_order_relaxed);return 0;}int main(void){thrd_t t;int r;if(thrd_create(&t,worker,0)!=thrd_success)return 2;for(int i=0;i<1000;++i)++value.n;if(thrd_join(t,&r)!=thrd_success)return 3;return placement()&&value.n==2000?42:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-release-acquire-publication",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=0};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\n#include <threads.h>\nint payload;int worker(void *p){(void)p;payload=42;atomic_store_explicit(&value.n,1,memory_order_release);return 0;}int main(void){thrd_t t;int r;if(thrd_create(&t,worker,0)!=thrd_success)return 2;while(!atomic_load_explicit(&value.n,memory_order_acquire))thrd_yield();int n=payload;if(thrd_join(t,&r)!=thrd_success)return 3;return placement()?n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "packed-atomic-mixed-size-protocol",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic(int) n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct S value={.n=0};\nint placement(void){\n#ifdef NARU_REFERENCE_ALIGNED\nreturn 1;\n#else\nreturn ((uintptr_t)&value.n%sizeof(value.n))!=0;\n#endif\n}\n#include <threads.h>\n_Atomic int aligned_count;int worker(void *p){(void)p;for(int i=0;i<500;++i){atomic_fetch_add(&value.n,1);atomic_fetch_add(&aligned_count,1);}return 0;}int main(void){thrd_t t;int r;if(thrd_create(&t,worker,0)!=thrd_success)return 2;for(int i=0;i<500;++i){++value.n;++aligned_count;}if(thrd_join(t,&r)!=thrd_success)return 3;return placement()&&value.n==1000&&aligned_count==1000?42:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "aligned-atomic-packed-expected-cas",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct E{char pad;int n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\n_Alignas(64) struct E expected={.n=1};_Atomic int value=42;int main(void){int ok=atomic_compare_exchange_strong(&value,&expected.n,20);return !ok&&value==42?expected.n:1;}",
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "aligned-atomic-standard-type-query",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.17.5.1; WG14 DR 465",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n_Atomic int a,b;int main(void){return atomic_is_lock_free(&a)&&atomic_is_lock_free(&b)&&atomic_is_lock_free((const volatile _Atomic int*)0)?42:1;}"
+    },
+    {
+      "id": "atomic-flag-always-lockfree",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.17.5; 7.17.8",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\natomic_flag f=ATOMIC_FLAG_INIT;int main(void){return atomic_is_lock_free(&f)&&!atomic_flag_test_and_set(&f)?42:1;}"
+    },
+    {
+      "id": "atomic-query-argument-evaluated-once",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.1.4p1; 7.17.5.1",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n_Atomic int value;int calls;_Atomic int *get(void){++calls;return &value;}int main(void){int ok=atomic_is_lock_free(get());return ok&&calls==1?42:1;}",
+      "reference_source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\n_Atomic int value;int calls;_Atomic int *get(void){++calls;return &value;}int main(void){int ok=(get(),atomic_is_lock_free(&value));return ok&&calls==1?42:1;}",
+      "reference_note": "The installed Clang resource macro puts its argument only inside sizeof. The independent oracle explicitly evaluates it once for the 7.1.4p1 function-macro argument contract; alternate source is never passed to Naru."
+    },
+    {
+      "id": "atomic-query-nonnative-type-argument-once",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.1.4p1; 7.17.5.1",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\nstruct S{char n[3];};_Atomic(struct S) value;int calls;_Atomic(struct S)*get(void){++calls;return &value;}int main(void){int ok=atomic_is_lock_free(get());return !ok&&calls==1?42:1;}",
+      "reference_source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\nstruct S{char n[3];};_Atomic(struct S) value;int calls;_Atomic(struct S)*get(void){++calls;return &value;}int main(void){get();int a=atomic_is_lock_free(&value),b=atomic_is_lock_free((_Atomic(struct S)*)0);return calls==1&&a==b?42:1;}",
+      "reference_note": "Atomic aggregate representation and lock-free properties are implementation-defined: Naru keeps a 3-byte value and uses its support lock. The independent oracle checks type consistency and once-only argument evaluation, without assuming Naru representation or result."
+    },
+    {
+      "id": "atomic-query-rejects-nonatomic-pointer",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\nint main(void){int n=0;return atomic_is_lock_free(&n);}",
+      "reject": true,
+      "reference_reject_required": false,
+      "reference_note": "The generic operation takes an atomic object pointer. The installed reference macro only uses sizeof and does not enforce that source interface."
+    },
+    {
+      "id": "atomic-query-rejects-integer-argument",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\nint main(void){return atomic_is_lock_free(1);}",
+      "reject": true
+    },
+    {
+      "id": "atomic-query-const-volatile-pointer",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.17.5.1",
+      "source": "#include <stdatomic.h>\n#include <stddef.h>\n#include <stdint.h>\nconst volatile _Atomic int value=0;int main(void){return atomic_is_lock_free(&value)?42:1;}"
+    },
+    {
+      "id": "packed-atomic-cross-unit-shared-lock",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.2.8; 6.5.16.2; 7.17.7; target packing extension",
+      "source": "#include <threads.h>\n#include \"types.h\"\n_Alignas(64) struct S value={.n=0};int other(void*);int main(void){thrd_t t;int r;if(thrd_create(&t,other,0)!=thrd_success)return 2;for(int i=0;i<1000;++i)++value.n;if(thrd_join(t,&r)!=thrd_success)return 3;return value.n==2000?42:1;}",
+      "files": {
+        "types.h": "#include <stdatomic.h>\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(push,1)\n#endif\nstruct S{char pad;_Atomic int n;};\n#ifndef NARU_REFERENCE_ALIGNED\n#pragma pack(pop)\n#endif\nextern struct S value;"
+      },
+      "additional_sources": {
+        "other.c": "#include \"types.h\"\nint other(void *p){(void)p;for(int i=0;i<1000;++i)atomic_fetch_add_explicit(&value.n,1,memory_order_relaxed);return 0;}"
+      },
+      "reference_flags": [
+        "-DNARU_REFERENCE_ALIGNED=1"
+      ],
+      "reference_note": "Independent Clang semantic oracle defines NARU_REFERENCE_ALIGNED and uses naturally aligned atomics. Only Naru executes the forced packed placement and address-extension checks. This is not evidence of foreign misaligned atomic helper ABI interoperability."
+    },
+    {
+      "id": "atomic-query-project-header-policy-retained",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.2; compiler header provenance policy",
+      "source": "#include \"own/stdatomic.h\"\nint main(void){return atomic_is_lock_free(0)==77?42:1;}",
+      "files": {
+        "own/stdatomic.h": "#define atomic_is_lock_free(object) 77"
+      }
+    },
+    {
+      "id": "atomic-query-user-redefinition-retained",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3; compiler header provenance policy",
+      "source": "#include <stdatomic.h>\n#undef atomic_is_lock_free\n#define atomic_is_lock_free(object) 77\n#include <stdatomic.h>\nint main(void){return atomic_is_lock_free(0)==77?42:1;}"
+    },
+    {
+      "id": "atomic-query-rejects-layout-impostor",
+      "source": "#include <stdatomic.h>\nstruct Fake{_Atomic _Bool _Value;};int main(void){struct Fake value={0};return atomic_is_lock_free(&value);}",
+      "reject": true,
+      "reference_reject_required": false,
+      "reference_note": "Matching the resource header carrier layout does not make a distinct nominal C record an atomic type. The size-only reference macro does not check this interface.",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.17.5.1; 6.2.7; 6.2.1"
+    },
+    {
+      "id": "atomic-flag-query-function-name-shadow",
+      "source": "#include <stdatomic.h>\nint main(void){atomic_flag f=ATOMIC_FLAG_INIT;int atomic_flag_test_and_set=0;return atomic_is_lock_free(&f)&&atomic_flag_test_and_set==0?42:1;}",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.17.5.1; 6.2.7; 6.2.1"
+    },
+    {
+      "id": "atomic-flag-query-typedef-shadow",
+      "source": "#include <stdatomic.h>\nint main(void){atomic_flag f=ATOMIC_FLAG_INIT;{typedef int atomic_flag;atomic_flag n=0;return atomic_is_lock_free(&f)&&n==0?42:1;}}",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.17.5.1; 6.2.7; 6.2.1"
+    }
+  ]
+}

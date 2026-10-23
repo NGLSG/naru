@@ -1,0 +1,21 @@
+name: 语言档案 / 新方言
+description: 提交语言版本、文献考据或规则实现提议。
+body:
+  - type: input
+    id: language
+    attributes:
+      label: 语言、版本与历史环境
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 文献、亲历线索与差异
+      description: 给出来源及页码，区分事实、回忆与重构选择。原件需有再分发依据。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 建议范围与可运行例子
+      description: 可以只修正一条记录，也可以说明规则、运行时和验证方式。

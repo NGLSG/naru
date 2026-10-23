@@ -1,0 +1,30 @@
+// Format-parametric integer SIMD and bit-scan facilities. No C names or target
+// instruction-set promises; LLVM selects legal operations for its target.
+mod simd_bits;
+use storage;
+
+effect simd_bits.type($lanes,$bits) => seq(choose(and(lt(0,$lanes),lt(0,$bits)),1,fail("SIMD dimensions must be positive")),
+    concat("vector<",concat(text($lanes),concat("x",concat(storage.integer_type($bits),">")))));
+effect simd_bits.shape($lanes,$bits) => storage.Scalar(simd_bits.type($lanes,$bits),mul($lanes,$bits),mul($lanes,$bits),"bits");
+effect simd_bits.extract($vector,$index,$bits) => mlir.op("llvm.extractelement",[$vector,storage.integer($index,32)],[storage.integer_type($bits)],[],[]);
+effect simd_bits.splat($value,$lanes,$bits) => bind($type,simd_bits.type($lanes,$bits),
+    bind($first,mlir.op("llvm.insertelement",[mlir.op("llvm.mlir.undef",[],[$type],[],[]),$value,storage.integer(0,32)],[$type],[],[]),
+        mlir.op("llvm.shufflevector",[$first,$first],[$type],[RawAttr("mask",concat("array<i32: ",concat(text.join(list.unfold("simd_bits.zero_mask_step",$lanes,1000000),", "),">")))],[])));
+effect simd_bits.zero_mask_step(0) => [0,0,[]];
+effect simd_bits.zero_mask_step($count) when lt(0,$count) => [1,sub($count,1),["0"]];
+effect simd_bits.load($pointer,$lanes,$bits,$alignment) => mlir.op("llvm.load",[$pointer],[simd_bits.type($lanes,$bits)],[Attr("alignment",$alignment,"i64")],[]);
+effect simd_bits.equal($left,$right,$lanes,$bits) => mlir.op("llvm.sext",[
+    mlir.op("llvm.icmp",[$left,$right],[simd_bits.type($lanes,1)],[Attr("predicate",0,"i64")],[])],[simd_bits.type($lanes,$bits)],[],[]);
+effect simd_bits.sign_mask($value,$lanes,$bits,$result_bits) => seq(choose(not(lt($result_bits,$lanes)),1,fail("SIMD sign mask result is too narrow")),
+    bind(simd_bits.Mask($out,$vector,$index,$count,$width,$result),rule.iterate("simd_bits.mask_step",
+        simd_bits.Mask(storage.integer(0,$result_bits),$value,0,$lanes,$bits,$result_bits),1000000),$out));
+effect simd_bits.mask_step(simd_bits.Mask($out,$vector,$index,$count,$bits,$result)) when eq($index,$count)
+    => [0,simd_bits.Mask($out,$vector,$index,$count,$bits,$result)];
+effect simd_bits.mask_step(simd_bits.Mask($out,$vector,$index,$count,$bits,$result)) when lt($index,$count)
+    => bind($lane,simd_bits.extract($vector,$index,$bits),bind($bit,mlir.op("llvm.lshr",[$lane,storage.integer(sub($bits,1),$bits)],[storage.integer_type($bits)],[],[]),
+        [1,simd_bits.Mask(mlir.op("llvm.or",[$out,storage.shift("llvm.shl",storage.resize($bit,$bits,$result),$index,$result)],
+            [storage.integer_type($result)],[],[]),$vector,add($index,1),$count,$bits,$result)]));
+// A defined zero case avoids introducing poison while a caller tests success.
+effect simd_bits.scan($value,$bits,$reverse) => bind($count,mlir.op(choose($reverse,"llvm.intr.ctlz","llvm.intr.cttz"),[$value],
+    [storage.integer_type($bits)],[Attr("is_zero_poison",0,"i1")],[]),
+    choose($reverse,mlir.op("llvm.sub",[storage.integer(sub($bits,1),$bits),$count],[storage.integer_type($bits)],[],[]),$count));

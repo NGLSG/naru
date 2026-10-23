@@ -1,0 +1,390 @@
+{
+  "format": 1,
+  "scope": "support-plan baseline probes; each passing input is partial evidence only",
+  "target": "windows-x86_64-llp64",
+  "full_conformance_claimed": false,
+  "cases": [
+    {
+      "id": "storage-after-type",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7",
+      "source": "int main(void){int register n=42;return n;}"
+    },
+    {
+      "id": "interleaved-qualifier",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7",
+      "source": "int main(void){unsigned const long int n=42;return (int)n;}"
+    },
+    {
+      "id": "pointer-qualifier-list",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7",
+      "source": "int main(void){int n=42;int *const volatile restrict p=&n;return *p;}"
+    },
+    {
+      "id": "local-tag-shadow",
+      "work_item": "tag-and-enum-scope",
+      "feature": "scope",
+      "clause": "6.2.1",
+      "source": "struct S {int n;};int main(void){struct S {double n;};struct S s={42.0};return sizeof(s)==8 ? (int)s.n : 1;}"
+    },
+    {
+      "id": "local-enum-shadow",
+      "work_item": "tag-and-enum-scope",
+      "feature": "scope",
+      "clause": "6.2.1",
+      "source": "enum {Answer=20};int main(void){int n=Answer;{enum {Answer=22};n+=Answer;}return n;}"
+    },
+    {
+      "id": "sizeof-before-definition-in-same-expression",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.5.3.4p1; 6.7.2.3",
+      "source": "int main(void){int n=sizeof(struct S)+sizeof(struct S{int n;});return 42;}",
+      "reject": "incomplete C aggregate"
+    },
+    {
+      "id": "member-before-definition-in-same-expression",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.5.2.3; 6.7.2.3",
+      "source": "int main(void){struct S*p=0;int n=p->n+sizeof(struct S{int n;});return 42;}",
+      "reject": "incomplete C aggregate"
+    },
+    {
+      "id": "incomplete-return-type-before-definition",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.7p7; 6.7.6.3",
+      "source": "struct S;struct S f(void);struct S{int n;};struct S f(void){struct S s={42};return s;}int main(void){return f().n;}"
+    },
+    {
+      "id": "incomplete-function-pointer-return-type",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.7p7; 6.7.6.3",
+      "source": "struct S;struct S(*p)(void);struct S{int n;};int main(void){return p==0?42:1;}"
+    },
+    {
+      "id": "local-static-initializer-enum-snapshot",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7.2.2p4; 6.7.9p4",
+      "source": "int answer(void){return 42;}struct S{int(*f)(void);unsigned n;};int main(void){static struct S s={answer,sizeof(enum {answer=3})};return s.n==4?s.f():1;}"
+    },
+    {
+      "id": "block-extern-object",
+      "work_item": "linkage-and-local-extern",
+      "feature": "linkage",
+      "clause": "6.2.2",
+      "source": "int n=42;int main(void){extern int n;return n;}"
+    },
+    {
+      "id": "block-function-declaration",
+      "work_item": "linkage-and-local-extern",
+      "feature": "linkage",
+      "clause": "6.2.2",
+      "source": "int answer(void){return 42;}int main(void){int answer(void);return answer();}"
+    },
+    {
+      "id": "old-style-definition",
+      "work_item": "function-declaration-model",
+      "feature": "functions",
+      "clause": "6.7.6.3",
+      "source": "int answer(n) int n; {return n;}int main(void){return answer(42);}"
+    },
+    {
+      "id": "nonprototype-call",
+      "work_item": "function-declaration-model",
+      "feature": "functions",
+      "clause": "6.7.6.3",
+      "source": "int answer();int main(void){return answer(42);}int answer(int n){return n;}",
+      "reference_flags": [
+        "-Wno-strict-prototypes"
+      ],
+      "reference_note": "C11 permits this obsolescent declaration; Clang promotes its deprecation warning under pedantic-errors."
+    },
+    {
+      "id": "bit-field",
+      "work_item": "bit-fields",
+      "feature": "declarations",
+      "clause": "6.7.2.1",
+      "source": "struct S {unsigned a:6;};int main(void){struct S s={42};return s.a;}"
+    },
+    {
+      "id": "brace-elision",
+      "work_item": "initializer-walk",
+      "feature": "initialization",
+      "clause": "6.7.9",
+      "source": "int main(void){int a[2][2]={10,10,11,11};return a[0][0]+a[0][1]+a[1][0]+a[1][1];}"
+    },
+    {
+      "id": "chained-designator",
+      "work_item": "initializer-walk",
+      "feature": "initialization",
+      "clause": "6.7.9",
+      "source": "struct Inner {int n;};struct Outer {struct Inner i;};int main(void){struct Outer s={.i.n=42};return s.i.n;}"
+    },
+    {
+      "id": "overridden-initializer",
+      "work_item": "initializer-walk",
+      "feature": "initialization",
+      "clause": "6.7.9",
+      "source": "int main(void){int a[1]={[0]=1,[0]=42};return a[0];}"
+    },
+    {
+      "id": "compound-literal-identity",
+      "work_item": "compound-literal-storage",
+      "feature": "lifetime",
+      "clause": "6.2.4",
+      "source": "int main(void){int *p=0,*q=0;int j=0;again:q=p;p=(int[]){j++};if(j<2)goto again;return p==q && *q==1 ? 42 : 1;}"
+    },
+    {
+      "id": "vla-local",
+      "work_item": "vla-and-vm-types",
+      "feature": "vla",
+      "clause": "6.7.6.2",
+      "source": "int main(void){int n=3;int a[n];a[2]=42;return sizeof(a)==12 ? a[2] : 1;}"
+    },
+    {
+      "id": "atomic-object",
+      "work_item": "atomics",
+      "feature": "atomics",
+      "clause": "6.7.2.4",
+      "source": "_Atomic int n=42;int main(void){return n;}"
+    },
+    {
+      "id": "complex-object",
+      "work_item": "complex",
+      "feature": "complex",
+      "clause": "6.2.5",
+      "source": "double _Complex n=42.0;int main(void){return (int)n;}"
+    },
+    {
+      "id": "thread-local-object",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "6.2.4",
+      "source": "_Thread_local int n=42;int main(void){return n;}"
+    },
+    {
+      "id": "automatic-classes",
+      "work_item": "automatic-storage",
+      "feature": "storage",
+      "clause": "6.7.1",
+      "source": "int main(void){auto int a=20;register int b=22;return a+b;}"
+    },
+    {
+      "id": "iso-extern-inline",
+      "work_item": "iso-inline-and-noreturn",
+      "feature": "inline",
+      "clause": "6.7.4",
+      "source": "inline int answer(void){return 42;}extern inline int answer(void);int main(void){return answer();}"
+    },
+    {
+      "id": "noreturn-declaration",
+      "work_item": "iso-inline-and-noreturn",
+      "feature": "inline",
+      "clause": "6.7.4",
+      "source": "_Noreturn void halt(void){for(;;){}}int main(void){return 42;}"
+    },
+    {
+      "id": "iso-inline-internal-linkage-reference",
+      "work_item": "iso-inline-and-noreturn",
+      "feature": "inline",
+      "clause": "6.7.4p3",
+      "source": "static int a=42;inline int g(void){return a;}int main(void){return g();}",
+      "reject": "inline definition cannot refer to an identifier with internal linkage"
+    },
+    {
+      "id": "composite-array",
+      "work_item": "compatibility-and-composite-types",
+      "feature": "types",
+      "clause": "6.2.5",
+      "source": "extern int a[];extern int a[2];int a[]={20,22};int main(void){return sizeof(a)==8?a[0]+a[1]:1;}"
+    },
+    {
+      "id": "array-static-qualifiers",
+      "work_item": "compatibility-and-composite-types",
+      "feature": "types",
+      "clause": "6.2.5",
+      "source": "int answer(int a[const static 2]){return a[0]+a[1];}int main(void){int a[2]={20,22};return answer(a);}"
+    },
+    {
+      "id": "qualified-conditional-pointer",
+      "work_item": "expression-constraints",
+      "feature": "conversions",
+      "clause": "6.3",
+      "source": "int main(void){int n=42;const int *p=&n;volatile int *q=&n;const volatile int *r=1?p:q;return *r;}"
+    },
+    {
+      "id": "volatile-sequencing",
+      "work_item": "expression-constraints",
+      "feature": "conversions",
+      "clause": "6.3",
+      "source": "int main(void){volatile int n=20;int v=(n+=1,n+=1,n);return v+n-2;}"
+    },
+    {
+      "id": "bit-field-zero-width",
+      "work_item": "bit-fields",
+      "feature": "declarations",
+      "clause": "6.7.2.1",
+      "source": "struct S{unsigned a:4;unsigned :0;signed int b:7;};int main(void){struct S s={1,41};s.b+=s.a;return s.b;}"
+    },
+    {
+      "id": "aggregate-return-smoke",
+      "work_item": "aggregate-calling-abi",
+      "feature": "types",
+      "clause": "6.5.2.2",
+      "source": "struct S{long long a;int b;int c;};struct S answer(struct S s){s.c+=s.a+s.b;return s;}int main(void){struct S s={20,21,1};return answer(s).c;}"
+    },
+    {
+      "id": "llp64-contract",
+      "work_item": "target-implementation-contract",
+      "feature": "limits",
+      "clause": "5.2.4.2",
+      "source": "_Static_assert(sizeof(char)==1 && sizeof(short)==2 && sizeof(int)==4 && sizeof(long)==4 && sizeof(long long)==8 && sizeof(void*)==8,\"LLP64\");int main(void){return 42;}"
+    },
+    {
+      "id": "address-array-offset",
+      "work_item": "constant-and-address-expressions",
+      "feature": "constants",
+      "clause": "6.6",
+      "source": "static int a[2]={20,42};static int *p=&a[0]+1;int main(void){return *p;}"
+    },
+    {
+      "id": "file-compound-literal",
+      "work_item": "compound-literal-storage",
+      "feature": "lifetime",
+      "clause": "6.2.4",
+      "source": "static int *p=(int[]){20,22};int main(void){return p[0]+p[1];}"
+    },
+    {
+      "id": "static-local-initialization",
+      "work_item": "storage-and-jump-lifetime",
+      "feature": "lifetime",
+      "clause": "6.2.4",
+      "source": "int answer(void){static int n=20;return ++n;}int main(void){return answer()+answer()-1;}"
+    },
+    {
+      "id": "phase-two-splice",
+      "work_item": "translation-phases",
+      "feature": "translation",
+      "clause": "5.1.1.2",
+      "source": "#define ANSWER 4\\\n2\nint main(void){return ANSWER;}"
+    },
+    {
+      "id": "trigraph-braces",
+      "work_item": "translation-phases",
+      "feature": "translation",
+      "clause": "5.1.1.2",
+      "source": "int main(void)??<return 42;??>",
+      "reference_flags": [
+        "-trigraphs"
+      ],
+      "reference_note": "Clang Windows target disables C11 trigraph translation by default; explicitly enable the standard translation phase for the reference."
+    },
+    {
+      "id": "paste-and-rescan",
+      "work_item": "preprocessor-completeness",
+      "feature": "preprocessing",
+      "clause": "6.10",
+      "source": "#define CAT_(a,b) a##b\n#define CAT(a,b) CAT_(a,b)\n#define Answer 42\nint main(void){return CAT(An,swer);}"
+    },
+    {
+      "id": "line-predefined-macro",
+      "work_item": "preprocessor-completeness",
+      "feature": "preprocessing",
+      "clause": "6.10",
+      "source": "#line 42 \"remembered.c\"\nint main(void){return __LINE__;}"
+    },
+    {
+      "id": "ucn-identifier",
+      "work_item": "source-and-execution-characters",
+      "feature": "identifiers",
+      "clause": "5.2.1",
+      "source": "int main(void){int \\u03B1=42;return \\u03B1;}"
+    },
+    {
+      "id": "utf16-literal",
+      "work_item": "source-and-execution-characters",
+      "feature": "identifiers",
+      "clause": "5.2.1",
+      "source": "#include <uchar.h>\nint main(void){char16_t a[]=u\"AB\";return sizeof(a)==6 && a[0]==65 ? 42 : 1;}"
+    },
+    {
+      "id": "generic-lvalue",
+      "work_item": "generic-assertion-and-alignment",
+      "feature": "generic",
+      "clause": "6.5.1.1",
+      "source": "int main(void){int a=20;_Generic(a,int:a,default:a)=42;return a;}"
+    },
+    {
+      "id": "aligned-automatic-object",
+      "work_item": "generic-assertion-and-alignment",
+      "feature": "generic",
+      "clause": "6.5.1.1",
+      "source": "int main(void){_Alignas(64) int n=42;return (unsigned long long)&n%64==0?n:1;}"
+    },
+    {
+      "id": "vla-sizeof-side-effect",
+      "work_item": "vla-and-vm-types",
+      "feature": "vla",
+      "clause": "6.7.6.2",
+      "source": "int main(void){int n=2;int a[n++];return n==3 && sizeof(a)==8 ? 42 : 1;}"
+    },
+    {
+      "id": "atomic-fetch-add",
+      "work_item": "atomics",
+      "feature": "atomics",
+      "clause": "6.7.2.4",
+      "source": "#include <stdatomic.h>\nint main(void){atomic_int n=20;return atomic_fetch_add_explicit(&n,22,memory_order_seq_cst)==20 && atomic_load(&n)==42 ? 42 : 1;}"
+    },
+    {
+      "id": "complex-arithmetic",
+      "work_item": "complex",
+      "feature": "complex",
+      "clause": "6.2.5",
+      "source": "int main(void){double _Complex n=20.0;double _Complex m=22.0;return (int)(n+m);}"
+    },
+    {
+      "id": "tls-static-pair",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "6.2.4",
+      "source": "static _Thread_local int n=20;int main(void){n+=22;return n;}"
+    },
+    {
+      "id": "thread-create-join",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "6.2.4",
+      "source": "#include <threads.h>\nint worker(void *p){*(int*)p=42;return 0;}int main(void){thrd_t t;int n=0,r=-1;if(thrd_create(&t,worker,&n)!=thrd_success)return 1;if(thrd_join(t,&r)!=thrd_success)return 2;return r==0?n:3;}"
+    },
+    {
+      "id": "c11-version-macro",
+      "work_item": "capability-macros",
+      "feature": "preprocessing",
+      "clause": "6.10.8",
+      "source": "#if __STDC_VERSION__ != 201112L\n#error C11 identity required\n#endif\nint main(void){return 42;}"
+    },
+    {
+      "id": "system-division-aggregate",
+      "work_item": "system-runtime-semantics",
+      "feature": "system-crt",
+      "clause": "7.2-7.29",
+      "source": "#include <stdlib.h>\nint main(void){div_t d=div(85,2);return d.rem==1?d.quot:1;}"
+    },
+    {
+      "id": "minimum-function-parameters",
+      "work_item": "minimum-limits",
+      "feature": "limits",
+      "clause": "5.2.4.1",
+      "source": "int answer(int a0,int a1,int a2,int a3,int a4,int a5,int a6,int a7,int a8,int a9,int a10,int a11,int a12,int a13,int a14,int a15,int a16,int a17,int a18,int a19,int a20,int a21,int a22,int a23,int a24,int a25,int a26,int a27,int a28,int a29,int a30,int a31,int a32,int a33,int a34,int a35,int a36,int a37,int a38,int a39,int a40,int a41,int a42,int a43,int a44,int a45,int a46,int a47,int a48,int a49,int a50,int a51,int a52,int a53,int a54,int a55,int a56,int a57,int a58,int a59,int a60,int a61,int a62,int a63,int a64,int a65,int a66,int a67,int a68,int a69,int a70,int a71,int a72,int a73,int a74,int a75,int a76,int a77,int a78,int a79,int a80,int a81,int a82,int a83,int a84,int a85,int a86,int a87,int a88,int a89,int a90,int a91,int a92,int a93,int a94,int a95,int a96,int a97,int a98,int a99,int a100,int a101,int a102,int a103,int a104,int a105,int a106,int a107,int a108,int a109,int a110,int a111,int a112,int a113,int a114,int a115,int a116,int a117,int a118,int a119,int a120,int a121,int a122,int a123,int a124,int a125,int a126){return a126;}int main(void){return answer(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,42);}"
+    }
+  ]
+}

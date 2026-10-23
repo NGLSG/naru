@@ -1,0 +1,175 @@
+module naru;
+
+use std.collections;
+use std.string;
+use std.fs;
+
+// Program-module metadata is separate from compiler-rule modules. Its only
+// responsibility is the source file dependency graph; dialects own declarations
+// and value-symbol semantics.
+@[derive(Clone)]
+struct SourceUnit {
+    public path: string;
+    public key: string;
+    public name: string;
+    public imports: i64;
+    public state: i32;
+}
+
+class SourceGraph {
+    public units: Vec<SourceUnit>;
+    public items: i64;
+}
+
+public fn source_module_path(directory: string, name: string) -> string {
+    let hierarchical = naru_join_path(directory, str_replace(name, ".", "/") + ".nru");
+    if (fileExists(hierarchical) && !isDir(hierarchical)) { return hierarchical; }
+    return naru_join_path(directory, naru_short_name(name) + ".nru");
+}
+
+public fn source_load(e: &mut Engine, graph: &mut SourceGraph, path: string, expected: string,
+    entry: string, origin_file: string, origin_line: i64, origin_column: i64, depth: i64) -> bool {
+    if (!e.good()) { return false; }
+    if (depth > 256) {
+        e.at_error(origin_file, origin_line, origin_column, "source module dependency depth exceeds 256");
+        return false;
+    }
+    if (path.len == 0 || naru_contains_nul(path)) {
+        e.at_error(origin_file, origin_line, origin_column, "source path is empty or contains NUL");
+        return false;
+    }
+    let absolute = naru_absolute_path(path);
+    if (absolute.len == 0) {
+        e.at_error(origin_file, origin_line, origin_column, "cannot resolve source path: " + path);
+        return false;
+    }
+    let key = str_to_lower(absolute);
+    var prior_id: i64 = 0;
+    while (prior_id < graph.units.len) {
+        let prior = graph.units.get(prior_id);
+        if (prior.key == key) {
+            if (expected.len != 0 && prior.name != expected) {
+                e.at_error(origin_file, origin_line, origin_column,
+                    "import '" + expected + "' resolved to module '" + prior.name + "' in " + absolute);
+                return false;
+            }
+            if (prior.state == 1) {
+                e.at_error(origin_file, origin_line, origin_column,
+                    "cyclic source module import '" + expected + "' reaches " + absolute);
+                return false;
+            }
+            return true;
+        }
+        prior_id = prior_id + 1;
+    }
+    if (!fileExists(absolute) || isDir(absolute)) {
+        e.at_error(origin_file, origin_line, origin_column,
+            "source module file does not exist: " + absolute);
+        return false;
+    }
+    // Keep every transitive input available to the CLI's output-collision
+    // checks. The graph has already excluded repeated paths above.
+    e.source_paths.push(str_dup(absolute));
+    let source = naru_read_text(e, absolute);
+    if (!e.good()) { return false; }
+    var stream = tokenize(source, absolute);
+    if (stream.diagnostic.len != 0) { e.reject(stream.diagnostic); return false; }
+    var module_name: string = "";
+    let header = stream.peek();
+    if (stream.accept("mod")) {
+        module_name = stx_name(&mut stream);
+        if (module_name.len == 0 || !stream.expect(";")) { e.reject(stream.diagnostic); return false; }
+    }
+    if (expected.len != 0 && module_name != expected) {
+        e.at_error(absolute, header.line, header.column,
+            "import '" + expected + "' requires 'mod " + expected + ";', found '" + module_name + "'");
+        return false;
+    }
+    prior_id = 0;
+    while (module_name.len != 0 && prior_id < graph.units.len) {
+        let prior = graph.units.get(prior_id);
+        if (prior.name == module_name) {
+            e.at_error(absolute, header.line, header.column,
+                "duplicate source module '" + module_name + "': " + prior.path + " and " + absolute);
+            return false;
+        }
+        prior_id = prior_id + 1;
+    }
+    let imports = e.add_node(5, "source-imports", absolute, header.line, header.column);
+    while (stream.at("use")) {
+        let at = stream.take();
+        let imported_name = stx_name(&mut stream);
+        if (imported_name.len == 0 || !stream.expect(";")) { e.reject(stream.diagnostic); return false; }
+        let imported = e.add_node(1, imported_name, absolute, at.line, at.column);
+        e.add_child(imports, imported);
+    }
+    if (stream.at("mod")) {
+        let at = stream.peek();
+        e.at_error(absolute, at.line, at.column, "mod must appear once at the start of a source file");
+        return false;
+    }
+    let unit_id = graph.units.len;
+    graph.units.push(SourceUnit { path: str_dup(absolute), key: str_dup(key), name: str_dup(module_name),
+        imports: imports, state: 1 });
+    var edge = e.node(imports).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edge(edge);
+        let imported = e.node(item.value);
+        let imported_path = source_module_path(naru_dirname(absolute), imported.text);
+        if (!source_load(e, graph, imported_path, imported.text, entry,
+            absolute, imported.line, imported.column, depth + 1)) { return false; }
+        edge = item.next;
+    }
+    let local_items = parse_source_body(e, &mut stream, entry, true);
+    if (local_items < 0 || !e.good()) { return false; }
+    let metadata = e.add_node(5, "", absolute, header.line, header.column);
+    e.add_child(metadata, e.add_node(1, module_name, absolute, header.line, header.column));
+    e.add_child(metadata, e.add_node(1, absolute, absolute, header.line, header.column));
+    e.add_child(metadata, imports); e.add_child(metadata, local_items);
+    e.add_child(e.source_modules, metadata);
+    edge = e.node(local_items).first;
+    while (edge >= 0) {
+        let item = e.edge(edge);
+        e.add_child(graph.items, item.value);
+        edge = item.next;
+    }
+    var unit = graph.units.get(unit_id);
+    unit.state = 2;
+    graph.units.set(unit_id, unit);
+    return true;
+}
+
+public fn load_program(e: &mut Engine, path: string, entry: string) -> i64 {
+    if (!e.good()) { return -1; }
+    let items = e.add_node(5, "", path, 1, 1);
+    e.source_modules = e.add_node(5, "", path, 1, 1);
+    var graph = SourceGraph { units: Vec::<SourceUnit>.new(), items: items };
+    if (!source_load(e, &mut graph, path, "", entry, path, 1, 1, 0)) { return -1; }
+    if (e.node(items).count == 0) {
+        e.at_error(path, 1, 1, "empty program");
+        return -1;
+    }
+    return items;
+}
+
+// The selected relation receives raw source before the default lexer or module
+// loader sees it. Rules may read files with any suffix and return ordinary AST
+// items. The core does not interpret their language or coordinate dialects.
+public fn load_frontend_program(e: &mut Engine, rt: &mut Runtime, path: string, frontend: string, options: i64) -> i64 {
+    let absolute = naru_absolute_path(path); let source = naru_read_text(e, absolute);
+    if (!e.good()) { return -1; }
+    e.source_paths.push(str_dup(absolute));
+    e.source_modules = e.add_node(5, "", absolute, 1, 1);
+    let arguments = e.add_node(5, "", absolute, 1, 1);
+    e.add_child(arguments, e.add_node(1, absolute, absolute, 1, 1));
+    e.add_child(arguments, e.add_node(1, source, absolute, 1, 1));
+    e.add_child(arguments, options);
+    let origin = e.node(arguments);
+    let items = rule_apply(e, rt, resolve_entry(e, frontend), arguments, 0, origin);
+    if (!e.good() || !ir_list(e, items)) { return -1; }
+    let frame = e.add_node(5, "", absolute, 1, 1);
+    e.add_child(frame, e.add_node(1, "", absolute, 1, 1));
+    e.add_child(frame, e.add_node(1, absolute, absolute, 1, 1));
+    e.add_child(frame, e.add_node(5, "", absolute, 1, 1)); e.add_child(frame, items);
+    e.add_child(e.source_modules, frame); return items;
+}

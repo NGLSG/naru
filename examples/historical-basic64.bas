@@ -1,0 +1,4 @@
+10 LET A = 2 + 3
+20 PRINT A
+30 IF A > 4 THEN 20
+40 END

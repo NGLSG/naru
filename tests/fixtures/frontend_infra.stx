@@ -1,0 +1,32 @@
+mod frontend_infra;
+effect frontend_infra.grow([$index,$values],$value) => [add($index,1),list.prepend($value,$values)];
+effect frontend_infra.generate($count) => list.fold("frontend_infra.grow",list.unfold("frontend_infra.range",[0,$count],1000000),[0,[]]);
+effect frontend_infra.range([$index,$count]) => choose(lt($index,$count),[1,[add($index,1),$count],[$index]],[0,[$index,$count],[]]);
+effect frontend_infra.insertion($scope,$key) => env.put($scope,$key,$key);
+effect frontend_infra.sum($sum,$value) => add($sum,$value);
+effect frontend_infra.verify($count) => bind([$n,$values],frontend_infra.generate($count),
+    bind($scope,list.fold("frontend_infra.insertion",$values,env.empty()),
+        [eq($n,$count),eq(size($values),$count),eq(list.fold("frontend_infra.sum",$values,0),int.div(mul($count,sub($count,1)),2)),
+         eq(env.get($scope,0),0),eq(env.get($scope,sub($count,1)),sub($count,1))]));
+
+// Discarded nested callback values must not survive their iteration. The
+// returned list views/environment still retain all children they share.
+effect frontend_infra.scratch($count,$width) => bind($range,list.unfold("frontend_infra.range",[0,$count],1000000),
+    list.fold("frontend_infra.scratch_step",$range,[$width,0]));
+effect frontend_infra.scratch_step([$width,$sum],$index) => bind([$n,$values],frontend_infra.generate($width),
+    bind($scope,list.fold("frontend_infra.insertion",$values,env.empty()),
+        [$width,add($sum,env.get($scope,sub($width,1)))]));
+effect frontend_infra.escaped($count) => list.map("frontend_infra.escape",list.unfold("frontend_infra.range",[0,$count],1000000));
+effect frontend_infra.escape($index) => bind($old,env.put(env.put(env.empty(),"cfnwhydaxw",$index),"kkwakwunre",add($index,1)),
+    bind($new,env.put($old,"cfnwhydaxw",add($index,2)),bind($tail,[add($index,3),add($index,4)],
+        [list.tail(list.prepend($index,$tail)),list.cursor($tail),$old,$new])));
+effect frontend_infra.escape_sum($sum,[$tail,$cursor,$old,$new]) => add($sum,add(list.head($tail),
+    add(list.cursor.head($cursor),add(env.get($old,"cfnwhydaxw"),env.get($new,"cfnwhydaxw")))));
+
+effect frontend_infra.entry_sum($sum,[$key,$value]) => add($sum,$value);
+effect frontend_infra.literal_snapshot() => ["a:b", "\"", "line\nnext", "你好", ""];
+
+// AOT routers must preserve the dynamic evaluator's depth and step budgets.
+effect frontend_infra.identity($value) => $value;
+effect frontend_infra.guarded_identity($value) when eq($value,42) => $value;
+effect frontend_infra.descend($count) => choose(lt($count,1),42,frontend_infra.descend(sub($count,1)));

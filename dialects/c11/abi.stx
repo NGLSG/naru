@@ -1,0 +1,223 @@
+// The Windows x64 ABI is a rule policy at the C language boundary. Source
+// descriptors stay intact; physical LLVM signatures, entry values and call
+// temporaries share the same classification facts.
+mod c11.abi;
+use c11.types;
+use c11.syntax;
+use c11.names;
+use c11.sema;
+use c11.msvc;
+use c11.union_storage;
+use c11.header_features;
+use base;
+use control;
+use types;
+use storage;
+use allocation;
+
+effect c11.abi.classify($type) => c11.abi.classify_shape(c11.sema.value_type($type));
+effect c11.abi.classify_shape(control.Void()) => Ignore();
+effect[fallback] c11.abi.classify_shape($type) => choose(c11.abi.is_aggregate($type),
+    choose(and(c11.abi.register_size(c11.types.bytes($type)),not(c11.abi.force_indirect($type))),
+        IntegerContainer($type,mul(c11.types.bytes($type),8)),Indirect($type)),c11.abi.Scalar($type));
+effect c11.abi.is_aggregate(c11.types.Record($name,$fields)) => 1;
+effect c11.abi.is_aggregate(c11.types.Union($name,$fields)) => 1;
+effect[fallback] c11.abi.is_aggregate($type) => 0;
+// A record with a flexible array member is indirect even when its fixed prefix
+// fits a register. This matches the Microsoft ABI implemented by Clang.
+effect c11.abi.force_indirect(c11.types.Record($name,$fields)) => list.fold("c11.abi.flexible_field",$fields,0);
+effect[fallback] c11.abi.force_indirect($type) => 0;
+effect c11.abi.flexible_field($prior,$field) => or($prior,c11.abi.is_flexible(c11.sema.value_type(c11.types.field_type($field))));
+effect c11.abi.is_flexible(c11.types.FlexibleArray($element)) => 1;
+effect[fallback] c11.abi.is_flexible($type) => 0;
+effect c11.abi.register_size($size) => or(or(eq($size,1),eq($size,2)),or(eq($size,4),eq($size,8)));
+effect c11.abi.physical(c11.abi.Scalar($type)) => types.repr($type);
+effect c11.abi.physical(IntegerContainer($type,$bits)) => storage.integer_type($bits);
+effect c11.abi.physical(Indirect($type)) => "!llvm.ptr";
+effect c11.abi.result_repr(Ignore()) => "void";
+effect c11.abi.result_repr(Indirect($type)) => "void";
+effect[fallback] c11.abi.result_repr($class) => c11.abi.physical($class);
+effect c11.abi.result_types(Ignore()) => [];
+effect c11.abi.result_types(Indirect($type)) => [];
+effect[fallback] c11.abi.result_types($class) => [c11.abi.physical($class)];
+effect c11.abi.hidden(Indirect($type),$parameters) => list.prepend("!llvm.ptr",$parameters);
+effect[fallback] c11.abi.hidden($result,$parameters) => $parameters;
+effect c11.sema.function_type($params,$result,$variadic)
+    => c11.abi.signature(list.map("c11.abi.classify",$params),c11.abi.classify($result),$variadic);
+effect c11.abi.signature($params,$result,$variadic) => bind($physical,c11.abi.hidden($result,list.map("c11.abi.physical",$params)),
+    concat("!llvm.func<",concat(c11.abi.result_repr($result),concat(" (",concat(types.join($physical),
+        concat(choose($variadic,choose(eq(size($physical),0),"...",", ..."),""),")>"))))));
+
+effect c11.abi.argument_attr(c11.abi.Scalar(c11.types.CBool())) => "{llvm.zeroext}";
+effect c11.abi.argument_attr(Indirect($type)) => concat("{llvm.align = ",concat(text(c11.types.alignment($type))," : i64}"));
+effect[fallback] c11.abi.argument_attr($class) => "{}";
+effect c11.abi.hidden_attrs(Indirect($type),$attrs) => list.prepend(concat("{llvm.sret = ",concat(types.repr($type),
+    concat(", llvm.noalias, llvm.align = ",concat(text(c11.types.alignment($type))," : i64}")))),$attrs);
+effect[fallback] c11.abi.hidden_attrs($result,$attrs) => $attrs;
+effect c11.abi.attribute_array($values) => concat("[",concat(types.join($values),"]"));
+effect c11.abi.result_attrs(c11.abi.Scalar(c11.types.CBool())) => [RawAttr("res_attrs","[{llvm.zeroext}]")];
+effect[fallback] c11.abi.result_attrs($result) => [];
+effect c11.abi.abi_attrs($params,$result) => list.prepend(RawAttr("arg_attrs",c11.abi.attribute_array(c11.abi.hidden_attrs($result,
+    list.map("c11.abi.argument_attr",$params)))),c11.abi.result_attrs($result));
+effect c11.sema.function_abi_attrs($params,$result,$variadic)
+    => c11.abi.abi_attrs(list.map("c11.abi.classify",$params),c11.abi.classify($result));
+effect c11.abi.descriptor_ready($type) => c11.abi.ready_shape(c11.sema.value_type($type));
+effect c11.abi.ready_shape(c11.types.RecordName($name)) => 0;
+effect c11.abi.ready_shape(c11.types.UnionName($name)) => 0;
+effect[fallback] c11.abi.ready_shape($type) => 1;
+effect c11.abi.ready_parameter($prior,$type) => and($prior,c11.abi.descriptor_ready($type));
+// A declaration may legally mention a never-completed record by value. Its
+// address is usable as an opaque function pointer, although source checking
+// cannot permit a call until the object layout is complete. The address-only
+// declaration carries no invented sret/parameter classification.
+effect c11.sema.lower_prototype($name,$params,$result,$variadic,$attrs)
+    => c11.abi.emit_prototype($name,$params,$result,$variadic,$attrs);
+effect[fallback] c11.abi.emit_prototype($name,$params,$result,$variadic,$attrs)
+    => mlir.op("llvm.func",[],[],list.concat($attrs,choose(and(c11.abi.descriptor_ready($result),
+        list.fold("c11.abi.ready_parameter",$params,1)),
+        c11.abi.prototype_attributes($name,$params,$result,$variadic),
+        [Attr("sym_name",$name),RawAttr("function_type","!llvm.func<void (...)>")])),[mlir.region_blocks([])]);
+effect c11.abi.prototype_attributes($name,$params,$result,$variadic)
+    => bind(c11.abi.PrototypeInterface($signature,$attributes),c11.abi.prototype_interface($name,$params,$result,$variadic),
+        list.concat($attributes,[Attr("sym_name",$name),RawAttr("function_type",$signature)]));
+effect[fallback] c11.abi.prototype_interface($name,$params,$result,$variadic)
+    => c11.abi.PrototypeInterface(c11.sema.function_type($params,$result,$variadic),
+        c11.abi.abi_attrs(list.map("c11.abi.classify",$params),c11.abi.classify($result)));
+
+effect c11.abi.image($bits) => storage.Scalar(storage.integer_type($bits),$bits,$bits,"integer");
+effect c11.abi.encode($value,IntegerContainer($type,$bits)) => storage.reinterpret($value,c11.union_storage.shape($type),c11.abi.image($bits));
+effect c11.abi.decode($value,IntegerContainer($type,$bits)) => storage.reinterpret($value,c11.abi.image($bits),c11.union_storage.shape($type));
+effect c11.abi.incoming($value,c11.abi.Scalar($type)) => $value;
+effect c11.abi.incoming($value,IntegerContainer($type,$bits)) => c11.abi.decode($value,IntegerContainer($type,$bits));
+effect c11.abi.incoming($pointer,Indirect($type)) => mlir.op("llvm.load",[$pointer],[types.repr($type)],
+    [Attr("alignment",c11.types.alignment($type),"i64")],[]);
+effect c11.abi.bind_parameters([],$block,$index,$env) => $env;
+effect c11.abi.bind_parameters($params,$block,$index,$env) when lt(0,size($params))
+    => bind(base.BoundParam($type,$identity),list.head($params),
+        bind($value,mlir.with_block($block,c11.abi.incoming(mlir.block_arg($block,$index),c11.abi.classify($type))),
+            c11.abi.bind_parameters(list.tail($params),$block,add($index,1),env.put($env,$identity,$value))));
+effect c11.abi.return_policy(Indirect($type),$block,$env) => [1,env.put($env,ReturnKey(),ReturnPolicy(Indirect($type),mlir.block_arg($block,0)))];
+effect[fallback] c11.abi.return_policy($result,$block,$env) => [0,env.put($env,ReturnKey(),ReturnPolicy($result,NoBuffer()))];
+effect c11.sema.function_region($params,$body,$result,$policy)
+    => bind($class,c11.abi.classify($result),bind($block,mlir.block(c11.abi.hidden($class,list.map("c11.abi.physical",
+        list.map("c11.abi.classify",list.map("c11.sema.bound_descriptor",$params))))),
+        bind([$index,$return_env],c11.abi.return_policy($class,$block,$policy),
+            bind($scope,c11.sema.prepare_runtime_frame($body,$block,allocation.plan_frame($body,$block,base.prepare_storage($body,$block,
+                c11.abi.bind_parameters($params,$block,$index,$return_env)))),
+                mlir.region_blocks(base.lower_flow($body,$scope,$block,base.function_continuation($result)))))));
+effect base.return_values($env,$values) when env.contains($env,ReturnKey())
+    => c11.abi.return_values(env.get($env,ReturnKey()),$values);
+effect c11.abi.return_values(ReturnPolicy(Ignore(),$buffer),[]) => [];
+effect c11.abi.return_values(ReturnPolicy(c11.abi.Scalar($type),$buffer),[$value]) => [$value];
+effect c11.abi.return_values(ReturnPolicy(IntegerContainer($type,$bits),$buffer),[$value]) => [c11.abi.encode($value,IntegerContainer($type,$bits))];
+effect c11.abi.return_values(ReturnPolicy(Indirect($type),$buffer),[$value])
+    => seq(mlir.op("llvm.store",[$value,$buffer],[],[Attr("alignment",c11.types.alignment($type),"i64")],[]),[]);
+
+// One allocation fact owns all buffers at a source call site. Frame planning
+// puts them in the entry block, including calls inside loops and nested calls.
+effect c11.sema.make_invoke($result,$name,$arguments,$params,$variadic,$definition)
+    => c11.abi.make_call($result,Direct($name),$arguments,$params,$variadic);
+effect c11.sema.make_indirect_invoke($result,$target,$arguments,$params,$variadic)
+    => c11.abi.make_call($result,Through($target),$arguments,$params,$variadic);
+effect c11.abi.make_call($result,$callee,$args,$params,$variadic)
+    => base.Typed($result,WinCall(symbol("c.abi.call"),$callee,$args,c11.abi.fixed_types($args,$params),$variadic));
+effect c11.abi.fixed_types($args,[]) => [];
+effect c11.abi.fixed_types($args,$params) when lt(0,size($params))
+    => list.prepend(arg(list.head($args),0),c11.abi.fixed_types(list.tail($args),list.tail($params)));
+effect c11.abi.argument_class(base.Typed($type,$value)) => c11.abi.classify($type);
+effect allocation.site(base.Typed($type,WinCall($identity,$callee,$args,$params,$variadic)))
+    => allocation.Site($identity,"c11.abi.allocate_call",[c11.abi.classify($type),list.map("c11.abi.argument_class",$args)]);
+effect allocation.children(WinCall($identity,$callee,$args,$params,$variadic)) => list.prepend($callee,$args);
+effect allocation.children(Direct($name)) => [];
+effect allocation.children(Through($target)) => [$target];
+effect c11.abi.allocate_call($result,$arguments) => CallBuffers(c11.abi.buffer($result),list.map("c11.abi.buffer",$arguments));
+effect c11.abi.buffer(Indirect($type)) => mlir.op("llvm.alloca",[storage.integer(1,64)],["!llvm.ptr"],
+    [RawAttr("elem_type",types.repr($type)),Attr("alignment",c11.abi.copy_alignment($type),"i64")],[]);
+effect[fallback] c11.abi.buffer($class) => NoBuffer();
+effect c11.abi.copy_alignment($type) => bind($alignment,c11.types.alignment($type),choose(lt($alignment,16),16,$alignment));
+effect c11.abi.lower_arguments([],$buffers,$env) => [];
+effect c11.abi.lower_arguments($args,$buffers,$env) when lt(0,size($args))
+    => bind($argument,list.head($args),bind($value,base.lower($argument,$env),
+        list.prepend(c11.abi.outgoing($value,c11.abi.argument_class($argument),list.head($buffers)),
+            c11.abi.lower_arguments(list.tail($args),list.tail($buffers),$env))));
+effect c11.abi.outgoing($value,c11.abi.Scalar($type),$buffer) => $value;
+effect c11.abi.outgoing($value,IntegerContainer($type,$bits),$buffer) => c11.abi.encode($value,IntegerContainer($type,$bits));
+effect c11.abi.outgoing($value,Indirect($type),$buffer)
+    => seq(mlir.op("llvm.store",[$value,$buffer],[],[Attr("alignment",c11.abi.copy_alignment($type),"i64")],[]),$buffer);
+effect c11.abi.prepend_return_buffer(Indirect($type),$buffer,$args) => list.prepend($buffer,$args);
+effect[fallback] c11.abi.prepend_return_buffer($result,$buffer,$args) => $args;
+effect c11.abi.prepare_callee(Direct($name),$env) => Direct($name);
+effect c11.abi.prepare_callee(Through($target),$env) => IndirectTarget(base.lower($target,$env));
+effect c11.abi.callee_operands(Direct($name),$args) => $args;
+effect c11.abi.callee_operands(IndirectTarget($pointer),$args) => list.prepend($pointer,$args);
+effect c11.abi.callee_attrs(Direct($name)) => [RawAttr("callee",concat("@",text.quote($name)))];
+effect c11.abi.callee_attrs(IndirectTarget($pointer)) => [];
+effect c11.abi.invoke($callee,$args,$params,$result,$variadic,$argument_classes)
+    => bind(c11.abi.CallInterface($adapted,$classes,$attributes),c11.abi.call_interface($callee,$args,$params,$result,$variadic,$argument_classes),
+        bind($operands,c11.abi.callee_operands($callee,$adapted),mlir.op("llvm.call",$operands,c11.abi.result_types($result),
+        list.concat(list.concat(list.concat($attributes,c11.abi.callee_attrs($callee)),c11.abi.abi_attrs($classes,$result)),list.concat(
+            [RawAttr("op_bundle_sizes","array<i32>"),RawAttr("operandSegmentSizes",concat("array<i32: ",concat(text(size($operands)),", 0>")))],
+            choose($variadic,[RawAttr("var_callee_type",c11.abi.signature(list.map("c11.abi.classify",$params),$result,$variadic))],[]))),[])));
+effect[fallback] c11.abi.call_interface($callee,$arguments,$params,$result,$variadic,$classes) => c11.abi.CallInterface($arguments,$classes,[]);
+effect c11.abi.call_result(Ignore(),$call,$buffer) => $call;
+effect c11.abi.call_result(c11.abi.Scalar($type),$call,$buffer) => $call;
+effect c11.abi.call_result(IntegerContainer($type,$bits),$call,$buffer) => c11.abi.decode($call,IntegerContainer($type,$bits));
+effect c11.abi.call_result(Indirect($type),$call,$buffer) => seq($call,mlir.op("llvm.load",[$buffer],[types.repr($type)],
+    [Attr("alignment",c11.abi.copy_alignment($type),"i64")],[]));
+effect base.lower(base.Typed($type,WinCall($identity,$callee,$args,$params,$variadic)),$env)
+    => bind($class,c11.abi.classify($type),bind(CallBuffers($result_buffer,$argument_buffers),allocation.lookup($env,$identity),
+        bind($target,c11.abi.prepare_callee($callee,$env),bind($operands,c11.abi.prepend_return_buffer($class,$result_buffer,c11.abi.lower_arguments($args,$argument_buffers,$env)),
+            c11.abi.call_result($class,c11.abi.invoke($target,$operands,$params,$class,$variadic,list.map("c11.abi.argument_class",$args)),$result_buffer)))));
+
+// Real SDK/resource headers own va_list and its macros. These are compiler
+// intrinsics consumed by those headers, not replacement standard-library APIs.
+syntax c11.atom_type `__builtin_va_list` => c11.types.Pointer(c11.types.PlainChar());
+syntax c11.atom_type `__builtin_ms_va_list` => c11.types.Pointer(c11.types.PlainChar());
+effect c11.syntax.type_operand_builtin(c11.syntax.Name("__builtin_va_arg")) => 1;
+effect c11.names.syntax_identifier("__builtin_va_arg") => 1;
+syntax c11.expr `__builtin_va_arg($list:c11.expr, $type:c11.type)`
+    => VaArgument($list,c11.names.TypeAt($type,c11.names.tags(syntax.context())));
+effect c11.sema.named_call_at($frame,"__va_start",$args,$env,$expected)
+    => c11.sema.named_call("__va_start",$args,$env,$expected);
+effect c11.sema.named_call($name,$args,$env,$expected) when c11.abi.va_builtin($name)
+    => c11.abi.check_va_builtin($name,$args,$env,$expected);
+effect c11.sema.named_call_at($frame,$name,$args,$env,$expected) when c11.abi.va_builtin($name)
+    => c11.abi.check_va_builtin($name,$args,$env,$expected);
+effect c11.abi.va_builtin($name) => or(or(eq($name,"__builtin_va_start"),eq($name,"__builtin_va_end")),
+    or(eq($name,"__builtin_va_copy"),or(eq($name,"__builtin_ms_va_start"),or(eq($name,"__builtin_ms_va_end"),eq($name,"__builtin_ms_va_copy")))));
+effect c11.header_features.builtin($name) when or(c11.abi.va_builtin($name),eq($name,"__builtin_va_arg")) => 1;
+effect c11.abi.va_reference($list,$env) => bind($reference,c11.sema.lvalue($list,$env),
+    seq(choose(eq(c11.types.unqualified(arg($reference,0)),c11.types.Pointer(c11.types.PlainChar())),1,
+        fail("Windows va_list must be a modifiable char pointer lvalue")),seq(c11.sema.writable_type(arg($reference,0)),$reference)));
+effect c11.abi.start_va($list,c11.syntax.Name($last),$env,$expected)
+    => seq(c11.abi.va_reference($list,$env),c11.msvc.va_start(c11.syntax.Address($list),$last,$env,$expected));
+effect c11.abi.start_va($list,c11.names.NameAt($frame,$last),$env,$expected)
+    => seq(c11.sema.lookup_at($frame,$last,$env),seq(c11.abi.va_reference($list,$env),c11.msvc.va_start(c11.syntax.Address($list),$last,$env,$expected)));
+effect[fallback] c11.abi.start_va($list,$last,$env,$expected) => fail("va_start requires the last named parameter");
+effect c11.abi.check_va_builtin($name,[$list,$last],$env,$expected) when or(eq($name,"__builtin_va_start"),eq($name,"__builtin_ms_va_start"))
+    => c11.abi.start_va($list,$last,$env,$expected);
+effect c11.abi.check_va_builtin($name,[$list],$env,$expected) when or(eq($name,"__builtin_va_end"),eq($name,"__builtin_ms_va_end"))
+    => c11.sema.contextual(base.Typed(control.Void(),VaEnd(c11.abi.va_reference($list,$env))),$expected);
+effect c11.abi.check_va_builtin($name,[$to,$from],$env,$expected) when or(eq($name,"__builtin_va_copy"),eq($name,"__builtin_ms_va_copy"))
+    => c11.sema.contextual(base.Typed(control.Void(),VaCopy(c11.abi.va_reference($to,$env),
+        c11.sema.convert(base.check($from,$env,base.Any()),c11.types.Pointer(c11.types.PlainChar())))),$expected);
+effect[fallback] c11.abi.check_va_builtin($name,$args,$env,$expected) => fail("invalid variadic builtin argument count");
+effect base.check(VaArgument($list,$raw_type),$env,$expected) => bind($type,c11.sema.value_type(c11.sema.complete_type($raw_type,$env)),
+    seq(c11.abi.va_type($type),c11.sema.contextual(base.Typed($type,VaRead(c11.abi.va_reference($list,$env))),$expected)));
+effect c11.abi.va_type(control.Void()) => fail("va_arg requires a complete object type");
+effect c11.abi.va_type(c11.types.FunctionType($result,$params,$variadic,$prototype)) => fail("va_arg requires a complete object type");
+effect c11.abi.va_type(c11.types.Array($count,$element)) => fail("va_arg cannot request an array type");
+effect[fallback] c11.abi.va_type($type) => c11.sema.object_layout_complete($type);
+effect base.lower(base.Typed(control.Void(),VaEnd($reference)),$env)
+    => mlir.op("llvm.intr.vaend",[c11.sema.reference_pointer($reference,$env)],[],[],[]);
+effect base.lower(base.Typed(control.Void(),VaCopy($reference,$value)),$env)
+    => c11.sema.store_location(c11.sema.reference_location($reference,$env),base.lower($value,$env));
+effect base.lower(base.Typed($type,VaRead($reference)),$env) => bind($location,c11.sema.reference_location($reference,$env),
+    bind($slot,c11.sema.load_location($location),seq(c11.sema.store_location($location,
+        mlir.op("llvm.getelementptr",[$slot],["!llvm.ptr"],[RawAttr("elem_type","i8"),RawAttr("rawConstantIndices","array<i32: 8>")],[])),
+        c11.abi.va_load($slot,c11.abi.classify($type)))));
+effect c11.abi.va_load($slot,c11.abi.Scalar($type)) => mlir.op("llvm.load",[$slot],[types.repr($type)],
+    [Attr("alignment",choose(lt(c11.types.alignment($type),8),c11.types.alignment($type),8),"i64")],[]);
+effect c11.abi.va_load($slot,IntegerContainer($type,$bits)) => c11.abi.decode(mlir.op("llvm.load",[$slot],[storage.integer_type($bits)],
+    [Attr("alignment",choose(lt(c11.types.alignment($type),8),c11.types.alignment($type),8),"i64")],[]),IntegerContainer($type,$bits));
+effect c11.abi.va_load($slot,Indirect($type)) => c11.abi.incoming(mlir.op("llvm.load",[$slot],["!llvm.ptr"],[Attr("alignment",8,"i64")],[]),Indirect($type));

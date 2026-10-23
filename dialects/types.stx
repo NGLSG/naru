@@ -1,0 +1,84 @@
+// Source types and their representation belong to this library, not the core.
+mod types;
+
+syntax typename `bool` => Bool();
+// MLIR's target-independent machine index type is a library type.  It is
+// deliberately separate from Signed(32): its width is target dependent and
+// it is the natural type for shapes, offsets and affine/index dialects.
+syntax typename `index` => Index();
+syntax typename `i8` => Signed(8);
+syntax typename `i16` => Signed(16);
+syntax typename `i32` => Signed(32);
+syntax typename `i64` => Signed(64);
+syntax typename `i128` => Signed(128);
+syntax typename `u8` => Unsigned(8);
+syntax typename `u16` => Unsigned(16);
+syntax typename `u32` => Unsigned(32);
+syntax typename `u64` => Unsigned(64);
+syntax typename `u128` => Unsigned(128);
+syntax typename `f16` => Real("f16");
+syntax typename `bf16` => Real("bf16");
+syntax typename `f32` => Real("f32");
+syntax typename `f64` => Real("f64");
+syntax typename `f80` => Real("f80");
+syntax typename `f128` => Real("f128");
+syntax typename `tf32` => Real("tf32");
+syntax typename `f8E5M2` => Real("f8E5M2");
+syntax typename `f8E5M2FNUZ` => Real("f8E5M2FNUZ");
+syntax typename `f8E5M3FNU` => Real("f8E5M3FNU");
+syntax typename `f8E4M3` => Real("f8E4M3");
+syntax typename `f8E4M3FN` => Real("f8E4M3FN");
+syntax typename `f8E4M3FNUZ` => Real("f8E4M3FNUZ");
+syntax typename `f8E4M3B11FNUZ` => Real("f8E4M3B11FNUZ");
+syntax typename `f8E3M4` => Real("f8E3M4");
+syntax typename `f8E8M0FNU` => Real("f8E8M0FNU");
+syntax typename `f6E2M3FN` => Real("f6E2M3FN");
+syntax typename `f6E3M2FN` => Real("f6E3M2FN");
+syntax typename `f4E2M1FN` => Real("f4E2M1FN");
+syntax typename `i<$width:int>` => Signed($width);
+syntax typename `u<$width:int>` => Unsigned($width);
+// Shaped aggregates use an explicit dimension list.  The one-dimension form
+// remains source-compatible (`vector<4, f32>`), while `2x3` now describes a
+// genuine rank-2 MLIR shape (`vector<2x3xf32>` / `tensor<2x3xf32>`).
+syntax typename `vector<$shape:shape, $element:typename>` => Vector($shape, $element);
+syntax typename `tensor<$shape:shape, $element:typename>` => Tensor($shape, $element);
+syntax typename `tuple<$members:type_list>` => Tuple($members);
+syntax shape `$head:int` => [$head];
+syntax shape `$head:int x $tail:shape` => list.prepend($head, $tail);
+syntax type_list `$head:typename` => [$head];
+syntax type_list `$head:typename, $tail:type_list` => list.prepend($head, $tail);
+
+effect width($n) => choose(and(lt(0, $n), not(lt(1048576, $n))), $n,
+    fail("integer width must be between 1 and the configured exact-number resource limit"));
+effect extent($n) => choose(lt(0, $n), $n, fail("shape extent must be positive"));
+effect shape_dims($shape) => shape_dims_checked($shape);
+effect shape_dims_checked([]) => fail("shape must contain at least one dimension");
+effect shape_dims_checked($dimension) when eq(term.kind($dimension), 2) => [$dimension];
+effect shape_dims_checked($shape) when and(eq(term.kind($shape), 5), lt(0, size($shape))) => $shape;
+effect shape_repr($n) when eq(term.kind($n), 2) => text(extent($n));
+effect shape_repr($shape) when and(eq(term.kind($shape), 5), eq(size($shape), 1)) => shape_repr(list.head($shape));
+effect shape_repr($shape) when and(eq(term.kind($shape), 5), lt(1, size($shape)))
+    => concat(text(extent(list.head($shape))), concat("x", shape_repr(list.tail($shape))));
+effect repr(Signed($n)) => concat("i", text(width($n)));
+effect repr(Unsigned($n)) => concat("i", text(width($n)));
+effect repr(Bool()) => "i1";
+effect repr(Index()) => "index";
+effect repr(Real($format)) => $format;
+effect repr(Vector($shape, $element)) => concat(concat(concat("vector<", shape_repr(shape_dims($shape))), "x"), concat(repr($element), ">"));
+effect repr(Tensor($shape, $element)) => concat(concat(concat("tensor<", shape_repr(shape_dims($shape))), "x"), concat(repr($element), ">"));
+effect repr(Tuple($members)) => concat("tuple<", concat(join(list.map("types.repr", $members)), ">"));
+effect join([]) => "";
+effect join($members) when eq(size($members), 1) => list.head($members);
+effect join($members) when lt(1, size($members)) => concat(list.head($members), concat(", ", join(list.tail($members))));
+
+// Unknown constructors also work with the structural solver; no type switch
+// or fixed inventory of ownership/shape constraints exists in the compiler.
+effect equal($a, $b, $substitution) => logic.unify($a, $b, $substitution);
+effect solve([], $substitution) => Solved($substitution);
+effect solve($constraints, $substitution) when lt(0, size($constraints))
+    => solve_one(list.head($constraints), list.tail($constraints), $substitution);
+effect solve_one(Equal($a, $b), $rest, $substitution)
+    => solve_result(logic.unify($a, $b, $substitution), $rest);
+// Package authors extend solve_one with their own constraint constructors.
+effect solve_result([1, $substitution, $reason], $rest) => solve($rest, $substitution);
+effect solve_result([0, $substitution, $reason], $rest) => Rejected($reason);

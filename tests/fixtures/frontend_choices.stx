@@ -1,0 +1,38 @@
+mod frontend_choices;
+use parse;
+
+syntax choices.word `class` => Keyword();
+syntax choices.word `$name:ident` => Name($name);
+syntax choices.tie `class` => First();
+syntax choices.tie `class` => Second();
+syntax choices.long `a` => First();
+syntax choices.long `a` => Second();
+syntax choices.long `a b` => Long();
+syntax choices.expr `$n:int` => Number($n);
+syntax choices.expr[50,left] `$a:choices.expr + $b:choices.expr` => Add($a,$b);
+syntax choices.expr[50,left] `$a:choices.expr + $b:choices.expr` => VectorAdd($a,$b);
+syntax choices.opaque `class` => fail("unchosen action was executed");
+syntax choices.opaque `$name:ident` => Name($name);
+
+effect vector($category,$candidates,$context) => rule.select($candidates,"frontend_choices.vector_rank",$context);
+effect vector_rank([VectorAdd($a,$b),$literals,$captures,$file,$line],$context) => [1];
+effect[fallback] vector_rank($candidate,$context) => [0];
+effect names($category,$candidates,$context) => rule.select($candidates,"frontend_choices.name_rank",$context);
+effect name_rank([Name($name),$literals,$captures,$file,$line],$context) => [1];
+effect[fallback] name_rank($candidate,$context) => [];
+effect bad_index($category,$candidates,$context) => 999;
+effect io($category,$candidates,$context) => source.read("missing-file");
+effect ranking_io($candidate,$context) => source.read("missing-file");
+effect integer_rank($candidate,$context) => $candidate;
+effect constant_rank($candidate,$context) => 1;
+effect rejected_rank($candidate,$context) => [];
+effect context_rank($candidate,$context) => [eq($candidate,$context),$candidate];
+
+syntax choices.guarded `class` when eq(42,42) => Keyword();
+effect scan_columns($line) => text.columns(text.expand_tabs($line,8),[[0,4],[4,8],[8,40]],"unicode");
+effect column_program($source) => list.map("frontend_choices.scan_columns",text.lines($source));
+
+effect commit($context,$item) => [$context,[$item]];
+effect frontend($path,$source,$options) => source.parse_tokens(
+    text.lex($source,$path,["abcdefghijklmnopqrstuvwxyz","abcdefghijklmnopqrstuvwxyz","0123456789","0123456789","",[],[],""]),
+    "choices.word",env.empty(),"frontend_choices.commit","parse.specific");

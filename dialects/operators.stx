@@ -1,0 +1,189 @@
+// Operator declarations, candidate selection and lowering are language rules.
+// The parser recognizes a spelling once; overloads extend its meaning by type.
+mod operators;
+use base;
+use types;
+use pipeline;
+use control;
+use numbers;
+
+syntax operator_symbol `+` => "+";
+syntax operator_symbol `-` => "-";
+syntax operator_symbol `*` => "*";
+syntax operator_symbol `/` => "/";
+syntax operator_symbol `%` => "%";
+syntax operator_symbol `==` => "==";
+syntax operator_symbol `!=` => "!=";
+syntax operator_symbol `<` => "<";
+syntax operator_symbol `<=` => "<=";
+syntax operator_symbol `>` => ">";
+syntax operator_symbol `>=` => ">=";
+syntax operator_symbol `&` => "&";
+syntax operator_symbol `|` => "|";
+syntax operator_symbol `^` => "^";
+syntax operator_symbol `<<` => "<<";
+syntax operator_symbol `>>` => ">>";
+syntax item `operator $operation:operator_symbol($params:parameters) -> $result:typename $body:block`
+    => Declaration($operation, $params, $result, $body);
+syntax item `fn operator $operation:operator_symbol($params:parameters) -> $result:typename $body:block`
+    => Declaration($operation, $params, $result, $body);
+
+// Resolve named types first. Every generated function then participates in
+// closure lifting, cleanup expansion, ownership checking and normal lowering.
+effect pipeline.steps() => pipeline.Step("operators", ["generics", "records"],
+    ["closures", "defer", "affine", "strings"], "operators.prepare");
+effect prepare($items) => gather($items, [], [], env.empty());
+effect gather([], $items, [], $seen) => $items;
+effect gather([], $items, $entries, $seen) when lt(0, size($entries)) => list.prepend(Registry($entries), $items);
+effect gather($remaining, $items, $entries, $seen) when lt(0, size($remaining))
+    => gather_item(list.head($remaining), list.tail($remaining), $items, $entries, $seen);
+effect gather_item(Declaration($operation, $params, $result, $body), $rest, $items, $entries, $seen)
+    => bind($types, list.map("base.param_type", $params),
+        choose(or(eq(size($params), 1), eq(size($params), 2)),
+            choose(env.contains($seen, SignatureKey($operation, $types)),
+                fail(concat("duplicate operator overload: ", $operation)),
+                bind($name, concat("_naru_operator_", text(size($entries))),
+                    gather($rest, list.concat($items, [base.TypedFunction($name, $params, $result, $body)]),
+                        list.concat($entries, [Entry($operation, Candidate($types, $result, FunctionTarget($name)))]),
+                        env.put($seen, SignatureKey($operation, $types), 1)))),
+            fail("operator overload requires one or two parameters")));
+effect[fallback] gather_item($item, $rest, $items, $entries, $seen)
+    => gather($rest, list.concat($items, [$item]), $entries, $seen);
+effect base.declare(Registry($entries), $rest, $environment)
+    => base.declarations($rest, env.put($environment, RegistryKey(), $entries));
+effect base.prepare(Registry($entries), $environment) => Registry($entries);
+effect base.lower_function(Registry($entries)) => [];
+
+// Libraries add independent candidates through this relation. A candidate
+// describes parameter/result types and an open implementation strategy.
+effect[fallback] extension($operation, $hints, $environment) => NoCandidate();
+effect candidates($operation, $hints, $environment)
+    => list.concat(source_candidates($operation, $hints,
+            choose(env.contains($environment, RegistryKey()), env.get($environment, RegistryKey()), [])),
+        clean_extensions(collect("operators.extension", [$operation, $hints, $environment]), $hints));
+effect source_candidates($operation, $hints, []) => [];
+effect source_candidates($operation, $hints, $entries) when lt(0, size($entries))
+    => source_candidate(list.head($entries), $operation, $hints, list.tail($entries));
+effect source_candidate(Entry($operation, Candidate($params, $result, $target)), $operation, $hints, $rest)
+    => choose(compatible($hints, $params),
+        list.prepend(Candidate($params, $result, $target), source_candidates($operation, $hints, $rest)),
+        source_candidates($operation, $hints, $rest));
+effect[fallback] source_candidate($entry, $operation, $hints, $rest) => source_candidates($operation, $hints, $rest);
+effect clean_extensions([], $hints) => [];
+effect clean_extensions($values, $hints) when lt(0, size($values))
+    => clean_extension(list.head($values), list.tail($values), $hints);
+effect clean_extension(NoCandidate(), $rest, $hints) => clean_extensions($rest, $hints);
+effect clean_extension(Candidate($params, $result, $target), $rest, $hints)
+    => choose(compatible($hints, $params),
+        list.prepend(Candidate($params, $result, $target), clean_extensions($rest, $hints)),
+        clean_extensions($rest, $hints));
+effect compatible([], []) => 1;
+effect compatible($hints, $params) when not(eq(size($hints), size($params))) => 0;
+effect compatible($hints, $params) when and(eq(size($hints), size($params)), lt(0, size($params)))
+    => and(compatible_hint(list.head($hints), list.head($params)),
+        compatible(list.tail($hints), list.tail($params)));
+effect compatible_hint(base.Any(), $type) => 1;
+effect compatible_hint(UntypedInteger(), $type) => integer_literal_type($type);
+effect compatible_hint(UntypedReal(), $type) => real_literal_type($type);
+effect[fallback] compatible_hint($hint, $type) => eq($hint, $type);
+effect integer_literal_type(Signed($width)) => 1;
+effect integer_literal_type(Unsigned($width)) => 1;
+effect integer_literal_type(Index()) => 1;
+effect integer_literal_type(Real($format)) => 1;
+effect[fallback] integer_literal_type($type) => 0;
+effect real_literal_type(Real($format)) => 1;
+effect[fallback] real_literal_type($type) => 0;
+effect argument_hint(base.Int($value), $environment) => UntypedInteger();
+effect argument_hint(base.Neg(base.Int($value)), $environment) => UntypedInteger();
+effect argument_hint(base.Literal($raw), $environment) => operators.number_hint(numbers.decode($raw));
+effect argument_hint(base.Neg(base.Literal($raw)), $environment) => operators.number_hint(numbers.decode($raw));
+effect number_hint(numbers.Number($type, $raw)) => $type;
+effect number_hint(numbers.Untyped($raw)) => choose(numbers.floating($raw), UntypedReal(), UntypedInteger());
+effect[fallback] argument_hint($value, $environment) => base.hint($value, $environment);
+effect hints([], $environment) => [];
+effect hints($arguments, $environment) when lt(0, size($arguments))
+    => list.prepend(argument_hint(list.head($arguments), $environment), hints(list.tail($arguments), $environment));
+effect select($operation, []) => NoCandidate();
+effect select($operation, [$candidate]) => $candidate;
+effect select($operation, $candidates) when lt(1, size($candidates))
+    => fail(concat("ambiguous operator overload: ", $operation));
+effect resolve($operation, $arguments, $environment)
+    => operators.select($operation, candidates($operation, hints($arguments, $environment), $environment));
+effect result_type(NoCandidate(), $default) => $default;
+effect result_type(Candidate($params, $result, $target), $default) => $result;
+
+effect base.binary($operation, $a, $b, $environment, $expected)
+    => binary_selected(resolve(spelling($operation), [$a, $b], $environment), $operation, $a, $b, $environment, $expected);
+effect binary_selected(NoCandidate(), $operation, $a, $b, $environment, $expected)
+    => base.numeric_binary($operation, $a, $b, $environment, $expected);
+effect binary_selected(Candidate($params, $result, $target), $operation, $a, $b, $environment, $expected)
+    => implement(Candidate($params, $result, $target), [$a, $b], $environment, $expected);
+effect base.binary_hint($operation, $a, $b, $environment)
+    => result_type(resolve(spelling($operation), [$a, $b], $environment), base.numeric_hint($a, $b, $environment));
+effect base.bitwise($operation, $a, $b, $environment, $expected)
+    => bitwise_selected(resolve(spelling($operation), [$a, $b], $environment), $operation, $a, $b, $environment, $expected);
+effect bitwise_selected(NoCandidate(), $operation, $a, $b, $environment, $expected)
+    => base.numeric_bitwise($operation, $a, $b, $environment, $expected);
+effect bitwise_selected(Candidate($params, $result, $target), $operation, $a, $b, $environment, $expected)
+    => implement(Candidate($params, $result, $target), [$a, $b], $environment, $expected);
+effect base.comparison($operation, $a, $b, $environment, $expected)
+    => comparison_selected(resolve(spelling($operation), [$a, $b], $environment), $operation, $a, $b, $environment, $expected);
+effect comparison_selected(NoCandidate(), $operation, $a, $b, $environment, $expected)
+    => base.numeric_comparison($operation, $a, $b, $environment, $expected);
+effect comparison_selected(Candidate($params, $result, $target), $operation, $a, $b, $environment, $expected)
+    => implement(Candidate($params, $result, $target), [$a, $b], $environment, $expected);
+effect base.comparison_hint($operation, $a, $b, $environment)
+    => result_type(resolve(spelling($operation), [$a, $b], $environment), Bool());
+effect base.unary("neg", $value, $environment, $expected)
+    => unary_selected(resolve("-", [$value], $environment), $value, $environment, $expected);
+effect unary_selected(NoCandidate(), $value, $environment, $expected) => base.negate($value, $environment, $expected);
+effect unary_selected(Candidate($params, $result, $target), $value, $environment, $expected)
+    => implement(Candidate($params, $result, $target), [$value], $environment, $expected);
+effect base.unary_hint("neg", $value, $environment)
+    => result_type(resolve("-", [$value], $environment), base.hint($value, $environment));
+effect control.shift($operation, $a, $b, $environment, $expected)
+    => shift_selected(resolve(shift_spelling($operation), [$a, $b], $environment), $operation, $a, $b, $environment, $expected);
+effect shift_selected(NoCandidate(), $operation, $a, $b, $environment, $expected)
+    => control.numeric_shift($operation, $a, $b, $environment, $expected);
+effect shift_selected(Candidate($params, $result, $target), $operation, $a, $b, $environment, $expected)
+    => implement(Candidate($params, $result, $target), [$a, $b], $environment, $expected);
+effect control.shift_hint($operation, $a, $b, $environment)
+    => result_type(resolve(shift_spelling($operation), [$a, $b], $environment), base.hint($a, $environment));
+effect shift_spelling("left") => "<<";
+effect shift_spelling("right") => ">>";
+
+// An added spelling only needs a syntax rule constructing this generic term.
+effect base.hint(OperatorExpression($operation, $arguments), $environment)
+    => required_result($operation, resolve($operation, $arguments, $environment));
+effect required_result($operation, NoCandidate()) => fail(concat("no operator overload: ", $operation));
+effect required_result($operation, Candidate($params, $result, $target)) => $result;
+effect base.check(OperatorExpression($operation, $arguments), $environment, $expected)
+    => required_implementation($operation, resolve($operation, $arguments, $environment), $arguments, $environment, $expected);
+effect required_implementation($operation, NoCandidate(), $arguments, $environment, $expected)
+    => fail(concat("no operator overload: ", $operation));
+effect required_implementation($operation, Candidate($params, $result, $target), $arguments, $environment, $expected)
+    => implement(Candidate($params, $result, $target), $arguments, $environment, $expected);
+
+effect implement(Candidate($params, $result, FunctionTarget($name)), $arguments, $environment, $expected)
+    => seq(validate_target($params, $result, env.get($environment, $name)),
+        base.call_checked($name, $arguments, env.get($environment, $name), $environment, $expected));
+effect validate_target($params, $result, $signature)
+    => choose(and(eq($params, base.signature_params($signature)), eq($result, base.signature_result($signature))),
+        1, fail("operator implementation signature mismatch"));
+effect implement(Candidate($params, $result, RuleTarget($relation)), $arguments, $environment, $expected)
+    => base.expect(base.expect(apply($relation, [base.check_arguments($arguments, $params, $environment), $environment]), $result), $expected);
+effect spelling("add") => "+";
+effect spelling("sub") => "-";
+effect spelling("mul") => "*";
+effect spelling("div") => "/";
+effect spelling("rem") => "%";
+effect spelling("eq") => "==";
+effect spelling("ne") => "!=";
+effect spelling("lt") => "<";
+effect spelling("le") => "<=";
+effect spelling("gt") => ">";
+effect spelling("ge") => ">=";
+effect spelling("and") => "&";
+effect spelling("or") => "|";
+effect spelling("xor") => "^";
+effect[fallback] spelling($operation) => $operation;

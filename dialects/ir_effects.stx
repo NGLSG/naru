@@ -1,0 +1,10 @@
+// Preserve an operation's ordering and observability through generic MLIR
+// passes even when its upstream effect model is too weak. One already-lowered
+// LLVM-translatable regionless operation is enclosed; export emits it in place.
+mod ir_effects;
+
+effect ir_effects.ordered($operation,$arguments,$results,$attributes)
+    => mlir.op("naru_backend.ordered",[],$results,[],[mlir.region(
+        mlir.op("naru_backend.yield",ir_effects.values(mlir.op($operation,$arguments,$results,$attributes,[]),size($results)),[],[],[]))]);
+effect ir_effects.values($value,1) => [$value];
+effect ir_effects.values($values,$count) when not(eq($count,1)) => $values;

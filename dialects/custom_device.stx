@@ -1,0 +1,8 @@
+// This target operation is registered by backend/examples/device.irdl.mlir.
+// Nothing in Naru's core gives this syntax or operation a special meaning.
+mod custom_device;
+
+syntax item `device $workgroups:int` => Device($workgroups);
+
+effect emit(Device($workgroups))
+    => mlir.op("naru_device.launch", [], [], [Attr("workgroups", $workgroups, "i32")], []);

@@ -1,0 +1,4 @@
+mod extension;
+use a;
+effect a.run(Local()) => Extended();
+effect test() => a.run(Local());

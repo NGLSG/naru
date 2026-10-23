@@ -1,0 +1,64 @@
+// VM jump constraints use source scope identities; storage cleanup uses the
+// same identities at runtime. No expression or bound is evaluated by this walk.
+mod c11.vla_flow;
+use c11.vla;
+use c11.flow;
+use c11.syntax;
+use c11.scopes;
+use c11.objects;
+use c11.sema;
+use base;
+use control;
+use cfg;
+use stack_regions;
+
+effect c11.flow.collect_label($labels,c11.vla.SourceDeclaration($marker,$body,$next)) => env.put($labels,VmSourceKey(),1);
+effect c11.flow.label_constraints($body,$scope) when env.contains(env.get($scope,c11.flow.LabelsKey()),VmSourceKey())
+    => bind(Audit($pending,$path,$switch,$labels,$gotos),rule.iterate("c11.vla_flow.audit_step",
+        Audit([Visit($body)],[],NoSwitch(),env.empty(),[]),1000000),
+        seq(list.fold("c11.vla_flow.validate_goto",$gotos,$labels),env.put($scope,LabelPathsKey(),$labels)));
+effect c11.vla_flow.audit_step(Audit([],$path,$switch,$labels,$gotos)) => [0,Audit([],$path,$switch,$labels,$gotos)];
+effect c11.vla_flow.audit_step(Audit($pending,$path,$switch,$labels,$gotos)) when lt(0,size($pending))
+    => [1,c11.vla_flow.audit_node(list.head($pending),list.tail($pending),$path,$switch,$labels,$gotos)];
+effect c11.vla_flow.audit_node(Reset($path,$switch),$pending,$old,$old_switch,$labels,$gotos) => Audit($pending,$path,$switch,$labels,$gotos);
+effect c11.vla_flow.audit_node(Visit(base.End()),$pending,$path,$switch,$labels,$gotos) => Audit($pending,$path,$switch,$labels,$gotos);
+effect c11.vla_flow.audit_node(Visit(c11.vla.SourceDeclaration($marker,$body,$next)),$pending,$path,$switch,$labels,$gotos)
+    => Audit(list.prepend(Visit($body),list.prepend(Visit($next),$pending)),list.prepend($marker,$path),$switch,$labels,$gotos);
+effect c11.vla_flow.audit_node(Visit(c11.objects.ScopePoint($tags,$body,$next)),$pending,$path,$switch,$labels,$gotos)
+    => Audit(list.prepend(Visit($body),list.prepend(Visit($next),$pending)),$path,$switch,$labels,$gotos);
+effect c11.vla_flow.audit_node(Visit(c11.syntax.Scope($body,$next)),$pending,$path,$switch,$labels,$gotos)
+    => Audit(list.prepend(Visit($body),list.prepend(Reset($path,$switch),list.prepend(Visit($next),$pending))),$path,$switch,$labels,$gotos);
+effect c11.vla_flow.audit_node(Visit(base.If($condition,$yes,$no,$next)),$pending,$path,$switch,$labels,$gotos)
+    => Audit(list.prepend(Visit($yes),list.prepend(Reset($path,$switch),list.prepend(Visit($no),
+        list.prepend(Reset($path,$switch),list.prepend(Visit($next),$pending))))),$path,$switch,$labels,$gotos);
+effect c11.vla_flow.audit_node(Visit(base.While($condition,$body,$next)),$pending,$path,$switch,$labels,$gotos)
+    => Audit(list.prepend(Visit($body),list.prepend(Reset($path,$switch),list.prepend(Visit($next),$pending))),$path,$switch,$labels,$gotos);
+effect c11.vla_flow.audit_node(Visit(c11.syntax.DoWhile($body,$condition,$next)),$pending,$path,$switch,$labels,$gotos)
+    => Audit(list.prepend(Visit($body),list.prepend(Reset($path,$switch),list.prepend(Visit($next),$pending))),$path,$switch,$labels,$gotos);
+effect c11.vla_flow.audit_node(Visit(c11.syntax.For($init,$condition,$step,$body,$next)),$pending,$path,$switch,$labels,$gotos)
+    => Audit(list.prepend(Visit($init),list.prepend(Visit($body),list.prepend(Reset($path,$switch),list.prepend(Visit($next),$pending)))),$path,$switch,$labels,$gotos);
+effect c11.vla_flow.audit_node(Visit(c11.flow.Switch($value,$body,$next)),$pending,$path,$switch,$labels,$gotos)
+    => Audit(list.prepend(Visit($body),list.prepend(Reset($path,$switch),list.prepend(Visit($next),$pending))),$path,SwitchPath($path),$labels,$gotos);
+effect c11.vla_flow.audit_node(Visit(c11.flow.Case($value,$identity,$body)),$pending,$path,SwitchPath($entry),$labels,$gotos)
+    => seq(c11.vla_flow.require_subset($path,$entry,"C switch dispatch enters the scope of a variably modified identifier"),
+        Audit(list.prepend(Visit($body),$pending),$path,SwitchPath($entry),$labels,$gotos));
+effect c11.vla_flow.audit_node(Visit(c11.flow.Default($identity,$body)),$pending,$path,SwitchPath($entry),$labels,$gotos)
+    => seq(c11.vla_flow.require_subset($path,$entry,"C switch dispatch enters the scope of a variably modified identifier"),
+        Audit(list.prepend(Visit($body),$pending),$path,SwitchPath($entry),$labels,$gotos));
+effect c11.vla_flow.audit_node(Visit(c11.flow.Label($name,$body)),$pending,$path,$switch,$labels,$gotos)
+    => Audit(list.prepend(Visit($body),$pending),$path,$switch,env.put($labels,$name,$path),$gotos);
+effect c11.vla_flow.audit_node(Visit(c11.flow.Goto($name)),$pending,$path,$switch,$labels,$gotos)
+    => Audit($pending,$path,$switch,$labels,list.prepend([$name,$path],$gotos));
+effect[fallback] c11.vla_flow.audit_node(Visit($node),$pending,$path,$switch,$labels,$gotos)
+    => Audit(list.concat(list.map("c11.vla_flow.visit",c11.objects.block_link_children($node)),$pending),$path,$switch,$labels,$gotos);
+effect c11.vla_flow.visit($node) => Visit($node);
+effect c11.vla_flow.validate_goto($labels,[$name,$path]) => choose(env.contains($labels,$name),
+    seq(c11.vla_flow.require_subset(env.get($labels,$name),$path,"C goto enters the scope of a variably modified identifier"),$labels),$labels);
+effect c11.vla_flow.require_subset($required,$present,$message)
+    => seq(list.fold("c11.vla_flow.check_member",$required,[$present,$message]),1);
+effect c11.vla_flow.check_member([$present,$message],$marker) => choose(stack_regions.member($marker,$present),[$present,$message],fail($message));
+effect c11.flow.checked_goto($name,$identity,$env) when env.contains($env,LabelPathsKey()) => VmJump($identity,env.get(env.get($env,LabelPathsKey()),$name));
+effect base.prepare_storage(VmJump($identity,$path),$entry,$env) => $env;
+effect base.flow_terminal(VmJump($identity,$path)) => 1;
+effect base.lower_flow(VmJump($identity,$path),$env,$block,$continuation)
+    => seq(mlir.in_block($block,seq(stack_regions.restore_path($env,$path),base.jump(env.get($env,cfg.TargetKey($identity))))),[$block]);

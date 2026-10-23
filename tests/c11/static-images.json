@@ -1,0 +1,274 @@
+{
+  "format": 1,
+  "target": "windows-x86_64-llp64",
+  "scope": "Source-only deferred physical global storage images with preserved symbolic relocations; C value/ABI representation remains canonical; no executed acceptance evidence.",
+  "full_conformance_claimed": false,
+  "cases": [
+    {
+      "id": "union-pointer-nonfirst-member",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "union U{double d;int *p;};int value=42;union U u={.p=&value};int main(void){return *u.p;}",
+      "llvm_ir_contains": [
+        "ptr @value"
+      ]
+    },
+    {
+      "id": "union-function-pointer-nonfirst-member",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "union U{double d;int (*f)(int);};int plus(int n){return n+22;}union U u={.f=plus};int main(void){return u.f(20);}",
+      "llvm_ir_contains": [
+        "ptr @plus"
+      ]
+    },
+    {
+      "id": "union-pointer-addend",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "union U{double d;int *p;};int values[3]={1,2,42};union U u={.p=values+2};int main(void){return *u.p;}",
+      "llvm_ir_contains": [
+        "ptr @values"
+      ]
+    },
+    {
+      "id": "union-packed-pointer-one-byte-windows",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;unsigned char bytes[9];};int value=40;union U u={.p={2,&value}};int main(void){return sizeof(u)==9?u.p.c+*u.p.p:1;}",
+      "llvm_ir_contains": [
+        "ptr @value"
+      ]
+    },
+    {
+      "id": "union-packed-pointer-cross-eight-byte-windows",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};int value=40;union U u={.p={2,&value}};int main(void){return sizeof(u)==16?u.p.c+*u.p.p:1;}",
+      "llvm_ir_contains": [
+        "ptr @value"
+      ]
+    },
+    {
+      "id": "union-packed-function-pointer",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{char c;int (*f)(int);};\n#pragma pack(pop)\nunion U{struct P p;long long n;};int plus(int n){return n+22;}union U u={.p={20,plus}};int main(void){return u.p.f(u.p.c);}",
+      "llvm_ir_contains": [
+        "ptr @plus"
+      ]
+    },
+    {
+      "id": "union-array-heterogeneous-active-members",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "union U{long long n;int *p;};int value=20;union U u[3]={{.p=&value},{.n=22},{.p=&value}};int main(void){return sizeof(u)==24&&u[2].p==&value?*u[0].p+(int)u[1].n:1;}",
+      "llvm_ir_contains": [
+        "ptr @value"
+      ]
+    },
+    {
+      "id": "union-array-packed-stride",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;unsigned char bytes[9];};int a=20,b=22;union U u[3]={{.p={1,&a}},{.bytes={3}},{.p={2,&b}}};int main(void){return sizeof(u)==27&&(char*)&u[2]-(char*)&u[0]==18&&u[1].bytes[0]==3?*u[0].p.p+*u[2].p.p:1;}"
+    },
+    {
+      "id": "union-in-record-with-other-pointer",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;unsigned char bytes[9];};struct R{char head;union U u;int *tail;};int a=20,b=22;struct R r={1,{.p={2,&a}},&b};int main(void){return r.head==1&&r.u.p.c==2?*r.u.p.p+*r.tail:1;}"
+    },
+    {
+      "id": "union-in-packed-record-with-bitfields",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{char c;int *p;};union U{struct P p;unsigned char bytes[9];};struct R{unsigned int a:3,b:5;union U u;int *tail;};\n#pragma pack(pop)\nint a=20,b=20;struct R r={2,7,{.p={1,&a}},&b};int main(void){return sizeof(r)==21&&r.b==7?r.a+*r.u.p.p+*r.tail:1;}"
+    },
+    {
+      "id": "union-array-nested-in-record",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;unsigned char bytes[9];};struct R{char c;union U u[2];};int a=20,b=22;struct R r={1,{{.p={2,&a}},{.p={3,&b}}}};int main(void){return sizeof(r)==19?*r.u[0].p.p+*r.u[1].p.p:1;}"
+    },
+    {
+      "id": "union-member-partial-overlay-retains-pointer",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};int value=40;union U u={.p={1,&value},.p.c=2};int main(void){return u.p.c+*u.p.p;}"
+    },
+    {
+      "id": "union-member-pointer-overlay-replaces-address",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};int a=1,b=40;union U u={.p={2,&a},.p.p=&b};int main(void){return u.p.p==&b?u.p.c+*u.p.p:1;}"
+    },
+    {
+      "id": "union-active-member-switch-discards-pointer",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};int value=1;union U u={.p={2,&value},.n=42};int main(void){return (int)u.n;}"
+    },
+    {
+      "id": "union-active-member-switch-to-pointer",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{long long n;struct P p;};int value=40;union U u={.n=1,.p.c=2,.p.p=&value};int main(void){return u.p.c+*u.p.p;}"
+    },
+    {
+      "id": "record-partial-union-overlay",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};struct R{int n;union U u;};int value=40;struct R r={.n=7,.u={.p={1,&value}},.u.p.c=2};int main(void){return r.n==7?r.u.p.c+*r.u.p.p:1;}"
+    },
+    {
+      "id": "union-bitfield-static-masks-width",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "union U{unsigned char b:3;unsigned char bytes[1];};union U u={.b=10};int main(void){return u.b==2&&u.bytes[0]==2?42:1;}"
+    },
+    {
+      "id": "record-bitfields-with-union-pointer",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "union U{double d;int *p;};struct R{unsigned int a:3,b:5;union U u;};int value=40;struct R r={2,7,{.p=&value}};int main(void){return r.b==7?r.a+*r.u.p:1;}"
+    },
+    {
+      "id": "union-recursively-selected-pointer",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;unsigned char bytes[9];};union V{union U u;double d;};int value=40;union V v={.u={.p={2,&value}}};int main(void){return v.u.p.c+*v.u.p.p;}"
+    },
+    {
+      "id": "union-zero-selected-pointer",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "union U{long long n;int *p;};union U u={.p=0};int main(void){return u.p==0?42:1;}"
+    },
+    {
+      "id": "union-zero-uninitialized-elements",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "union U{long long n;int *p;};int value=42;union U u[3]={[1]={.p=&value}};int main(void){return u[0].n==0&&u[2].n==0?*u[1].p:1;}"
+    },
+    {
+      "id": "union-file-static-internal",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};static int value=40;static union U u={.p={2,&value}};int main(void){return u.p.c+*u.p.p;}"
+    },
+    {
+      "id": "union-block-static-initialized-once",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};int value=20;int f(void){static union U u={.p={20,&value}};return ++u.p.c+*u.p.p;}int main(void){int a=f(),b=f();return a==41&&b==42?42:1;}"
+    },
+    {
+      "id": "union-explicit-alignment-global",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#include <stdint.h>\n#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};int value=40;_Alignas(32) union U u={.p={2,&value}};int main(void){return (uintptr_t)&u%32==0?u.p.c+*u.p.p:1;}",
+      "llvm_ir_contains": [
+        "align 32"
+      ]
+    },
+    {
+      "id": "aligned-floating-global-rule-overlap",
+      "feature": "alignment",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.7.5",
+      "source": "#include <stdint.h>\n_Alignas(32) const double value=42.0;int main(void){return (uintptr_t)&value%32==0?(int)value:1;}",
+      "llvm_ir_contains": [
+        "align 32"
+      ]
+    },
+    {
+      "id": "union-cross-unit-canonical-declaration",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "#include \"types.h\"\nextern union U value;int main(void){return sizeof(value)==16?value.p.c+*value.p.p:1;}",
+      "files": {
+        "types.h": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};"
+      },
+      "additional_sources": {
+        "provider.c": "#include \"types.h\"\nint n=40;union U value={.p={2,&n}};"
+      }
+    },
+    {
+      "id": "union-static-image-tls-thread-isolation",
+      "feature": "threads",
+      "work_item": "thread-storage-and-library",
+      "clause": "6.2.4; 6.7.1; 7.26",
+      "source": "#include <threads.h>\n#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};int value=20;_Thread_local union U u={.p={2,&value}};int worker(void *p){if(&u==(union U*)p)return 1;u.p.c+=20;return u.p.c;}int main(void){thrd_t t;int n=0;if(thrd_create(&t,worker,&u)!=thrd_success)return 2;if(thrd_join(t,&n)!=thrd_success)return 3;return u.p.c==2?*u.p.p+n:1;}",
+      "llvm_ir_contains": [
+        "thread_local global"
+      ]
+    },
+    {
+      "id": "union-static-image-tls-cross-unit",
+      "feature": "threads",
+      "work_item": "thread-storage-and-library",
+      "clause": "6.2.4; 6.7.1; 6.2.2",
+      "source": "#include \"types.h\"\nextern _Thread_local union U u;int update(void);int main(void){int n=update();return u.p.c==22&&n==20?u.p.c+n:1;}",
+      "files": {
+        "types.h": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};"
+      },
+      "additional_sources": {
+        "provider.c": "#include \"types.h\"\nint value=20;_Thread_local union U u={.p={2,&value}};int update(void){u.p.c+=20;return *u.p.p;}"
+      },
+      "llvm_ir_contains": [
+        "thread_local"
+      ]
+    },
+    {
+      "id": "union-static-image-atomic-aggregate",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "6.7.2.4; 6.7.9; 7.17",
+      "source": "union U{long long n;int *p;};int value=42;_Atomic(union U) u={.p=&value};int main(void){union U v=u;return *v.p;}"
+    },
+    {
+      "id": "union-static-image-nonconstant-still-diagnosed",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "union U{long long n;int *p;};int *get(void);union U u={.p=get()};int main(void){return 42;}",
+      "reject": true
+    },
+    {
+      "id": "union-static-image-overwritten-nonconstant-still-diagnosed",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.6; 6.7.9; 6.2.6.1",
+      "source": "union U{long long n;int *p;};int *get(void);union U u={.p=get(),.n=42};int main(void){return 42;}",
+      "reject": true,
+      "reference_reject_required": false,
+      "reference_note": "Every static initializer expression must satisfy 6.7.9p4 even when subsequently overridden; a compiler extension that ignores it is not the contract."
+    }
+  ]
+}

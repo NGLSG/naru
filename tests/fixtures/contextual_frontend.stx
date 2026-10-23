@@ -1,0 +1,8 @@
+mod contextual_frontend;
+syntax contextual.item `declare $name:ident;` => Declared($name);
+syntax contextual.item `$name:ident;` when env.contains(syntax.context(),$name) => Seen(env.get(syntax.context(),$name));
+effect contextual_frontend.commit($scope,Declared($name)) => [env.put($scope,$name,$name),[]];
+effect contextual_frontend.commit($scope,Seen($name)) => [$scope,[Seen($name)]];
+effect contextual_frontend.frontend($path,$source,$options) => source.parse_tokens(
+    text.lex($source,$path,["abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_","abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789","0123456789","0123456789","",[";"],[],""]),
+    "contextual.item",env.empty(),"contextual_frontend.commit");

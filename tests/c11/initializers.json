@@ -1,0 +1,800 @@
+{
+  "format": 1,
+  "target": "windows-x86_64-llp64",
+  "scope": "C11 6.7.9 current-object traversal; brace boundaries, chained designators, overrides and inferred bounds",
+  "cases": [
+      {
+        "id": "static-bool-object-address",
+        "source": "int x=42;static _Bool a[2]={&x,0};int main(void){return a[0]==1&&a[1]==0?42:1;}",
+        "feature": "initialization",
+        "work_item": "initializer-walk",
+        "clause": "6.7.9p11-23;6.6;6.3.1.2"
+      },
+      {
+        "id": "static-bool-pointer-null-fields",
+        "source": "int x=42;struct S{_Bool a[2];};static struct S s={{&x,(void*)0}};int main(void){return s.a[0]==1&&s.a[1]==0?42:1;}",
+        "feature": "initialization",
+        "work_item": "initializer-walk",
+        "clause": "6.7.9p11-23;6.6;6.3.1.2"
+      },
+      {
+        "id": "static-bool-function-address",
+        "source": "int f(void){return 42;}static _Bool a[1]={f};int main(void){return a[0]?42:1;}",
+        "feature": "initialization",
+        "work_item": "initializer-walk",
+        "clause": "6.7.9p11-23;6.6;6.3.1.2"
+      },
+      {
+        "id": "static-bool-string-address",
+        "source": "static _Bool a[1]={\"x\"};int main(void){return a[0]?42:1;}",
+        "feature": "initialization",
+        "work_item": "initializer-walk",
+        "clause": "6.7.9p11-23;6.6;6.3.1.2"
+      },
+      {
+        "id": "static-bool-array-offset",
+        "source": "int x[2];static _Bool a[1]={x+1};int main(void){return a[0]?42:1;}",
+        "feature": "initialization",
+        "work_item": "initializer-walk",
+        "clause": "6.7.9p11-23;6.6;6.3.1.2"
+      },
+      {
+        "id": "local-static-unevaluated-compound-size",
+        "source": "int main(void){static int a[]={sizeof ((int[]){42,0})};return a[0]+34;}",
+        "feature": "initialization",
+        "work_item": "initializer-walk",
+        "clause": "6.7.9p11-23;6.6;6.3.1.2"
+      },
+      {
+        "id": "nested-static-literal-prior-enum",
+        "source": "enum E{N=42};struct S{int*p;};struct S*p=(struct S[]){&(int){N}};int main(void){return *p->p;}",
+        "feature": "initialization",
+        "work_item": "initializer-walk",
+        "clause": "6.7.9p11-23;6.6;6.3.1.2"
+      },
+      {
+        "id": "deferred-literal-must-not-see-future-object",
+        "source": "struct S{int*p;};struct S*p=(struct S[]){&x};int x=42;int main(void){return 0;}",
+        "reject": "C identifier is not visible at this declaration point",
+        "feature": "initialization",
+        "work_item": "initializer-walk",
+        "clause": "6.2.1;6.7.9"
+      },
+    {
+      "id": "compound-inferred-string-pointer",
+      "source": "struct S{char*p;int n;};int main(void){struct S*p=(struct S[]){\"x\",42};return p->p[0]=='x'?p->n:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p14-23;6.5.2.5"
+    },
+    {
+      "id": "static-compound-inferred-string-pointer",
+      "source": "struct S{char*p;int n;};struct S*p=(struct S[]){\"x\",42};int main(void){return p->p[0]=='x'?p->n:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p14-23;6.5.2.5"
+    },
+    {
+      "id": "compound-inferred-nested-static-address",
+      "source": "int x=42;struct S{int*p;};struct S*p=(struct S[]){&(int){42},&x};int main(void){return *p[0].p==42&&*p[1].p==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p14-23;6.5.2.5"
+    },
+    {
+      "id": "compound-inferred-string-offset",
+      "source": "struct S{char*p;int n;};int main(void){struct S*p=(struct S[]){\"xy\"+1,42};return p->p[0]=='y'?p->n:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p14-23;6.5.2.5"
+    },
+    {
+      "id": "global-sizeof-self-element",
+      "source": "int a[]={sizeof a[0],38};int main(void){return sizeof a==8&&a[0]+a[1]==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23;6.3.2.1"
+    },
+    {
+      "id": "global-self-address-unknown-array",
+      "source": "void *a[]={(void*)&a};int main(void){return sizeof a==8&&a[0]==(void*)&a?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23;6.3.2.1"
+    },
+    {
+      "id": "const-unknown-array-self-element",
+      "source": "int main(void){const int a[]={sizeof a[0],38};return sizeof a==8&&a[0]+a[1]==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23;6.3.2.1"
+    },
+    {
+      "id": "compound-inferred-self-element",
+      "source": "int main(void){int a[]={(int[]){sizeof a[0]}[0],38};return sizeof a==8&&a[0]+a[1]==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23;6.3.2.1"
+    },
+    {
+      "id": "global-braced-self-element-address",
+      "source": "int a[][2]={{sizeof a[0][0],38}};int main(void){return sizeof a==8&&a[0][0]+a[0][1]==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23;6.3.2.1"
+    },
+    {
+      "id": "automatic-mixed-initializer-order",
+      "source": "int n=0;int f(void){n++;return 21;}int main(void){struct{int a[2];int x;}s={f(),f(),0};return n==2&&s.a[0]+s.a[1]+s.x==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23;6.3.2.1"
+    },
+    {
+      "id": "union-elided-continuation-to-container",
+      "source": "struct S{union {int a[2];int x;}u;int y;};int main(void){struct S s={10,11,21};return s.u.a[0]+s.u.a[1]+s.y;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23;6.3.2.1"
+    },
+    {
+      "id": "anonymous-struct-positional-elision",
+      "source": "struct S{struct{int x,y;};int z;};int main(void){struct S s={10,11,21};return s.x+s.y+s.z;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23;6.3.2.1"
+    },
+    {
+      "id": "static-compound-chained",
+      "source": "struct S{int a[2];};struct S *p=&(struct S){.a[1]=42};int main(void){return p->a[1];}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23;6.3.2.1"
+    },
+    {
+      "id": "union-static-symbolic-address-override",
+      "source": "int x=42;union U{long long n;int*p;};static union U u={.n=1,.p=&x};int main(void){return *u.p;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23;6.3.2.1"
+    },
+    {
+      "id": "global-sizeof-self-incomplete",
+      "source": "int a[]={sizeof a};int main(void){return 0;}",
+      "reject": "sizeof requires a complete C array",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.5.3.4"
+    },
+    {
+      "id": "compound-inferred-self-whole-sizeof",
+      "source": "int main(void){int a[]={(int[]){sizeof a}[0]};return 0;}",
+      "reject": "sizeof requires a complete C array",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.5.3.4"
+    },
+    {
+      "id": "qualifier-self-whole-sizeof",
+      "source": "int main(void){const int a[]={sizeof a};return 0;}",
+      "reject": "sizeof requires a complete C array",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.5.3.4"
+    },
+    {
+      "id": "nested-record-overridden-constraint",
+      "source": "struct S{int *p;};int main(void){struct S s={.p=1,.p=0};return 0;}",
+      "reject": "C pointer conversion requires a null pointer constant",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.5.3.4"
+    },
+    {
+      "id": "unnamed-designator-unknown",
+      "source": "struct S{union{int x;};};int main(void){struct S s={.y=42};return 0;}",
+      "reject": "unknown C aggregate member",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.5.3.4"
+    },
+    {
+      "id": "union-compatible-expression-overlay-once",
+      "source": "union U{int z;struct{int x,y;}s;};struct O{union U u;};int calls=0;union U f(void){calls++;union U u={.s={1,22}};return u;}int main(void){struct O o={.u=f(),.u.s.x=20};return calls==1&&o.u.s.x+o.u.s.y==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "array-compatible-expression-elision",
+      "source": "struct S{int x,y;};int calls=0;struct S f(void){calls++;struct S s={20,22};return s;}int main(void){struct S a[2]={f(),f()};return calls==2&&a[0].x+a[1].y==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "record-qualifiers-elision",
+      "source": "struct S{const int a[2];volatile int n;};int main(void){struct S s={10,11,21};return s.a[0]+s.a[1]+s.n;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "unknown-initializer-sizeof-no-effects",
+      "source": "int calls=0;int f(void){calls++;return 42;}int main(void){return sizeof((int[][2]){f(),2,3})==16&&calls==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "unknown-compatible-expression-call-once",
+      "source": "struct S{int x,y;};int calls=0;struct S f(void){calls++;struct S s={20,22};return s;}int main(void){struct S a[]={f(),f()};return sizeof a==16&&calls==2&&a[0].x+a[1].y==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "inferred-bound-not-final-cursor",
+      "source": "int main(void){int a[]={[4]=42,[0]=1};return sizeof a==20&&a[4]==42&&a[1]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "static-scalar-braces",
+      "source": "static int n={42};int main(void){return n;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "static-pointer-braces",
+      "source": "int n=42;static int *p={&n};int main(void){return *p;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "static-string-pointer-braces",
+      "source": "static char *p={\"x\"};int main(void){return p[0]=='x'?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "nested-pointer-zero-braces",
+      "source": "struct S{int *p[2];};int main(void){struct S s={{0,{0}}};return s.p[0]==0&&s.p[1]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "braced-enum",
+      "source": "enum E{N=42};int main(void){enum E n={N};return n;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "compound-initializer-allocation-tree",
+      "source": "int main(void){int *a[2][1]={(int[]){20},(int[]){22}};return *a[0][0]+*a[1][0];}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "utf8-narrow-string",
+      "source": "int main(void){unsigned char s[]=\"é\";return sizeof s==3&&s[0]==195&&s[1]==169&&s[2]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "zero-char-tail",
+      "source": "int main(void){signed char s[5]=\"a\";return s[0]==97&&s[1]==0&&s[4]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "scalar-extra-nested-braces",
+      "source": "int main(void){int n={{{42}}};return n;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23",
+      "reject": "too many braces around scalar C initializer"
+    },
+    {
+      "id": "scalar-member-designator",
+      "source": "int main(void){int n={.x=42};return 0;}",
+      "reject": "member designator requires a struct or union current object",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "scalar-index-designator",
+      "source": "int main(void){int n={[0]=42};return 0;}",
+      "reject": "array designator requires an array current object",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "nested-negative-designator",
+      "source": "struct S{int a[2];};int main(void){struct S s={.a[-1]=42};return 0;}",
+      "reject": "negative C array initializer index",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "enum-static-overridden-type-constraint",
+      "source": "static int *p[1]={[0]=1,[0]=0};int main(void){return 0;}",
+      "reject": "C pointer conversion",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "braced-string-excess",
+      "source": "int main(void){char s[3]={\"ab\",1};return 0;}",
+      "reject": "too many C initializers after a character string",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "flat-matrix",
+      "source": "int main(void){int a[2][2]={10,10,11,11};return a[0][0]+a[0][1]+a[1][0]+a[1][1];}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "flat-three-dimensional",
+      "source": "int main(void){int a[2][2][2]={1,2,3,4,5};return a[0][0][0]==1&&a[0][0][1]==2&&a[0][1][0]==3&&a[0][1][1]==4&&a[1][0][0]==5&&a[1][1][1]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "record-array-elision",
+      "source": "struct S{int a[2];int b;};int main(void){struct S s={10,11,21};return s.a[0]+s.a[1]+s.b;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "mixed-braces-array",
+      "source": "int main(void){int a[3][2]={1,2,{3},4,5};return a[0][0]==1&&a[0][1]==2&&a[1][0]==3&&a[1][1]==0&&a[2][0]==4&&a[2][1]==5?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "partial-braced-subobject",
+      "source": "struct S{int a[2];int b;};int main(void){struct S s={{20},22};return s.a[0]+s.a[1]+s.b;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "union-elided-record",
+      "source": "union U{struct {int x,y;} s;long long n;};int main(void){union U u={20,22};return u.s.x+u.s.y;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "member-chain",
+      "source": "struct I{int n;};struct O{struct I i;};int main(void){struct O o={.i.n=42};return o.i.n;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "index-chain",
+      "source": "int main(void){int a[2][3]={[1][2]=42};return a[1][2]+a[0][0];}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "member-index-member-chain",
+      "source": "struct I{int x,y;};struct O{struct I a[2];int z;};int main(void){struct O o={.a[1].y=42};return o.a[1].y+o.a[0].x+o.z;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "index-member-chain",
+      "source": "struct S{int x,y;};int main(void){struct S a[2]={[1].y=42};return a[1].y;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "continuation-after-nested-index",
+      "source": "int main(void){int a[2][3]={[0][1]=10,11,21};return a[0][0]==0&&a[0][1]==10&&a[0][2]==11&&a[1][0]==21&&a[1][1]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "continuation-after-nested-member",
+      "source": "struct S{int a[3];int b;};int main(void){struct S s={.a[1]=10,11,21};return s.a[0]==0&&s.a[1]==10&&s.a[2]==11&&s.b==21?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "designation-resets-brace-root",
+      "source": "struct S{int a[2];int b;};int main(void){struct S s={1,.b=42,.a[1]=22};return s.b==42&&s.a[0]==1&&s.a[1]==22?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "designation-aggregate-elision",
+      "source": "struct S{int a[2];int b;};int main(void){struct S s={.a=10,11,21};return s.a[0]+s.a[1]+s.b;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "independent-nested-brace-roots",
+      "source": "struct S{int a[2];int b;};int main(void){struct S x[2]={[1]={.a={[1]=20},.b=22},[0].b=3};return x[1].a[1]+x[1].b;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "anonymous-member-designation",
+      "source": "struct S{struct {int a[2];};int b;};int main(void){struct S s={.a[1]=20,.b=22};return s.a[1]+s.b;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "anonymous-union-designation",
+      "source": "struct S{union{int x;int y;};int z;};int main(void){struct S s={.y=20,.z=22};return s.y+s.z;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "repeated-scalar-designation",
+      "source": "int main(void){int a[1]={[0]=1,[0]=42};return a[0];}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "partial-array-overrides",
+      "source": "struct S{int a[3];};int main(void){struct S s={.a={10,11,22},.a[0]=9};return s.a[0]+s.a[1]+s.a[2];}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "whole-subobject-resets-earlier",
+      "source": "struct S{int a[3];};int main(void){struct S s={.a[1]=99,.a={42}};return s.a[0]==42&&s.a[1]==0&&s.a[2]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "union-member-overrides",
+      "source": "union U{int x;int y;};int main(void){union U u={.x=1,.y=42};return u.y;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "union-same-member-descendant-overrides",
+      "source": "union U{int a[2];int x;};int main(void){union U u={.a={20,1},.a[1]=22};return u.a[0]+u.a[1];}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "union-member-switch-resets",
+      "source": "union U{int a[2];int x;};int main(void){union U u={.a={99,99},.x=1,.a[0]=42};return u.a[0]==42&&u.a[1]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "unknown-flat-matrix-bound",
+      "source": "int main(void){int a[][2]={10,11,21};return sizeof a==16&&a[0][0]==10&&a[0][1]==11&&a[1][0]==21&&a[1][1]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "unknown-designated-matrix-bound",
+      "source": "int main(void){int a[][2]={[2][1]=20,22};return sizeof a==32&&a[2][1]==20&&a[3][0]==22&&a[0][0]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "unknown-record-elision-bound",
+      "source": "struct S{int a[2];int b;};int main(void){struct S s[]={10,11,21,42};return sizeof s==24&&s[0].b==21&&s[1].a[0]==42&&s[1].a[1]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "unknown-mixed-braces-example",
+      "source": "struct S{int a[3];int b;};int main(void){struct S w[]={{1},2};return sizeof w==32&&w[0].a[0]==1&&w[0].a[1]==0&&w[1].a[0]==2&&w[1].b==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "unknown-compatible-record-expression",
+      "source": "struct S{int x,y;};int main(void){struct S s={20,22};struct S a[]={s,s};return sizeof a==16&&a[1].x+a[1].y==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "unknown-sizeof-self-element",
+      "source": "int main(void){int a[]={sizeof a[0],38};return sizeof a==8&&a[0]+a[1]==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "enum-ice-designator",
+      "source": "enum E{Last=2};int main(void){int a[]={[Last-1]=20,22};return sizeof a==12&&a[0]==0&&a[1]+a[2]==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "static-elision",
+      "source": "struct S{int a[2];int b;};static struct S s={10,11,21};int main(void){return s.a[0]+s.a[1]+s.b;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "static-chained-override",
+      "source": "struct S{int a[2];int b;};static struct S s={.a[1]=99,.a={20,22},.b=1};int main(void){return s.a[0]+s.a[1];}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "static-unknown-bound",
+      "source": "int a[][2]={[2][1]=42};int main(void){return sizeof a==24&&a[2][1]==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "static-address-nested-designator",
+      "source": "int x=20,y=22;struct S{int *p[2];};static struct S s={.p[1]=&x,.p[0]=&y};int main(void){return *s.p[0]+*s.p[1];}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "block-static-current-object",
+      "source": "int main(void){static int a[2][2]={10,10,11,11};return a[0][0]+a[0][1]+a[1][0]+a[1][1];}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "compatible-expression-overlay-once",
+      "source": "struct S{int x,y;};struct O{struct S s;int z;};int calls=0;struct S f(void){calls++;struct S s={1,22};return s;}int main(void){struct O o={.s=f(),.s.x=20};return calls==1&&o.s.x+o.s.y==42?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "two-unoverridden-call-initializers",
+      "source": "int calls=0;int f(void){calls++;return 21;}int main(void){int a[2][2]={f(),f()};return calls==2&&a[0][0]+a[0][1]==42&&a[1][0]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "overridden-side-effect-permitted",
+      "source": "int calls=0;int f(void){calls++;return 1;}int main(void){int a[1]={[0]=f(),[0]=42};return a[0]==42&&(calls==0||calls==1)?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "compound-literal-current-object",
+      "source": "int main(void){int (*p)[2]=(int[][2]){10,11,21};return p[0][0]+p[0][1]+p[1][0];}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "scalar-braces",
+      "source": "int main(void){int n={42};return n;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "string-narrow-direct",
+      "source": "int main(void){char s[]=\"abc\";return sizeof s==4&&s[0]=='a'&&s[3]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "string-braces-known-size",
+      "source": "int main(void){char s[3]={\"abc\"};return sizeof s==3&&s[2]=='c'?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "string-braces-unknown-size",
+      "source": "int main(void){char s[]={\"abc\"};return sizeof s==4&&s[3]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "strings-nested-elision",
+      "source": "int main(void){char s[2][3]={\"ab\",\"cd\"};return s[0][2]==0&&s[1][0]=='c'&&s[1][2]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "string-pointer-composition",
+      "source": "struct S{char*p;int n;};int main(void){struct S s={\"x\",42};return s.p[0]=='x'?s.n:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "static-string-array",
+      "source": "static char s[4]={\"abc\"};int main(void){return s[2]=='c'&&s[3]==0?42:1;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "flexible-member-omitted",
+      "source": "struct S{int n;int a[];};int main(void){struct S s={42};return s.n;}",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p11-23"
+    },
+    {
+      "id": "excess-elided-elements",
+      "source": "int main(void){int a[1][2]={1,2,3};return 0;}",
+      "reject": "too many C initializers",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "excess-braced-subobject",
+      "source": "int main(void){int a[2][1]={{1,2},{3}};return 0;}",
+      "reject": "too many C initializers",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "excess-scalar-braces",
+      "source": "int main(void){int a={1,2};return a;}",
+      "reject": "too many C initializers",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "out-of-bounds-nested-designator",
+      "source": "int main(void){int a[2][2]={[1][2]=42};return 0;}",
+      "reject": "C array initializer index is out of bounds",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "negative-designator",
+      "source": "int main(void){int a[2]={[-1]=42};return 0;}",
+      "reject": "negative C array initializer index",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "non-ice-designator",
+      "source": "int main(void){int n=1;int a[2]={[n]=42};return 0;}",
+      "reject": "C context requires an integer constant expression",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "member-after-scalar-designator",
+      "source": "struct S{int n;};int main(void){struct S s={.n.x=42};return 0;}",
+      "reject": "member designator requires a struct or union current object",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "index-after-scalar-designator",
+      "source": "struct S{int n;};int main(void){struct S s={.n[0]=42};return 0;}",
+      "reject": "array designator requires an array current object",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "unknown-member-designator",
+      "source": "struct S{int n;};int main(void){struct S s={.missing=42};return 0;}",
+      "reject": "unknown C aggregate member",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "array-member-designator",
+      "source": "int main(void){int a[2]={.n=42};return 0;}",
+      "reject": "member designator requires a struct or union current object",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "flexible-member-initialized",
+      "source": "struct S{int n;int a[];};int main(void){struct S s={.n=1,.a={42}};return 0;}",
+      "reject": "C initializer cannot initialize a flexible array member",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "too-long-string",
+      "source": "int main(void){char s[2]=\"abc\";return 0;}",
+      "reject": "C string initializer is too long",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "overridden-undefined-name-still-diagnosed",
+      "source": "int main(void){int a[1]={[0]=missing,[0]=42};return 0;}",
+      "reject": "C identifier is not visible at this declaration point",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    },
+    {
+      "id": "overridden-static-nonconstant-still-diagnosed",
+      "source": "int f(void){return 1;}static int a[1]={[0]=f(),[0]=42};int main(void){return 0;}",
+      "reject": "not a supported C constant expression",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6",
+      "reference_reject_required": false,
+      "reference_note": "N1570 6.7.9p4 requires all static initializer expressions to be constant; Clang skips this overwritten expression as an extension. The invalid program is never executed.",
+      "reference_flags": []
+    },
+    {
+      "id": "unknown-self-sizeof-incomplete",
+      "source": "int main(void){int a[]={sizeof a};return 0;}",
+      "reject": "sizeof requires a complete C array",
+      "feature": "initialization",
+      "work_item": "initializer-walk",
+      "clause": "6.7.9p2-7;6.6"
+    }
+  ]
+}

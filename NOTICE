@@ -1,0 +1,12 @@
+Naru
+Copyright (c) 2026 Naru contributors
+
+The Vyx standard logger adaptation under packages/vyx-logger includes code
+from Vyx. Its original copyright and MIT/Apache-2.0 notices are retained there.
+
+Binary distributions include LLVM, MLIR, LLD, Vyx runtime, spdlog and bundled
+fmt components. Their notices are provided under licenses/ in the distribution.
+See THIRD_PARTY.md for the source, test and website dependencies.
+
+Historical documents are separate source materials, not Naru-authored works.
+Their authorship, provenance and document status are recorded in archive cards.

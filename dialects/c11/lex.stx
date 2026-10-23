@@ -1,0 +1,55 @@
+mod c11.lex;
+
+// C preprocessing-token policy is data supplied to the generic scanner.
+effect c11.lex.config() => [
+    concat("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_\\",c11.lex.extended_bytes()),
+    concat("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789\\",c11.lex.extended_bytes()),
+    "0123456789.",
+    concat("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789.\\",c11.lex.extended_bytes()), "eEpP",
+    ["%:%:", ">>=", "<<=", "...", "->", "++", "--", "<<", ">>", "<=", ">=", "==", "!=",
+     "&&", "||", "*=", "/=", "%=", "+=", "-=", "&=", "^=", "|=", "##", "<:", ":>", "<%", "%>", "%:",
+     "[", "]", "(", ")", "{", "}", ".", "&", "*", "+", "-", "~", "!", "/", "%", "<", ">", "^", "|", "?", ":", ";", "=", ",", "#"],
+    [["//", "\n"], ["/*", "*/"]], "\"'"
+];
+effect c11.lex.extended_bytes() => text.from_bytes(c11.lex.byte_range(128,256));
+effect c11.lex.byte_range($start,$end) when eq($start,$end) => [];
+// Construct the byte class without consuming the caller's recursion budget.
+effect c11.lex.byte_range($start,$end) when lt($start,$end)
+    => list.unfold("c11.lex.byte_range_step",[$start,$end],1000000);
+effect c11.lex.byte_range_step([$start,$end]) => choose(lt($start,$end),
+    [1,[add($start,1),$end],[$start]],[0,[$start,$end],[]]);
+effect c11.lex.scan($source,$path) => text.lex(c11.lex.phases($source),$path,c11.lex.config());
+effect c11.lex.scan_phase3($source,$path) => list.map("c11.lex.canonical",text.lex($source,$path,c11.lex.config()));
+effect c11.lex.source_text($source) => choose(text.starts($source,text.from_codepoints([65279])),text.slice($source,3,text.len($source)),$source);
+effect c11.lex.phases($source) => text.replace(list.fold("c11.lex.replace",c11.lex.trigraphs(),
+    text.replace(text.replace(c11.lex.source_text($source),"\r\n","\n"),"\r","\n")),"\\\n","");
+effect c11.lex.trigraphs() => [["??=","#"],["??/","\\"],["??'","^"],["??(","["],["??)","]"],
+    ["??!","|"],["??<","{"],["??>","}"],["??-","~"]];
+effect c11.lex.replace($source,[$from,$to]) => text.replace($source,$from,$to);
+effect c11.lex.spelling([$kind,$raw,$file,$line,$column,$space]) => $raw;
+effect c11.lex.kind([$kind,$raw,$file,$line,$column,$space]) => $kind;
+effect c11.lex.space([$kind,$raw,$file,$line,$column,$space]) => $space;
+effect c11.lex.at([$kind,$raw,$file,$line,$column,$space],$new) => [$kind,$new,$file,$line,$column,$space];
+effect c11.lex.made($kind,$raw,[$old,$text,$file,$line,$column,$space]) => [$kind,$raw,$file,$line,$column,$space];
+effect c11.lex.error([$kind,$raw,$file,$line,$column,$space],$message) => source.error($file,$line,$column,$message);
+effect c11.lex.canonical($token) => bind($before,c11.lex.spelling($token),
+    seq(choose(eq(c11.lex.kind($token),1),c11.lex.identifier_key($before),1),
+        bind($after,c11.lex.digraph($before),choose(eq($before,$after),$token,c11.lex.at($token,$after)))));
+effect c11.lex.digraph("<:") => "[";
+effect c11.lex.digraph(":>") => "]";
+effect c11.lex.digraph("<%") => "{";
+effect c11.lex.digraph("%>") => "}";
+effect c11.lex.digraph("%:") => "#";
+effect c11.lex.digraph("%:%:") => "##";
+effect[fallback] c11.lex.digraph($spelling) => $spelling;
+effect c11.lex.tokens($source,$path) => c11.lex.literal_tokens(list.map("c11.lex.canonical",c11.lex.scan($source,$path)));
+effect[fallback] c11.lex.literal_tokens($tokens) => $tokens;
+effect[fallback] c11.lex.identifier_key($raw) => $raw;
+effect c11.lex.macro_key($token) => choose(eq(c11.lex.kind($token),1),c11.lex.identifier_key(c11.lex.spelling($token)),c11.lex.spelling($token));
+// Keywords are still identifiers throughout preprocessing and macro expansion.
+// Only the final parser input reserves these literal words for this dialect.
+effect c11.lex.parser_token($token) => choose(eq(c11.lex.kind($token),5),c11.lex.made(14,c11.lex.spelling($token),$token),
+    choose(eq(c11.lex.kind($token),1),bind($name,c11.lex.identifier_key(c11.lex.spelling($token)),
+        c11.lex.made(choose(c11.lex.keyword($name),8,1),$name,$token)),$token));
+effect c11.lex.keyword($word) => or(text.contains(" auto break case char const continue default do double else enum extern float for goto if inline int long register restrict return short signed sizeof static struct switch typedef union unsigned void volatile while _Alignas _Alignof _Atomic _Bool _Complex _Generic _Imaginary _Noreturn _Static_assert _Thread_local ",concat(" ",concat($word," "))),c11.lex.extension_keyword($word));
+effect[fallback] c11.lex.extension_keyword($word) => 0;

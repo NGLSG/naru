@@ -1,0 +1,742 @@
+// Dartmouth BASIC (1964, DTSS) surface dialect over the base rule library.
+// Milestone 1: line-numbered program; LET/PRINT/GOTO/IF-THEN/FOR-NEXT/END/STOP,
+// implicit assignment, REM comments, real-valued variables and string literals.
+// Provenance: historical/basic/1964/ (INDEX + manual). Deviations: docs/basic.md.
+mod basic;
+use base;
+use types;
+use numbers;
+use pipeline;
+use tree;
+use control;
+use cfg;
+
+// CFG body terms (Label/Jump/Detached) arrive unchecked from build_chain; the
+// shared cfg library supplies their storage and lowering, not their checking.
+effect base.check_body(Label($identity, $next), $environment, $result)
+    => Label($identity, check_body($next, $environment, $result));
+effect base.check_body(Jump($identity), $environment, $result) => Jump($identity);
+effect base.check_body(Detached($terminal, $next), $environment, $result)
+    => Detached(check_body($terminal, $environment, $result), check_body($next, $environment, $result));
+
+
+// ---- frontend: line-oriented BASIC ------------------------------------------
+// BASIC is line-oriented: every physical line is `<number> <statement>`. The
+// dialect splits the source into physical lines, then lexes and parses each
+// line on its own. This avoids inventing a newline token and keeps a bare
+// `PRINT` from swallowing the following line's number. Line numbers become CFG
+// labels during lowering.
+effect lex_config() => [
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+    "0123456789.",
+    "0123456789.",
+    "eE",
+    ["<=", ">=", "<>", "^", "=", "<", ">", "+", "-", "*", "/", "(", ")", ",", ";", ":"],
+    [],
+    "\""
+];
+effect lex_phases($source)
+    => text.replace(text.replace($source, "\r\n", "\n"), "\r", "\n");
+effect lex_line($line, $path) => classify(text.lex($line, $path, lex_config()));
+effect classify($tokens) => list.reverse(list.fold("classify_step", $tokens, []));
+effect classify_step($acc, $token) => list.prepend(classify_one(fold_identifier($token)), $acc);
+// BASIC is case-insensitive: fold identifier tokens to lower case. Keywords are
+// not reserved (a program may still name a variable `print`); the statement
+// templates match the lower-cased keyword spellings as ordinary words.
+effect fold_identifier([1, $r, $f, $l, $c, $s]) => [1, text.lower($r), $f, $l, $c, $s];
+effect[fallback] fold_identifier($token) => $token;
+// `^` is BASIC exponentiation, but the base library already spells `^` as
+// xor at a looser precedence; its rule would win the longer span. Rewrite the
+// caret into a private indivisible terminal so only this dialect's rule matches.
+effect classify_one([$k, "^", $f, $l, $c, $s]) when eq($k, 5) => [14, "**", $f, $l, $c, $s];
+effect classify_one([$k, $r, $f, $l, $c, $s]) when and(eq($k, 5), not(eq($r, "^"))) => [14, $r, $f, $l, $c, $s];
+effect[fallback] classify_one([$k, $r, $f, $l, $c, $s]) => [$k, $r, $f, $l, $c, $s];
+
+effect basic.frontend($path, $source, $options)
+    => parse_lines(text.lines(lex_phases($source)), $path);
+// The commit form makes the parser evaluate each substituted item once, so
+// relation calls such as list.prepend in a syntax action become real lists
+// before any dialect phase sees them. The conversion into a body chain happens
+// later in prepare_module.
+// The statement-list grammar must not leak its wrapper into the existing CFG
+// assembler, whose unit is one statement per numbered line.
+effect basic.commit($context, BasicLine($number, [$statement]))
+    => [$context, [BasicLine($number, $statement)]];
+effect basic.commit($context, BasicLine($number, $statements)) when lt(1,size($statements))
+    => fail("BASIC colon-separated statements are not yet supported");
+effect[fallback] basic.commit($context, $item) => [$context, [$item]];
+effect parse_lines([], $path) => [];
+effect parse_lines($lines, $path) when lt(0, size($lines))
+    => list.concat(line_items(list.head($lines), $path), parse_lines(list.tail($lines), $path));
+effect line_items($line, $path)
+    => source.parse_tokens(lex_line(strip_comment($line), $path), "basic.item",
+        env.empty(), "basic.commit", "basic.resolve");
+// REM runs to the end of the physical line. Strip it textually BEFORE lexing so
+// a comment may contain any bytes (for example a colon, which is not otherwise
+// a token). The scan starts after the line number and requires a word boundary.
+effect strip_comment($line) => text.slice($line, 0, b_comment_cut($line));
+effect b_comment_cut($line) => b_find_rem($line, b_skip_digits($line, b_skip_spaces($line, 0)));
+// Safe byte read: past the end yields 0, an end-of-line sentinel, so the scan
+// never indexes outside the input (and/or evaluate every operand).
+effect b_at($line, $i) => choose(lt($i, text.len($line)), text.byte($line, $i), 0);
+effect b_skip_spaces($line, $i) => choose(eq(b_at($line, $i), 32), b_skip_spaces($line, add($i, 1)), $i);
+effect b_skip_digits($line, $i) => choose(b_digit(b_at($line, $i)), b_skip_digits($line, add($i, 1)), $i);
+effect b_digit($c) => and(lt(47, $c), lt($c, 58));
+effect b_find_rem($line, $i) => b_find_rem_at($line, b_skip_spaces($line, $i));
+effect b_find_rem_at($line, $i) => choose(b_rem_at($line, $i), $i, text.len($line));
+effect b_rem_at($line, $i)
+    => and(b_eq_ci(b_at($line, $i), 114),
+        and(b_eq_ci(b_at($line, add($i, 1)), 101),
+        and(b_eq_ci(b_at($line, add($i, 2)), 109),
+            b_rem_end(b_at($line, add($i, 3))))));
+// REM must be followed by a space, a tab or the end of the line.
+effect b_rem_end($c) => or(eq($c, 0), or(eq($c, 32), eq($c, 9)));
+effect b_eq_ci($c, $lower) => or(eq($c, $lower), eq($c, sub($lower, 32)));
+
+// ---- statements --------------------------------------------------------------
+// Assignment: BASIC's `=` is both assignment and equality. LET is explicit and
+// its `=` is a literal in the template, so a bare `A = B` line is an assignment
+// while `IF A = B THEN ...` uses the comparison operator declared below.
+syntax bstmt `let $name:ident = $value:expr` => BLet($name, $value);
+syntax bstmt[fallback] `$name:ident = $value:expr` => BLet($name, $value);
+// Array element assignment: `A(I) = v` / `LET A(I) = v`.
+syntax bstmt `let $name:ident ( $indices:bargs ) = $value:expr` => BArraySet($name, $indices, $value);
+syntax bstmt[fallback] `$name:ident ( $indices:bargs ) = $value:expr` => BArraySet($name, $indices, $value);
+
+// PRINT: comma- or semicolon-separated expressions. Each item records the
+// separator that FOLLOWS it, so a trailing comma or semicolon suppresses the
+// newline and a comma advances to the next 15-character zone.
+syntax bprint `$e:expr` => [[$e, "nl"]];
+syntax bprint `$e:expr , $rest:bprint` => list.prepend([$e, "comma"], $rest);
+syntax bprint `$e:expr ; $rest:bprint` => list.prepend([$e, "semi"], $rest);
+syntax bprint `$e:expr ,` => [[$e, "endc"]];
+syntax bprint `$e:expr ;` => [[$e, "ends"]];
+syntax bstmt `print $args:bprint` => BPrint($args);
+syntax bstmt `print` => BPrintBare();
+
+// INPUT: assign successive console values to each variable.
+syntax bnames `$n:ident` => [$n];
+syntax bnames `$n:ident , $rest:bnames` => list.prepend($n, $rest);
+syntax bstmt `input $names:bnames` => BInput($names);
+
+// READ/DATA/RESTORE: internal data and its cursor.
+syntax bnums `$v:bnum` => [$v];
+syntax bnums `$v:bnum , $rest:bnums` => list.prepend($v, $rest);
+syntax bnum `$n:number` => Literal($n);
+syntax bnum `- $n:number` => Neg(Literal($n));
+syntax bstmt `data $values:bnums` => BData($values);
+syntax bstmt `read $names:bnames` => BRead($names);
+syntax bstmt `restore` => BRestore();
+
+// DIM: array upper bounds (the zero element is always provided).
+syntax bdims `$n:int` => [$n];
+syntax bdims `$n:int , $rest:bdims` => list.prepend($n, $rest);
+syntax bspec `$name:ident ( $dims:bdims )` => BDimSpec($name, $dims);
+syntax bspecs `$s:bspec` => [$s];
+syntax bspecs `$s:bspec , $rest:bspecs` => list.prepend($s, $rest);
+syntax bstmt `dim $specs:bspecs` => BDim($specs);
+
+// DEF FN: one-argument programmer function, `DEF FNX(X) = <expression>`.
+syntax bstmt `def $name:ident ( $param:ident ) = $body:expr` => BDefFn($name, $param, $body);
+
+// GOTO / IF...THEN <line number> / GOSUB / RETURN.
+syntax bstmt `goto $line:int` => BGoto($line);
+syntax bstmt `if $c:expr then $line:int` => BIfThen($c, $line);
+syntax bstmt `gosub $line:int` => BGosub($line);
+syntax bstmt `return` => BReturn();
+
+// FOR/NEXT: the NEXT line closes the loop; STEP defaults to 1.
+syntax bstmt `for $name:ident = $from:expr to $to:expr` => BFor($name, $from, $to, Int(1));
+syntax bstmt `for $name:ident = $from:expr to $to:expr step $step:expr` => BFor($name, $from, $to, $step);
+syntax bstmt `next $name:ident` => BNext($name);
+syntax bstmt `next` => BNext("");
+
+// END/STOP terminate the program (exit status 0; BASIC has no exit codes).
+syntax bstmt `end` => BEnd();
+syntax bstmt `stop` => BEnd();
+
+// A line carries one or more statements separated by `:`. FOR/NEXT/GOSUB/RETURN
+// stay line-oriented (the chain lowering rejects them mid-line).
+syntax bstmts `$s:bstmt` => [$s];
+syntax bstmts `$s:bstmt : $rest:bstmts` => list.prepend($s, $rest);
+syntax basic.item `$line:int $stmts:bstmts` => BasicLine($line, $stmts);
+// A line that carries only a number (for example `10 REM ...` after the comment
+// is stripped) is an empty statement; the label is still a valid jump target.
+syntax basic.item[fallback] `$line:int` => BasicLine($line, [BEmpty()]);
+
+// ---- expressions -------------------------------------------------------------
+// BASIC equality/inequality spellings; the rest of the arithmetic grammar is
+// reused from the base library unchanged.
+syntax expr[40,left] `$a:expr = $b:expr` => Compare("eq", $a, $b);
+syntax expr[40,left] `$a:expr "<>" $b:expr` => Compare("ne", $a, $b);
+// ^ is right-associative and binds looser than unary minus but tighter than *:
+// the manual defines `-x^2` as `(-x)^2`.
+syntax expr[65,right] `$a:expr "**" $b:expr` => BPower($a, $b);
+// Application: an array subscript or a DEF FN call, resolved during checking.
+syntax bargs `$e:expr` => [$e];
+syntax bargs `$e:expr , $rest:bargs` => list.prepend($e, $rest);
+syntax expr[95,left] `$name:ident ( $args:bargs )` => BApply($name, $args);
+
+// String literals: double-quoted. Usable only as PRINT arguments in milestone 1.
+// text.lex keeps the surrounding quotes in the token, so strip them here.
+syntax expr `$s:string`
+    => bind($len, text.len($s), BString(text.slice($s, 1, int.sub($len, 1))));
+
+// Parser resolver: same-span peers prefer the rule declared in this dialect
+// (for example `^` is exponentiation here, not the base library's xor).
+effect basic.resolve($category, $candidates, $context)
+    => rule.select($candidates, "basic.rank", $context);
+effect basic.rank([$tree, $literals, $captures, $file, $line], $context)
+    => [b_dialect_rank($file), $literals, sub(0, $captures)];
+effect b_dialect_rank($file) => choose(text.ends($file, "basic.stx"), 1, 0);
+
+// ---- program assembly --------------------------------------------------------
+// Every line number is a CFG jump target. GOTO targets a line's label; a GOSUB's
+// return point is a separate block id (BRet) keyed by the following line number.
+effect line_id($n) => BLine($n);
+// A GOSUB returns to the line that follows it, so the return target is that
+// line's own label block; no separate return block is required.
+effect b_ret_id($n) => BLine($n);
+
+effect base.prepare_module($items) => expand_basic($items);
+effect expand_basic($items)
+    => bind($defs, tree.fold($items, "b_collect_defn", []),
+        bind($arrays, tree.fold($items, "b_collect_array", []),
+            bind($data, tree.fold($items, "b_collect_data", []),
+                bind($vars, b_program_vars($items, $defs),
+                    bind($sites, gosub_sites($items),
+                        b_emit(BProgram($items, $vars, $arrays, $defs, $data, $sites)))))));
+effect b_emit(BProgram($items, $vars, $arrays, $defs, $data, $sites))
+    => bind($chain, main_body($items, $vars, $data, $sites),
+        bind([$rewritten, $strings], intern_basic($chain, [], env.empty()),
+            b_items($rewritten, $strings, $arrays, $defs, $data)));
+effect b_items($rewritten, $strings, $arrays, $defs, $data)
+    => list.concat([BFuncDecl("printf"),
+            BExternDecl("fgets", "!llvm.func<!llvm.ptr (ptr, i32, ptr)>"),
+            BExternDecl("strtod", "!llvm.func<f64 (ptr, ptr)>"),
+            BExternDecl("__acrt_iob_func", "!llvm.func<!llvm.ptr (i32)>"),
+            BInputBuffer(".b.inbuf")],
+        list.concat(basic_formats(),
+            list.concat($strings,
+                list.concat($arrays,
+                    list.concat($defs,
+                        list.concat(data_items($data),
+                            [BGosubStack(".b.gosub"), BGosubDepth(".b.gosub.depth"),
+                             BReadPointer(".b.read"),
+                             TypedFunction("main", [], Signed(32), $rewritten)]))))));
+effect data_items([]) => [];
+effect data_items($data) when lt(0, size($data)) => [BDataGlobal(".b.data", $data)];
+effect basic_formats()
+    => [BStringGlobal(".bfmt.g", "%g"), BStringGlobal(".bfmt.s", "%s"),
+        BStringGlobal(".bfmt.nl", "\n"), BStringGlobal(".bfmt.zone", "               "),
+        BStringGlobal(".bfmt.in", "%lf")];
+
+// main = the gosub return table, pre-declared locals, DATA initialization, then
+// the label chain with an implicit exit.
+effect main_body($items, $vars, $data, $sites)
+    => bind($chain, build_chain($items, Return(Int(0))),
+        BGosubTable($sites, prepend_vars($vars, BProgramInit($data, $chain))));
+effect prepend_vars([], $body) => $body;
+effect prepend_vars($vars, $body) when lt(0, size($vars))
+    => Var(list.head($vars), Real("f64"), Int(0), prepend_vars(list.tail($vars), $body));
+
+// ---- declaration collection ---------------------------------------------------
+// BASIC has no declarations: every name used as a value is a real; every name
+// applied with arguments is an array (one- or two-dimensional); DEF FN names
+// (fnA..fnZ) are inlined and are neither.
+// A DEF FN parameter is inlined by substitution, so it never needs its own
+// variable; collecting it as an ordinary name is harmless and keeps programs
+// where the same letter is also a real variable working (manual: the argument
+// name is distinct from the program variable of the same name).
+effect b_program_vars($items, $defs) => tree.fold($items, "b_collect_name", []);
+effect b_collect_name($seen, Name($n)) => b_add_var($n, $seen);
+effect b_collect_name($seen, BLet($n, $value)) => b_add_var($n, $seen);
+effect b_collect_name($seen, BFor($n, $from, $to, $step)) => b_add_var($n, $seen);
+effect b_collect_name($seen, BInput($names)) => b_add_names($names, $seen);
+effect b_collect_name($seen, BRead($names)) => b_add_names($names, $seen);
+effect[fallback] b_collect_name($seen, $node) => $seen;
+effect b_add_names([], $seen) => $seen;
+effect b_add_names($names, $seen) when lt(0, size($names))
+    => b_add_var(list.head($names), b_add_names(list.tail($names), $seen));
+effect b_defn_params([], $seen) => $seen;
+effect b_defn_params($defs, $seen) when lt(0, size($defs))
+    => bind(BDefFn($name, $param, $body), list.head($defs),
+        b_defn_params(list.tail($defs), b_add_var($param, $seen)));
+effect b_subtract([], $remove) => [];
+effect b_subtract($names, $remove) when lt(0, size($names))
+    => choose(b_member(list.head($names), $remove), b_subtract(list.tail($names), $remove),
+        list.prepend(list.head($names), b_subtract(list.tail($names), $remove)));
+effect b_add_var($name, $seen) => choose(b_member($name, $seen), $seen, list.prepend($name, $seen));
+effect b_member($value, []) => 0;
+effect b_member($value, $values) when lt(0, size($values))
+    => or(eq($value, list.head($values)), b_member($value, list.tail($values)));
+
+effect b_collect_defn($seen, BDefFn($name, $param, $body)) => list.prepend(BDefFn($name, $param, $body), $seen);
+effect[fallback] b_collect_defn($seen, $node) => $seen;
+
+effect b_collect_array($seen, BArrayDecl($name, $dims)) => b_add_array($name, $dims, $seen);
+effect b_collect_array($seen, BArraySet($name, $indices, $value)) => b_add_array($name, b_implicit_dims($indices), $seen);
+effect b_collect_array($seen, BApply($name, $args)) => choose(b_is_defn($name), $seen, b_add_array($name, b_implicit_dims($args), $seen));
+effect[fallback] b_collect_array($seen, $node) => $seen;
+effect b_is_defn($name) => and(eq(text.len($name), 3), text.starts($name, "fn"));
+effect b_add_array($name, $dims, $seen)
+    => choose(b_array_member($name, $seen), $seen, list.prepend(BArrayDecl($name, $dims), $seen));
+effect b_array_member($name, []) => 0;
+effect b_array_member($name, $arrays) when lt(0, size($arrays))
+    => bind(BArrayDecl($n, $d), list.head($arrays), or(eq($name, $n), b_array_member($name, list.tail($arrays))));
+effect b_implicit_dims($args) => b_dims_of(size($args));
+effect b_dims_of(1) => [10];
+effect b_dims_of(2) => [10, 10];
+effect[fallback] b_dims_of($n) => fail("BASIC 1964 arrays are one- or two-dimensional");
+
+effect b_collect_data($seen, BData($values)) => list.concat($seen, $values);
+effect[fallback] b_collect_data($seen, $node) => $seen;
+
+// ---- GOSUB return table -------------------------------------------------------
+// The return point of a GOSUB is the line that follows it; the table maps each
+// such line number to its block, and RETURN dispatches through it.
+effect gosub_sites($items) => gosub_scan($items);
+effect gosub_scan([]) => [];
+effect gosub_scan($items) when lt(0, size($items))
+    => gosub_pair(list.head($items), list.tail($items), gosub_scan(list.tail($items)));
+effect gosub_pair(BasicLine($line, BGosub($target)), $rest, $tail)
+    => bind(BasicLine($rl, $rstmt), list.head($rest), list.prepend([$rl, b_ret_id($rl)], $tail));
+effect[fallback] gosub_pair($item, $rest, $tail) => $tail;
+
+// ---- label chain --------------------------------------------------------------
+effect build_chain([], $tail) => $tail;
+effect build_chain($items, $tail) when lt(0, size($items))
+    => bind(BasicLine($n, $stmt), list.head($items),
+        build_line($n, $stmt, list.tail($items), $tail));
+effect build_line($n, BFor($var, $from, $to, $step), $rest, $tail)
+    => bind([$body, $after], split_next($rest, [], 0),
+        bind($limit, text(symbol(" for.limit")), bind($stepv, text(symbol(" for.step")),
+            Label(line_id($n),
+                Var($limit, Real("f64"), $to,
+                    Var($stepv, Real("f64"), $step,
+                        Set($var, $from,
+                            While(Compare(b_for_compare($step), Name($var), Name($limit)),
+                                build_chain($body, Set($var, Add(Name($var), Name($stepv)), End())),
+                                build_chain($after, $tail)))))))));
+// The loop comparison depends on the step's sign; a literal negative step counts
+// down. (A step whose sign is only known at run time is documented as unsupported.)
+effect b_for_compare(Neg($value)) => "ge";
+effect b_for_compare(Literal($raw)) => choose(text.starts($raw, "-"), "ge", "le");
+effect[fallback] b_for_compare($step) => "le";
+effect build_line($n, BGosub($target), $rest, $tail)
+    => bind(BasicLine($rl, $rstmt), list.head($rest),
+        Label(line_id($n),
+            Detached(BGosubPush(line_id($target), $rl), build_chain($rest, $tail))));
+effect[fallback] build_line($n, $stmt, $rest, $tail)
+    => Label(line_id($n), statement_body($stmt, build_chain($rest, $tail)));
+
+effect split_next([], $acc, $depth) => fail("FOR without a matching NEXT");
+effect split_next($items, $acc, $depth) when lt(0, size($items))
+    => bind(BasicLine($n, $stmt), list.head($items),
+        split_step($stmt, list.head($items), list.tail($items), $acc, $depth));
+effect split_step(BNext($name), $line, $rest, $acc, 0) => [list.reverse($acc), $rest];
+effect split_step(BNext($name), $line, $rest, $acc, $depth) when lt(0, $depth)
+    => split_next($rest, list.prepend($line, $acc), sub($depth, 1));
+effect split_step(BFor($var, $from, $to, $step), $line, $rest, $acc, $depth)
+    => split_next($rest, list.prepend($line, $acc), add($depth, 1));
+effect[fallback] split_step($stmt, $line, $rest, $acc, $depth)
+    => split_next($rest, list.prepend($line, $acc), $depth);
+
+effect statement_body(BLet($name, $value), $next) => Set($name, $value, $next);
+effect statement_body(BArraySet($name, $indices, $value), $next) => BArrayStore($name, $indices, $value, $next);
+effect statement_body(BPrint($items), $next) => BPrintPend($items, $next);
+effect statement_body(BPrintBare(), $next) => BPrintNL($next);
+effect statement_body(BInput($names), $next) => BInputPend($names, $next);
+effect statement_body(BRead($names), $next) => BReadPend($names, $next);
+effect statement_body(BRestore(), $next) => BRestoreBody($next);
+effect statement_body(BData($values), $next) => $next;
+effect statement_body(BDim($specs), $next) => $next;
+effect statement_body(BDefFn($name, $param, $body), $next) => $next;
+effect statement_body(BGoto($line), $next) => Detached(Jump(line_id($line)), $next);
+effect statement_body(BIfThen($c, $line), $next) => If($c, Jump(line_id($line)), End(), $next);
+effect statement_body(BReturn(), $next) => Detached(BReturnBody(), $next);
+effect statement_body(BEnd(), $next) => Detached(Return(Int(0)), $next);
+effect statement_body(BNext($name), $next) => $next;
+effect statement_body(BEmpty(), $next) => $next;
+
+// ---- program prologue: DATA values and gosub bookkeeping ----------------------
+effect base.check_body(BProgramInit($data, $next), $environment, $result)
+    => BProgramInitDone($data, check_body($next, $environment, $result));
+effect base.prepare_storage(BProgramInitDone($data, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.flow_terminal(BProgramInitDone($data, $next)) => flow_terminal($next);
+effect base.lower_flow(BProgramInitDone($data, $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, b_init_data($data, 0)), lower_flow($next, $environment, $block, $continuation));
+effect b_init_data([], $i) => b_noop();
+effect b_init_data($data, $i) when lt(0, size($data))
+    => seq(b_store_data($i, list.head($data)), b_init_data(list.tail($data), add($i, 1)));
+effect b_store_data($i, $value)
+    => mlir.op("llvm.store", [b_data_value($value), b_data_ptr($i)], [], [Attr("alignment", 8, "i64")], []);
+effect b_data_value($value) => bind(Typed($d, $v), check($value, env.empty(), Real("f64")), lower(Typed(Real("f64"), $v), env.empty()));
+effect b_data_ptr($i)
+    => mlir.op("llvm.getelementptr", [string_ptr(".b.data")], ["!llvm.ptr"],
+        [RawAttr("rawConstantIndices", concat("array<i32: ", concat(text($i), ">"))), RawAttr("elem_type", "f64")], []);
+effect b_noop() => mlir.op("arith.constant", [], ["i8"], [Attr("value", 0, "i8")], []);
+effect b_const_i64($n) => mlir.op("arith.constant", [], ["i64"], [Attr("value", $n, "i64")], []);
+
+effect base.check_body(BGosubTable($sites, $body), $environment, $result)
+    => BGosubTable($sites, check_body($body, env.put($environment, BGosubKey(), $sites), $result));
+effect base.prepare_storage(BGosubTable($sites, $body), $entry, $environment)
+    => prepare_storage($body, $entry, env.put($environment, BGosubKey(), $sites));
+effect base.flow_terminal(BGosubTable($sites, $body)) => flow_terminal($body);
+effect base.lower_flow(BGosubTable($sites, $body), $environment, $block, $continuation)
+    => lower_flow($body, env.put($environment, BGosubKey(), $sites), $block, $continuation);
+
+// ---- PRINT lowering -----------------------------------------------------------
+effect base.check_body(BPrintPend([], $next), $environment, $result)
+    => check_body($next, $environment, $result);
+effect base.check_body(BPrintPend($items, $next), $environment, $result) when lt(0, size($items))
+    => bind([$e, $sep], list.head($items),
+        bind(Typed($d, $c), check($e, $environment, Any()),
+            bind($rest, check_body(BPrintPend(list.tail($items), $next), $environment, $result),
+                BPrintDone(Typed($d, $c), $sep, $rest))));
+effect base.prepare_storage(BPrintDone($t, $sep, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(BPrintNL($next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.flow_terminal(BPrintDone($t, $sep, $next)) => flow_terminal($next);
+effect base.flow_terminal(BPrintNL($next)) => flow_terminal($next);
+effect base.lower_flow(BPrintDone(Typed($d, $c), $sep, $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, bprint_call($d, $c, $environment)),
+        seq(mlir.in_block($block, bprint_sep($sep)),
+            lower_flow($next, $environment, $block, $continuation)));
+effect base.lower_flow(BPrintNL($next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, bprintf_call(".bfmt.nl", [])),
+        lower_flow($next, $environment, $block, $continuation));
+// The newline is emitted by the last item's "nl"; an explicit trailing comma or
+// semicolon keeps the line open.
+effect bprint_sep("nl") => bprintf_call(".bfmt.nl", []);
+effect bprint_sep("comma") => bprintf_call(".bfmt.zone", []);
+effect bprint_sep("semi") => b_noop();
+effect bprint_sep("endc") => b_noop();
+effect bprint_sep("ends") => b_noop();
+effect bprint_call(Real($f), $c, $environment) => bprintf_call(".bfmt.g", [lower(Typed(Real($f), $c), $environment)]);
+effect bprint_call(Signed($w), $c, $environment)
+    => bprintf_call(".bfmt.g", [mlir.op("arith.sitofp", [lower(Typed(Signed($w), $c), $environment)], ["f64"], [], [])]);
+effect bprint_call(Unsigned($w), $c, $environment)
+    => bprintf_call(".bfmt.g", [mlir.op("arith.uitofp", [lower(Typed(Unsigned($w), $c), $environment)], ["f64"], [], [])]);
+effect bprint_call(BStringType(), $c, $environment) => bprintf_call(".bfmt.s", [lower(Typed(BStringType(), $c), $environment)]);
+effect[fallback] bprint_call($d, $c, $environment) => fail("PRINT argument is not printable");
+effect bprintf_call($format, $arguments)
+    => mlir.op("llvm.call",
+        list.prepend(string_ptr($format), $arguments), ["i32"],
+        [RawAttr("callee", "@printf"),
+         RawAttr("var_callee_type", "!llvm.func<i32 (ptr, ...)>"),
+         RawAttr("op_bundle_sizes", "array<i32>"),
+         RawAttr("operandSegmentSizes", concat("array<i32: ", concat(text(add(size($arguments), 1)), ", 0>")))],
+        []);
+effect string_ptr($name)
+    => mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"],
+        [RawAttr("global_name", concat("@\"", concat($name, "\"")))], []);
+
+// ---- INPUT / READ / RESTORE ----------------------------------------------------
+effect base.check_body(BInputPend([], $next), $environment, $result)
+    => check_body($next, $environment, $result);
+effect base.check_body(BInputPend($names, $next), $environment, $result) when lt(0, size($names))
+    => BInputDone(b_var_id(list.head($names), $environment),
+        check_body(BInputPend(list.tail($names), $next), $environment, $result));
+effect b_var_id($name, $environment)
+    => choose(env.contains($environment, $name), b_var_identity(env.get($environment, $name), $name),
+        fail(concat("variable is used before assignment: ", $name)));
+effect b_var_identity(Mutable($descriptor, $identity), $name) => $identity;
+effect[fallback] b_var_identity($binding, $name) => fail(concat("expected a variable: ", $name));
+effect base.prepare_storage(BInputDone($id, $next), $entry, $environment) => prepare_storage($next, $entry, $environment);
+effect base.flow_terminal(BInputDone($id, $next)) => flow_terminal($next);
+effect base.lower_flow(BInputDone($id, $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, b_input_read($id, $environment)), lower_flow($next, $environment, $block, $continuation));
+// The static UCRT used by the harness does not link `scanf`; INPUT reads one
+// line with fgets into a fixed buffer and converts it with strtod.
+effect b_input_read($id, $environment)
+    => bind($line, b_input_line(),
+        mlir.op("memref.store", [b_strtod(b_input_buffer()), env.get($environment, $id)], [], [], []));
+effect b_input_line() => b_call_ptr("fgets", [b_input_buffer(), b_const_i32(128), b_stdin_stream()]);
+effect b_stdin_stream() => b_call_ptr("__acrt_iob_func", [b_const_i32(0)]);
+effect b_strtod($buf) => mlir.op("llvm.call", [$buf, b_null_ptr()], ["f64"],
+    [RawAttr("callee", "@strtod"),
+     RawAttr("op_bundle_sizes", "array<i32>"), RawAttr("operandSegmentSizes", "array<i32: 2, 0>")], []);
+effect b_call_ptr($callee, $args)
+    => mlir.op("llvm.call", $args, ["!llvm.ptr"],
+        [RawAttr("callee", concat("@", $callee)),
+         RawAttr("op_bundle_sizes", "array<i32>"),
+         RawAttr("operandSegmentSizes", concat("array<i32: ", concat(text(size($args)), ", 0>")))], []);
+effect b_const_i32($n) => mlir.op("arith.constant", [], ["i32"], [Attr("value", $n, "i32")], []);
+effect b_null_ptr() => mlir.op("llvm.mlir.zero", [], ["!llvm.ptr"], [], []);
+effect b_input_buffer() => string_ptr(".b.inbuf");
+
+effect base.check_body(BReadPend([], $next), $environment, $result) => check_body($next, $environment, $result);
+effect base.check_body(BReadPend($names, $next), $environment, $result) when lt(0, size($names))
+    => BReadDone(b_var_id(list.head($names), $environment),
+        check_body(BReadPend(list.tail($names), $next), $environment, $result));
+effect base.prepare_storage(BReadDone($id, $next), $entry, $environment) => prepare_storage($next, $entry, $environment);
+effect base.flow_terminal(BReadDone($id, $next)) => flow_terminal($next);
+effect base.lower_flow(BReadDone($id, $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, b_read_into($id, $environment)), lower_flow($next, $environment, $block, $continuation));
+effect b_read_into($id, $environment)
+    => bind($ptr, b_read_load(), bind($value, b_read_value($ptr),
+        seq(b_read_store($value, $id, $environment), b_read_advance($ptr))));
+effect b_read_load() => mlir.op("llvm.load", [string_ptr(".b.read")], ["i64"], [Attr("alignment", 8, "i64")], []);
+effect b_read_value($ptr)
+    => mlir.op("llvm.load",
+        [mlir.op("llvm.getelementptr", [string_ptr(".b.data"), $ptr], ["!llvm.ptr"],
+            [RawAttr("rawConstantIndices", "array<i32: -2147483648>"), RawAttr("elem_type", "f64")], [])],
+        ["f64"], [Attr("alignment", 8, "i64")], []);
+effect b_read_store($value, $id, $environment)
+    => mlir.op("memref.store", [$value, env.get($environment, $id)], [], [], []);
+effect b_read_advance($ptr)
+    => mlir.op("llvm.store", [mlir.op("arith.addi", [$ptr, b_const_i64(1)], ["i64"], [], []), string_ptr(".b.read")], [], [Attr("alignment", 8, "i64")], []);
+
+effect base.check_body(BRestoreBody($next), $environment, $result) => BRestoreDone(check_body($next, $environment, $result));
+effect base.prepare_storage(BRestoreDone($next), $entry, $environment) => prepare_storage($next, $entry, $environment);
+effect base.flow_terminal(BRestoreDone($next)) => flow_terminal($next);
+effect base.lower_flow(BRestoreDone($next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, mlir.op("llvm.store", [b_const_i64(0), string_ptr(".b.read")], [], [Attr("alignment", 8, "i64")], [])),
+        lower_flow($next, $environment, $block, $continuation));
+
+// ---- GOSUB / RETURN ------------------------------------------------------------
+effect base.check_body(BGosubPush($target, $code), $environment, $result)
+    => BGosubDone($target, $code);
+effect base.prepare_storage(BGosubDone($target, $code), $entry, $environment) => $environment;
+effect base.flow_terminal(BGosubDone($target, $code)) => 1;
+effect base.lower_flow(BGosubDone($target, $code), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, seq(b_gosub_push($code), base.jump(env.get($environment, TargetKey($target))))), [$block]);
+// Push the return line number on the gosub stack, then jump to the subroutine.
+effect b_gosub_push($ret)
+    => bind($depth, mlir.op("llvm.load", [string_ptr(".b.gosub.depth")], ["i64"], [Attr("alignment", 8, "i64")], []),
+        seq(b_gosub_store($depth, $ret),
+            mlir.op("llvm.store", [mlir.op("arith.addi", [$depth, b_const_i64(1)], ["i64"], [], []), string_ptr(".b.gosub.depth")], [], [Attr("alignment", 8, "i64")], [])));
+effect b_gosub_store($depth, $ret)
+    => mlir.op("llvm.store", [b_const_i64($ret), b_gosub_ptr($depth)], [], [Attr("alignment", 8, "i64")], []);
+effect b_gosub_ptr($depth)
+    => mlir.op("llvm.getelementptr", [string_ptr(".b.gosub"), $depth], ["!llvm.ptr"],
+        [RawAttr("rawConstantIndices", "array<i32: -2147483648>"), RawAttr("elem_type", "i64")], []);
+
+effect base.check_body(BReturnBody(), $environment, $result)
+    => BReturnDone(env.get($environment, BGosubKey()));
+effect base.prepare_storage(BReturnDone($cases), $entry, $environment) => $environment;
+effect base.flow_terminal(BReturnDone($cases)) => 1;
+effect base.lower_flow(BReturnDone($cases), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, b_return_dispatch($cases, b_first_case($cases), $environment)), [$block]);
+effect b_first_case([[$value, $identity]]) => [$identity];
+effect b_first_case($cases) when lt(1, size($cases))
+    => bind([$value, $identity], list.head($cases), [$identity]);
+effect[fallback] b_first_case($cases) => fail("RETURN without a matching GOSUB");
+effect b_unreachable_block()
+    => bind($b, mlir.block([]),
+        bind($dropped, mlir.with_block($b, mlir.op("llvm.unreachable", [], [], [], [])), $b));
+// Pop the return code and dispatch to the recorded return block.
+effect b_return_dispatch($cases, $exit, $environment)
+    => bind($depth, mlir.op("llvm.load", [string_ptr(".b.gosub.depth")], ["i64"], [Attr("alignment", 8, "i64")], []),
+        bind($newdepth, mlir.op("arith.subi", [$depth, b_const_i64(1)], ["i64"], [], []),
+            bind($ret, mlir.op("llvm.load", [b_gosub_ptr($newdepth)], ["i64"], [Attr("alignment", 8, "i64")], []),
+                seq(mlir.op("llvm.store", [$newdepth, string_ptr(".b.gosub.depth")], [], [Attr("alignment", 8, "i64")], []),
+                    cfg.dispatch(Typed(Signed(32), BReturnSelector($ret)), $cases, $exit, $exit, $environment)))));
+effect base.lower(Typed(Signed(32), BReturnSelector($ret)), $environment)
+    => mlir.op("arith.trunci", [$ret], ["i32"], [], []);
+
+// ---- arrays -------------------------------------------------------------------
+effect base.declare(BArrayDecl($name, $dims), $rest, $environment)
+    => declarations($rest, env.put($environment, $name, BArrayGlobal(b_array_name($name), $dims)));
+effect base.declare(BDefFn($name, $param, $body), $rest, $environment)
+    => declarations($rest, env.put($environment, $name, BDefBinding($param, $body)));
+effect base.prepare(BDefFn($name, $param, $body), $environment) => NoBDefFn();
+effect base.lower_function(NoBDefFn()) => [];
+effect base.prepare(BArrayDecl($name, $dims), $environment) => CheckedBArray($name, $dims);
+effect base.lower_function(CheckedBArray($name, $dims))
+    => b_global_array_f64(b_array_name($name), b_array_size($dims));
+effect b_array_name($name) => concat(".ba.", $name);
+effect b_array_size([$d0]) => add($d0, 1);
+effect b_array_size([$d0, $d1]) => mul(add($d0, 1), add($d1, 1));
+effect[fallback] b_array_size($dims) => fail("BASIC 1964 arrays are one- or two-dimensional");
+
+effect base.check(BApply($name, $args), $environment, $expected)
+    => choose(b_is_math($name), b_math_check($name, $args, $environment, $expected),
+        choose(env.contains($environment, $name),
+            b_apply($name, env.get($environment, $name), $args, $environment, $expected),
+            fail(concat("undefined function or array: ", $name))));
+effect b_is_math($name) => b_member($name, ["abs", "atn", "cos", "exp", "int", "log", "rnd", "sin", "sqr", "tan"]);
+effect b_math_check($name, [$a], $environment, $expected)
+    => expect(Typed(Real("f64"), BMathC(b_math_op_name($name), b_real($a, $environment))), $expected);
+effect[fallback] b_math_check($name, $args, $environment, $expected) => fail(concat("function takes one argument: ", $name));
+effect b_math_op_name("atn") => "atan";
+effect b_math_op_name("int") => "trunc";
+effect b_math_op_name("sqr") => "sqrt";
+effect[fallback] b_math_op_name($name) => $name;
+effect b_apply($name, BArrayGlobal($gname, $dims), $args, $environment, $expected)
+    => expect(Typed(Real("f64"), BArrayLoad($gname, $dims, b_checked_indices($args, $environment))), $expected);
+effect b_apply($name, BDefBinding($param, $body), $args, $environment, $expected)
+    => bind($arg, b_defn_arg($name, $args), check(b_subst($body, $param, $arg), $environment, $expected));
+effect b_defn_arg($name, [$arg]) => $arg;
+effect[fallback] b_defn_arg($name, $args) => fail(concat("DEF FN takes exactly one argument: ", $name));
+effect b_subst($body, $param, $arg) => tree.rewrite($body, "b_replace_name", BSubst($param, $arg));
+effect b_replace_name(Name($n), BSubst($param, $arg)) when eq($n, $param) => $arg;
+effect[fallback] b_replace_name($node, $scope) => $node;
+effect b_checked_indices([], $environment) => [];
+effect b_checked_indices($args, $environment) when lt(0, size($args))
+    => list.prepend(check(Cast(list.head($args), Signed(64)), $environment, Signed(64)),
+        b_checked_indices(list.tail($args), $environment));
+effect base.hint(BApply($name, $args), $environment) => Real("f64");
+
+effect base.lower(Typed(Real($f), BArrayLoad($gname, $dims, $indices)), $environment)
+    => mlir.op("llvm.load", [b_array_ptr($gname, $dims, $indices, $environment)], ["f64"], [Attr("alignment", 8, "i64")], []);
+effect b_array_ptr($gname, $dims, $indices, $environment)
+    => mlir.op("llvm.getelementptr", [string_ptr($gname), b_array_offset($indices, $dims, $environment)], ["!llvm.ptr"],
+        [RawAttr("rawConstantIndices", "array<i32: -2147483648>"), RawAttr("elem_type", "f64")], []);
+effect b_array_offset([$i0], [$d0], $environment) => lower($i0, $environment);
+effect b_array_offset([$i0, $i1], [$d0, $d1], $environment)
+    => mlir.op("arith.addi",
+        [mlir.op("arith.muli", [lower($i0, $environment), b_const_i64(add($d1, 1))], ["i64"], [], []),
+         lower($i1, $environment)], ["i64"], [], []);
+effect[fallback] b_array_offset($indices, $dims, $environment) => fail("BASIC 1964 arrays are one- or two-dimensional");
+
+effect base.check_body(BArrayStore($name, $indices, $value, $next), $environment, $result)
+    => choose(env.contains($environment, $name),
+        b_array_store(env.get($environment, $name), $indices, $value, $next, $environment, $result),
+        fail(concat("array is not dimensioned: ", $name)));
+effect b_array_store(BArrayGlobal($gname, $dims), $indices, $value, $next, $environment, $result)
+    => bind(Typed(Real($f), $v), check($value, $environment, Real("f64")),
+        BArrayStoreDone($gname, $dims, b_checked_indices($indices, $environment), Typed(Real($f), $v),
+            check_body($next, $environment, $result)));
+effect base.prepare_storage(BArrayStoreDone($g, $d, $i, $v, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.flow_terminal(BArrayStoreDone($g, $d, $i, $v, $next)) => flow_terminal($next);
+effect base.lower_flow(BArrayStoreDone($gname, $dims, $indices, Typed(Real($f), $v), $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, mlir.op("llvm.store",
+            [lower(Typed(Real($f), $v), $environment), b_array_ptr($gname, $dims, $indices, $environment)],
+            [], [Attr("alignment", 8, "i64")], [])),
+        lower_flow($next, $environment, $block, $continuation));
+
+// ---- numeric operators ---------------------------------------------------------
+// ^ lowers to a math intrinsic; the manual defines `-x^2` as `(-x)^2`.
+effect base.hint(BPower($a, $b), $environment) => Real("f64");
+effect base.check(BPower($a, $b), $environment, $expected)
+    => expect(Typed(Real("f64"), BPowC(b_real($a, $environment), b_real($b, $environment))), $expected);
+effect b_real($e, $environment) => bind(Typed($d, $v), check($e, $environment, Real("f64")), Typed(Real("f64"), $v));
+effect base.lower(Typed(Real($f), BPowC($a, $b)), $environment)
+    => mlir.op("math.powf", [lower($a, $environment), lower($b, $environment)], ["f64"], [], []);
+
+// Standard functions lower to LLVM math intrinsics (RND is a placeholder
+// sequence so that programs remain deterministic; see docs/basic.md).
+effect base.hint(BMath($op, $a), $environment) => Real("f64");
+effect base.check(BMath($op, $a), $environment, $expected)
+    => expect(Typed(Real("f64"), BMathC($op, b_real($a, $environment))), $expected);
+effect base.lower(Typed(Real($f), BMathC($op, $a)), $environment) => b_math_op($op, lower($a, $environment));
+effect b_math_op("abs", $x) => mlir.op("math.absf", [$x], ["f64"], [], []);
+effect b_math_op("atan", $x) => mlir.op("math.atan", [$x], ["f64"], [], []);
+effect b_math_op("cos", $x) => mlir.op("math.cos", [$x], ["f64"], [], []);
+effect b_math_op("exp", $x) => mlir.op("math.exp", [$x], ["f64"], [], []);
+effect b_math_op("trunc", $x) => mlir.op("math.trunc", [$x], ["f64"], [], []);
+effect b_math_op("log", $x) => mlir.op("math.log", [$x], ["f64"], [], []);
+effect b_math_op("sin", $x) => mlir.op("math.sin", [$x], ["f64"], [], []);
+effect b_math_op("sqrt", $x) => mlir.op("math.sqrt", [$x], ["f64"], [], []);
+effect b_math_op("tan", $x) => mlir.op("math.tan", [$x], ["f64"], [], []);
+effect b_math_op("rnd", $x) => mlir.op("arith.constant", [], ["f64"], [RawAttr("value", "0.5 : f64")], []);
+
+// ---- program globals -----------------------------------------------------------
+effect base.declare(BGosubStack($name), $rest, $environment) => declarations($rest, $environment);
+effect base.declare(BGosubDepth($name), $rest, $environment) => declarations($rest, $environment);
+effect base.declare(BReadPointer($name), $rest, $environment) => declarations($rest, $environment);
+effect base.declare(BDataGlobal($name, $data), $rest, $environment) => declarations($rest, $environment);
+effect base.prepare(BGosubStack($name), $environment) => CheckedBGosubStack($name);
+effect base.prepare(BGosubDepth($name), $environment) => CheckedBGosubDepth($name);
+effect base.prepare(BReadPointer($name), $environment) => CheckedBReadPointer($name);
+effect base.prepare(BDataGlobal($name, $data), $environment) => CheckedBDataGlobal($name, $data);
+effect base.lower_function(CheckedBGosubStack($name)) => b_global_array_i64($name, 64);
+effect base.lower_function(CheckedBGosubDepth($name)) => b_global_i64_zero($name);
+effect base.lower_function(CheckedBReadPointer($name)) => b_global_i64_zero($name);
+effect base.lower_function(CheckedBDataGlobal($name, $data)) => b_global_array_f64($name, b_data_size($data));
+effect base.declare(BExternDecl($name, $type), $rest, $environment) => declarations($rest, $environment);
+effect base.declare(BInputBuffer($name), $rest, $environment) => declarations($rest, $environment);
+effect base.prepare(BExternDecl($name, $type), $environment) => CheckedBExternDecl($name, $type);
+effect base.prepare(BInputBuffer($name), $environment) => CheckedBInputBuffer($name);
+effect base.lower_function(CheckedBExternDecl($name, $type))
+    => mlir.op("llvm.func", [], [], [Attr("sym_name", $name), RawAttr("function_type", $type),
+        RawAttr("linkage", "#llvm.linkage<external>")], [mlir.region_blocks([])]);
+effect base.lower_function(CheckedBInputBuffer($name)) => b_global_array_i8($name, 128);
+effect b_global_array_i8($name, $n)
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text($n), " x i8>"))),
+        RawAttr("linkage", "#llvm.linkage<internal>"),
+        RawAttr("value", concat("dense<0> : vector<", concat(text($n), "xi8>")))], [mlir.region_blocks([])]);
+effect b_data_size($data) => choose(eq(size($data), 0), 1, size($data));
+effect b_global_array_i64($name, $n)
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text($n), " x i64>"))),
+        RawAttr("linkage", "#llvm.linkage<internal>"),
+        RawAttr("value", b_zero_vec($n, "i64"))], [mlir.region_blocks([])]);
+effect b_global_array_f64($name, $n)
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text($n), " x f64>"))),
+        RawAttr("linkage", "#llvm.linkage<internal>"),
+        RawAttr("value", b_zero_vec($n, "f64"))], [mlir.region_blocks([])]);
+effect b_global_i64_zero($name)
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", "i64"), RawAttr("linkage", "#llvm.linkage<internal>"),
+        Attr("value", 0, "i64")], [mlir.region_blocks([])]);
+effect b_zero_vec($n, $t) => concat("dense<", concat(b_zero_literal($t), concat("> : vector<", concat(text($n), concat("x", concat($t, ">"))))));
+effect b_zero_literal("f64") => "0.0";
+effect[fallback] b_zero_literal($t) => "0";
+
+// ---- string literals: pointer-valued constants --------------------------------
+syntax typename `bstring` => BStringType();
+effect types.repr(BStringType()) => "!llvm.ptr";
+effect base.hint(BString($text), $environment) => BStringType();
+effect base.check(BString($text), $environment, $expected)
+    => choose(eq($expected, Any()), Typed(BStringType(), BStringLit($text)),
+        choose(eq($expected, BStringType()), Typed(BStringType(), BStringLit($text)),
+            fail("a BASIC string literal is only printable")));
+effect base.lower(Typed(BStringType(), BStringLit($text)), $environment)
+    => fail("string literals require interned storage (PRINT only)");
+effect base.lower(Typed(BStringType(), BStringRef($name)), $environment) => string_ptr($name);
+effect base.hint(BStringRef($name), $environment) => BStringType();
+effect base.check(BStringRef($name), $environment, $expected)
+    => choose(eq($expected, Any()), Typed(BStringType(), BStringRef($name)),
+        choose(eq($expected, BStringType()), Typed(BStringType(), BStringRef($name)),
+            fail("an interned string is only printable")));
+
+// Intern each distinct string literal as one LLVM global (deduplicated).
+effect intern_basic($node, $globals, $pool)
+    => bind([$value, Hoisting($new_globals, $new_pool)],
+        tree.rewrite_with($node, "intern_enter", "intern_leave", 0, Hoisting($globals, $pool)),
+        [$value, $new_globals]);
+effect intern_enter(BString($text), $context, Hoisting($globals, $pool))
+    => bind([$value, $new_globals, $new_pool], choose(env.contains($pool, $text),
+        [BStringRef(env.get($pool, $text)), $globals, $pool],
+        intern_string($text, concat(".bstr.", text(size($globals))), $globals, $pool)),
+        tree.Stop($value, Hoisting($new_globals, $new_pool)));
+effect intern_string($text, $name, $globals, $pool)
+    => [BStringRef($name), list.prepend(BStringGlobal($name, $text), $globals), env.put($pool, $text, $name)];
+effect[fallback] intern_enter($node, $context, $state) when or(eq(term.kind($node), 0), eq(term.kind($node), 5))
+    => tree.Descend(term.children($node), $context, $node, $state);
+effect[fallback] intern_enter($node, $context, $state) when and(not(eq(term.kind($node), 0)), not(eq(term.kind($node), 5)))
+    => tree.Stop($node, $state);
+effect[fallback] intern_leave($original, $children, $context, $state) => [term.rebuild($original, $children), $state];
+
+effect base.declare(BFuncDecl($name), $rest, $environment) => declarations($rest, $environment);
+effect base.declare(BStringGlobal($name, $text), $rest, $environment) => declarations($rest, $environment);
+effect base.prepare(BFuncDecl($name), $environment) => CheckedBFuncDecl($name);
+effect base.prepare(BStringGlobal($name, $text), $environment) => CheckedBStringGlobal($name, $text);
+effect base.lower_function(CheckedBFuncDecl($name))
+    => mlir.op("llvm.func", [], [], [Attr("sym_name", $name),
+        RawAttr("function_type", "!llvm.func<i32 (ptr, ...)>"),
+        RawAttr("linkage", "#llvm.linkage<external>")],
+        [mlir.region_blocks([])]);
+effect base.lower_function(CheckedBStringGlobal($name, $text))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text(add(text.len($text), 1)), " x i8>"))),
+        RawAttr("linkage", "#llvm.linkage<internal>"), RawAttr("constant", "unit"),
+        RawAttr("value", concat("\"", concat(b_escape($text, 0, text.len($text)), "\\00\"")))],
+        [mlir.region_blocks([])]);
+effect b_escape($text, $i, $end) when eq($i, $end) => "";
+effect b_escape($text, $i, $end) when lt($i, $end)
+    => concat(b_byte(text.byte($text, $i), $text, $i), b_escape($text, add($i, 1), $end));
+effect b_byte(34, $t, $i) => "\\22";
+effect b_byte(92, $t, $i) => "\\5C";
+effect b_byte(10, $t, $i) => "\\0A";
+effect b_byte(9, $t, $i) => "\\09";
+effect[fallback] b_byte($c, $t, $i) => text.slice($t, $i, add($i, 1));

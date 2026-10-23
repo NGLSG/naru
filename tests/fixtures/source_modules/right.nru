@@ -1,0 +1,3 @@
+mod right;
+use common;
+fn right_value() -> i32 { return 2; }

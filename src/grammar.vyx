@@ -1,0 +1,364 @@
+module naru;
+use std.collections;
+use std.string;
+
+@[derive(Clone, Copy)]
+struct ParseChoice { public value: i64; public rule: i64; }
+class ParseSelection {
+    public value: i64; public rule: i64; public end: i64; public fallback: bool;
+    public ties: Vec<ParseChoice>;
+}
+
+@[derive(Clone, Copy)]
+struct ParseMemo { public value: i64; public end: i64; public farthest: i64; }
+
+class Grammar {
+    public heads: Dict<string, i64>;
+    // Prefix literal index. Each value is an Engine list node containing
+    // scalar syntax-rule ids. Keeping the index in the Engine arena preserves
+    // stable ids and avoids adding a second mutable rule-link field.
+    public prefix_heads: Dict<string, i64>;
+    public generic_heads: Dict<string, i64>;
+    public infix_heads: Dict<string, i64>;
+    public resolver: string;
+    public steps: i64;
+    public limit: i64;
+    public depth_limit: i64;
+    public farthest: i64;
+    public active: Dict<string, i64>;
+    // Context is immutable throughout a production. Reusing a completed parse
+    // is safe because syntax guards cannot perform IO, create identities or IR.
+    public memo: Dict<string, i64>;
+    public results: Vec<ParseMemo>;
+    public context: i64;
+    // Caller rule-budget state for source.parse_*; parser limits stay separate.
+    public caller_limit: i64;
+    public caller_parser_steps: i64;
+    public runtime: Runtime;
+}
+
+public fn new_grammar(e: &mut Engine) -> Grammar {
+    if (e.grammar_index_count != e.syntax_rules.len) { prepare_grammar_index(e); }
+    var runtime = new_runtime(e); runtime.specialized = specialized_available();
+    return Grammar { heads: e.grammar_heads, prefix_heads: e.grammar_prefix_heads, generic_heads: e.grammar_generic_heads, infix_heads: e.grammar_infix_heads, resolver: "", steps: 0, limit: e.parse_limit, depth_limit: e.parse_depth_limit, farthest: 0, active: Dict::<string, i64>.new(), memo: Dict::<string, i64>.new(), results: Vec::<ParseMemo>.new(), context: -1, caller_limit: -1, caller_parser_steps: 0, runtime: runtime };
+}
+
+public fn prepare_grammar_index(e: &mut Engine) {
+    var heads = Dict::<string, i64>.new();
+    var i: i64 = e.syntax_rules.len;
+    while (i > 0) {
+        i = i - 1;
+        var rule = e.syntax_rules.get(i);
+        rule.next = heads.contains(rule.category) ? heads.get(rule.category) : -1;
+        // Dict.put takes ownership. Keep the category in the rule record.
+        heads.put(str_dup(rule.category), i);
+        e.syntax_rules.set(i, rule);
+    }
+    var prefix_heads = Dict::<string,i64>.new();
+    var generic_heads = Dict::<string,i64>.new();
+    var infix_heads = Dict::<string,i64>.new();
+    i = 0;
+    while (i < e.syntax_rules.len) {
+        let rule = e.syntax_rules.get(i); let first = e.child(rule.pattern,0);
+        if (is_infix(e,i)) {
+            let next = e.child(rule.pattern,1);
+            var key = rule.category + ":*";
+            if (next >= 0 && e.node(next).kind == 1) { key = syntax_index_key(e,rule.category,next); }
+            syntax_index_add(e,&mut infix_heads,key,i);
+        } else if (first >= 0 && e.node(first).kind == 1) {
+            syntax_index_add(e,&mut prefix_heads,syntax_index_key(e,rule.category,first),i);
+        } else { syntax_index_add(e,&mut generic_heads,rule.category,i); }
+        i = i + 1;
+    }
+    e.grammar_heads = heads; e.grammar_prefix_heads = prefix_heads;
+    e.grammar_generic_heads = generic_heads; e.grammar_infix_heads = infix_heads;
+    e.grammar_index_count = e.syntax_rules.len;
+}
+
+public fn syntax_index_key(e: &mut Engine, category: string, literal: i64) -> string {
+    return category + ":" + naru_number(syntax_literal_kind(e,literal) as i64) + ":" + e.node(literal).text;
+}
+public fn syntax_index_add(e: &mut Engine, index: &mut Dict<string,i64>, key: string, rule: i64) {
+    var list: i64;
+    if (index.contains(key)) { list = index.get(key); }
+    else { list = e.add_node(5,"<syntax-index>","<syntax-index>",1,1); index.put(key,list); }
+    e.add_child(list,e.add_node(2,naru_number(rule),"<syntax-index>",1,1));
+}
+
+public fn syntax_guard_matches(e: &mut Engine, g: &mut Grammar, guard: i64, bindings: i64, depth: i64) -> bool {
+    if (guard < 0) { return true; }
+    let saved = g.runtime.bindings; g.runtime.bindings = bindings;
+    grammar_runtime_budget(g);
+    g.runtime.parse_context = g.context; g.runtime.guard_depth = g.runtime.guard_depth + 1;
+    let value = eval_term(e, &mut g.runtime, guard, depth + 1);
+    g.runtime.guard_depth = g.runtime.guard_depth - 1; g.runtime.bindings = saved;
+    return e.good() && value >= 0 && rule_truth(e, value);
+}
+
+public fn is_infix(e: &mut Engine, rule_id: i64) -> bool {
+    let r = e.syntax_rules.get_ref(rule_id);
+    let first = e.child(r.pattern, 0);
+    if (first < 0 || e.node(first).kind != 3) { return false; }
+    return e.node(e.child(first, 0)).text == r.category && r.precedence > 0;
+}
+
+public fn syntax_token_kind(token: Token) -> i32 { return token.kind == 8 ? 1 : token.kind; }
+// A frontend can opt into indivisible terminals (kind 14). Unquoted
+// punctuation and quoted terminal spellings can match them; captures cannot
+// reinterpret the terminal as an identifier, numeric atom or string value.
+public fn syntax_literal_matches(e: &mut Engine, literal: i64, token: Token) -> bool {
+    let kind = syntax_literal_kind(e,literal);
+    if (token.kind == 14) { return (kind == 5 || kind == 3) && e.node(literal).text == token.text; }
+    return syntax_token_kind(token) == kind && e.node(literal).text == token.text;
+}
+public fn syntax_decimal_spelling(text: string) -> bool {
+    if (text.len == 0) { return false; }
+    var i: i64 = 0;
+    while (i < text.len) { if (!naru_digit(str_char_at(text,i))) { return false; } i = i + 1; }
+    return true;
+}
+
+// Every syntax production attempt consumes exactly one parser step.  Keeping
+// this check in one helper is important for frozen matchers: generated AOT
+// matchers must charge the same budget as the interpreted matcher below.
+public fn syntax_evaluation_step(e: &mut Engine, g: &mut Grammar, s: &mut Stream) -> bool {
+    g.steps = g.steps + 1;
+    if (g.steps > g.limit) { e.reject("syntax evaluation budget exhausted at " + s.path); return false; }
+    return e.good();
+}
+
+// Rule callbacks invoked from a parser share the parser caller's remaining
+// rule budget, while the parser itself remains bounded by parse_limit.
+public fn grammar_runtime_budget(g: &mut Grammar) -> i64 {
+    if (g.caller_limit < 0) { return g.runtime.limit; }
+    let consumed = g.steps - g.caller_parser_steps;
+    let remaining = g.caller_limit - consumed - g.runtime.steps;
+    g.runtime.limit = remaining;
+    return remaining;
+}
+
+public fn match_syntax(e: &mut Engine, g: &mut Grammar, s: &mut Stream, rule_id: i64, left: i64, depth: i64) -> i64 {
+    if (specialized_available() && rule_id < specialized_syntax_count()) { return specialized_syntax_match(e, g, s, rule_id, left, depth); }
+    // The dispatcher charges one production attempt for both interpreted and
+    // frozen rules.  Frozen matchers deliberately do not charge again.
+    if (!syntax_evaluation_step(e,g,s)) { return -1; }
+    let r = e.syntax_rules.get_ref(rule_id); let p = e.node(r.pattern);
+    let start = s.pos;
+    let bindings = e.add_node(5, "", s.path, s.peek().line, s.peek().column);
+    var edge = p.first; var index: i64 = 0;
+    while (edge >= 0 && e.good()) {
+        let part_edge = e.edge(edge); let part = e.node(part_edge.value);
+        if (left >= 0 && index == 0) {
+            bind_value(e, bindings, part.text, left);
+        } else if (part.kind == 1) {
+            if (!syntax_literal_matches(e,part_edge.value,s.peek())) {
+                s.pos = start; release_bindings(e,bindings); return -1;
+            }
+            s.take();
+        } else {
+            let category = e.node(e.child(part_edge.value, 0)).text;
+            var bp: i64 = 0;
+            if (left >= 0 && category == r.category) { bp = r.precedence + (r.right_assoc ? 0 : 1); }
+            if (left < 0 && category == r.category && r.precedence > 0) { bp = r.precedence; }
+            let value = parse_category(e, g, s, category, bp, depth + 1);
+            if (value < 0) { s.pos = start; release_bindings(e,bindings); return -1; }
+            bind_value(e, bindings, part.text, value);
+        }
+        if (s.pos > g.farthest) { g.farthest = s.pos; }
+        edge = part_edge.next; index = index + 1;
+    }
+    if (!e.good()) { release_bindings(e,bindings); return -1; }
+    if (!syntax_guard_matches(e, g, r.guard, bindings, depth)) { s.pos = start; release_bindings(e,bindings); return -1; }
+    let result = substitute(e, r.rhs, bindings);
+    release_bindings(e,bindings);
+    // Attribute the constructed root to its source invocation; descendants retain
+    // rule and capture provenance for diagnostics.
+    if (result >= 0) {
+        var n = e.node(result);
+        let origin = s.tokens.get(start);
+        n.file = e.intern(origin.file); n.line = origin.line; n.column = origin.column;
+        e.nodes.set(result, n);
+    }
+    return result;
+}
+
+// Keep one winner on the common path. Only genuine same-span peers allocate
+// alternative storage. Resolution happens after all candidates have been seen.
+public fn new_selection(start: i64) -> ParseSelection {
+    return ParseSelection { value: -1, rule: -1, end: start, fallback: false, ties: Vec::<ParseChoice>.new() };
+}
+public fn consider_syntax(e: &mut Engine, selection: &mut ParseSelection, value: i64, rule: i64, end: i64) {
+    let fallback = e.syntax_rules.get(rule).fallback;
+    if (selection.value >= 0 && !selection.fallback && fallback) { return; }
+    if (selection.value < 0 || (selection.fallback && !fallback) || end > selection.end) {
+        selection.value = value; selection.rule = rule; selection.end = end;
+        selection.fallback = fallback; selection.ties.clear();
+    } else if (end == selection.end) { selection.ties.push(ParseChoice { value: value, rule: rule }); }
+}
+public fn syntax_candidate(e: &mut Engine, choice: ParseChoice, origin: Token) -> i64 {
+    let rule = e.syntax_rules.get(choice.rule); var literals: i64 = 0; var captures: i64 = 0;
+    var edge = e.node(rule.pattern).first;
+    while (edge >= 0) { let part = e.edge(edge);
+        if (e.node(part.value).kind == 1) { literals = literals + 1; } else { captures = captures + 1; }
+        edge = part.next;
+    }
+    // AST templates are opaque data, not executed during candidate ranking.
+    let row = e.add_node(5,"",origin.file,origin.line,origin.column);
+    e.add_child(row,choice.value);
+    e.add_child(row,e.add_node(2,naru_number(literals),origin.file,origin.line,origin.column));
+    e.add_child(row,e.add_node(2,naru_number(captures),origin.file,origin.line,origin.column));
+    e.add_child(row,e.add_node(1,rule.file,origin.file,origin.line,origin.column));
+    e.add_child(row,e.add_node(2,naru_number(rule.line),origin.file,origin.line,origin.column));
+    return e.complete_value(row);
+}
+public fn select_syntax(e: &mut Engine, g: &mut Grammar, selection: &mut ParseSelection, category: string, origin: Token, depth: i64, infix: bool) -> i64 {
+    if (selection.ties.len == 0) { return selection.value; }
+    if (g.resolver.len == 0) {
+        let first = e.syntax_rules.get(selection.rule); let second = e.syntax_rules.get(selection.ties.get(0).rule);
+        e.at_error(origin.file,origin.line,origin.column,(infix ? "ambiguous infix syntax in " : "ambiguous syntax in ") + category
+            + ": " + first.file + ":" + naru_number(first.line) + " and " + second.file + ":" + naru_number(second.line));
+        return -1;
+    }
+    let candidates = e.add_node(5,"",origin.file,origin.line,origin.column);
+    e.add_child(candidates,syntax_candidate(e,ParseChoice { value: selection.value, rule: selection.rule },origin));
+    var i: i64 = 0;
+    while (i < selection.ties.len) { e.add_child(candidates,syntax_candidate(e,selection.ties.get(i),origin)); i = i + 1; }
+    e.complete_value(candidates);
+    let arguments = e.add_node(5,"",origin.file,origin.line,origin.column);
+    e.add_child(arguments,e.add_node(1,category,origin.file,origin.line,origin.column));
+    e.add_child(arguments,candidates); e.add_child(arguments,g.context >= 0 ? g.context : bool_node(e,false));
+    grammar_runtime_budget(g);
+    g.runtime.parse_context = g.context; g.runtime.guard_depth = g.runtime.guard_depth + 1;
+    // A resolver returns a scalar index in the common case, but the callback
+    // may build temporary terms while computing it.  Keep those allocations
+    // in a caller-owned scope so reading the index never leaves one result
+    // node per ambiguity in the compilation arena.
+    let resolver_scope = e.begin_scope();
+    let result = rule_apply(e,&mut g.runtime,g.resolver,arguments,depth,e.node(candidates));
+    g.runtime.guard_depth = g.runtime.guard_depth - 1; e.release_frame(arguments);
+    if (!e.good() || result < 0) { if (resolver_scope) { e.end_scope(-1); } return -1; }
+    let selected = scalar_int(e,result);
+    if (!e.good()) { if (resolver_scope) { e.end_scope(-1); } return -1; }
+    if (selected < 0 || selected > selection.ties.len) {
+        e.reject("syntax resolver returned a candidate index outside the alternatives");
+        if (resolver_scope) { e.end_scope(-1); }
+        return -1;
+    }
+    if (resolver_scope) { e.end_scope(-1); }
+    if (selected == 0) { return selection.value; }
+    return selection.ties.get(selected - 1).value;
+}
+public fn try_syntax_bucket(e: &mut Engine, g: &mut Grammar, s: &mut Stream, bucket: i64, start: i64, left: i64, min_bp: i64, depth: i64, selection: &mut ParseSelection) {
+    if (bucket < 0) { return; }
+    var edge = e.node(bucket).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edge(edge); let rule_id = str_to_int(e.node(item.value).text);
+        let rule = e.syntax_rules.get_ref(rule_id);
+        if (left < 0 || rule.precedence >= min_bp) {
+            s.pos = start; let found = match_syntax(e,g,s,rule_id,left,depth);
+            if (found >= 0) {
+                if (left >= 0 && s.pos <= start) { e.reject("infix syntax made no progress"); return; }
+                consider_syntax(e,selection,found,rule_id,s.pos);
+            }
+        }
+        edge = item.next;
+    }
+}
+public fn try_literal_buckets(e: &mut Engine, g: &mut Grammar, s: &mut Stream, category: string, token: Token, start: i64, left: i64, min_bp: i64, depth: i64, selection: &mut ParseSelection) {
+    let key = category + ":" + naru_number((token.kind == 14 ? 5 : syntax_token_kind(token)) as i64) + ":" + token.text;
+    if (left < 0) {
+        if (g.prefix_heads.contains(key)) { try_syntax_bucket(e,g,s,g.prefix_heads.get(key),start,left,min_bp,depth,selection); }
+    } else if (g.infix_heads.contains(key)) { try_syntax_bucket(e,g,s,g.infix_heads.get(key),start,left,min_bp,depth,selection); }
+    if (token.kind == 14) {
+        let quoted = category + ":3:" + token.text;
+        if (left < 0) {
+            if (g.prefix_heads.contains(quoted)) { try_syntax_bucket(e,g,s,g.prefix_heads.get(quoted),start,left,min_bp,depth,selection); }
+        } else if (g.infix_heads.contains(quoted)) { try_syntax_bucket(e,g,s,g.infix_heads.get(quoted),start,left,min_bp,depth,selection); }
+    }
+}
+public fn parse_category(e: &mut Engine, g: &mut Grammar, s: &mut Stream, category: string, min_bp: i64, depth: i64) -> i64 {
+    if (!syntax_evaluation_step(e,g,s)) { return -1; }
+    if (depth > g.depth_limit) { e.reject("syntax evaluation budget exhausted: recursion depth limit exceeded (" + naru_number(g.depth_limit) + ") at " + s.path); return -1; }
+    let t = s.peek();
+    if (category == "number") {
+        if (t.kind != 2 && t.kind != 6) { return -1; }
+        s.take(); return e.add_node(1,t.text,t.file,t.line,t.column);
+    }
+    if (category == "int" || category == "ident" || category == "string") {
+        let want: i32 = category == "int" ? 2 : (category == "ident" ? 1 : 3);
+        if (t.kind != want && !(category == "int" && t.kind == 6 && syntax_decimal_spelling(t.text))) { return -1; }
+        s.take(); return e.add_node(category == "int" ? 2 : 1,t.text,t.file,t.line,t.column);
+    }
+    if (!g.heads.contains(category)) { e.reject("unknown syntax category: " + category); return -1; }
+    let start = s.pos;
+    let key = category + ":" + naru_number(start) + ":" + naru_number(min_bp) + ":" + naru_number(g.context);
+    if (g.memo.contains(key)) {
+        let cached = g.results.get(g.memo.get(key)); s.pos = cached.end;
+        if (cached.farthest > g.farthest) { g.farthest = cached.farthest; }
+        return cached.value;
+    }
+    if (g.active.contains(key) && g.active.get(key) != 0) { e.reject("left-recursive syntax requires an explicit precedence: " + category); return -1; }
+    g.active.put(str_dup(key),1);
+    var prefix = new_selection(start);
+    try_literal_buckets(e,g,s,category,t,start,-1,min_bp,depth,&mut prefix);
+    if (g.generic_heads.contains(category)) { try_syntax_bucket(e,g,s,g.generic_heads.get(category),start,-1,min_bp,depth,&mut prefix); }
+    var best = e.good() ? select_syntax(e,g,&mut prefix,category,t,depth,false) : -1;
+    s.pos = prefix.end;
+    while (best >= 0 && e.good()) {
+        let after_left = s.pos; var next = new_selection(after_left);
+        try_literal_buckets(e,g,s,category,s.peek(),after_left,best,min_bp,depth,&mut next);
+        let generic = category + ":*";
+        if (g.infix_heads.contains(generic)) { try_syntax_bucket(e,g,s,g.infix_heads.get(generic),after_left,best,min_bp,depth,&mut next); }
+        if (next.value < 0) { s.pos = after_left; break; }
+        best = e.good() ? select_syntax(e,g,&mut next,category,t,depth,true) : -1; s.pos = next.end;
+    }
+    g.active.put(str_dup(key),0);
+    if (!e.good()) { return -1; }
+    if (best < 0) { s.pos = start; }
+    g.memo.put(key,g.results.len); g.results.push(ParseMemo { value: best, end: s.pos, farthest: g.farthest });
+    return best;
+}
+
+// Only callers which have validated a source header may start at a nonzero
+// stream position. Keeping the original stream preserves source locations.
+public fn parse_source_body(e: &mut Engine, s: &mut Stream, entry: string, allow_empty: bool) -> i64 {
+    var grammar = new_grammar(e);
+    grammar.farthest = s.pos;
+    let items = e.add_node(5, "", s.path, 1, 1);
+    while (s.peek().kind != 0 && e.good()) {
+        if (s.at("mod") || s.at("use")) {
+            let at = s.peek();
+            e.at_error(s.path, at.line, at.column, at.text == "mod"
+                ? "mod must appear once at the start of a source file"
+                : "use must appear in the source header before program items");
+            return -1;
+        }
+        let before = s.pos;
+        let item = parse_category(e, &mut grammar, s, entry, 0, 0);
+        if (item < 0 || s.pos == before) {
+            if (e.good()) {
+                let at = s.tokens.get(grammar.farthest < s.tokens.len ? grammar.farthest : s.tokens.len - 1);
+                e.at_error(at.file, at.line, at.column, "cannot parse " + entry + " near '" + at.text + "'");
+            }
+            return -1;
+        }
+        e.add_child(items, item);
+    }
+    if (!allow_empty && e.node(items).count == 0) { e.reject(s.path + ": empty program"); return -1; }
+    return items;
+}
+
+public fn parse_source(e: &mut Engine, source: string, path: string, entry: string) -> i64 {
+    var s = tokenize(source, path);
+    if (s.diagnostic.len != 0) { e.reject(s.diagnostic); return -1; }
+    if (s.accept("mod")) {
+        let module_name = stx_name(&mut s);
+        if (module_name.len == 0 || !s.expect(";")) { e.reject(s.diagnostic); return -1; }
+    }
+    if (s.at("use")) {
+        let at = s.peek();
+        e.at_error(path, at.line, at.column, "use requires loading the source module graph through load_program");
+        return -1;
+    }
+    return parse_source_body(e, &mut s, entry, false);
+}

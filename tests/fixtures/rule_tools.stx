@@ -1,0 +1,35 @@
+mod rule_tools;
+use tree;
+use layout;
+use cfg;
+use base;
+
+effect count($state,$node) => add($state,1);
+effect walk($node) => tree.fold($node,"rule_tools.count",0);
+effect range([$index,$count]) => choose(lt($index,$count),[1,[add($index,1),$count],[$index]],[0,[$index,$count],[]]);
+effect wide($count) => walk(list.unfold("rule_tools.range",[0,$count],1000000));
+effect wrap($node,$ignored) => Nested($node);
+effect deep($count) => walk(list.fold("rule_tools.wrap",list.unfold("rule_tools.range",[0,$count],1000000),Leaf()));
+effect record($node) => tree.fold($node,"rule_tools.record_node",[]);
+effect record_node($seen,$node) when eq(term.kind($node),0) => list.concat($seen,[tag($node)]);
+effect[fallback] record_node($seen,$node) => $seen;
+effect scoped($node) => tree.fold_with($node,"rule_tools.count",0,"rule_tools.scope_children");
+effect scope_children(Boundary($inside)) => [];
+effect[fallback] scope_children($node) => tree.raw_children($node);
+effect labels($node) => base.keep_continuation($node);
+
+effect bump($node,$context) when eq(term.kind($node),2) => add($node,$context);
+effect[fallback] bump($node,$context) => $node;
+effect rewritten($node) => tree.rewrite($node,"rule_tools.bump",1);
+effect rewritten_deep($count) => walk(rewritten(list.fold("rule_tools.wrap",list.unfold("rule_tools.range",[0,$count],1000000),Leaf())));
+effect rewritten_wide($count) => size(rewritten(term("wide",list.unfold("rule_tools.range",[0,$count],1000000))));
+effect scoped_rewrite($node) => tree.rewrite_with($node,"rule_tools.enter","rule_tools.leave",0,[]);
+effect enter(Boundary($inside),$context,$state) => tree.Stop(Pruned(),list.prepend(99,$state));
+effect[fallback] enter($node,$context,$state) when or(eq(term.kind($node),0),eq(term.kind($node),5))
+    => tree.Descend(term.children($node),add($context,1),$node,$state);
+effect enter($node,$context,$state) when eq(term.kind($node),2)
+    => tree.Stop(add($node,$context),list.prepend($node,$state));
+effect[fallback] enter($node,$context,$state) when and(not(eq(term.kind($node),0)),and(not(eq(term.kind($node),5)),not(eq(term.kind($node),2))))
+    => tree.Stop($node,$state);
+effect leave($cookie,$children,$context,$state)
+    => [term.rebuild($cookie,$children),list.prepend($context,$state)];

@@ -1,0 +1,39 @@
+mod functions;
+use base;
+use types;
+use control;
+use affine;
+use externc;
+effect callable(externc.ForeignSignature($abi,$params,$result)) => Callable($params,$result);
+effect capture_target($name,base.Signature($params,$result)) => [Callable($params,$result),Reference($name)];
+effect capture_target($name,externc.ForeignSignature($abi,$params,$result)) => [Callable($params,$result),Reference($name)];
+effect capture_target($name,base.Slot($type,$identity)) => [$type,base.Name($name)];
+effect capture_target($name,base.Mutable($type,$identity)) => [$type,base.Name($name)];
+effect base.signature_params(base.Slot(Callable($params,$result),$identity)) => $params;
+effect affine.contains_affine(Callable($params,$result)) => 0;
+
+syntax typename `fn($params:type_list) -> $result:typename` => Callable($params,$result);
+syntax typename `fn() -> $result:typename` => Callable([],$result);
+syntax expr `fn $name:ident` => Reference($name);
+syntax expr `($callee:expr)($arguments:arguments)` => ValueCall($callee,$arguments);
+syntax expr `($callee:expr)()` => ValueCall($callee,[]);
+effect types.repr(Callable($params,$result)) => concat("(",concat(types.join(list.map("types.repr",$params)),concat(") -> ",base.result_repr($result))));
+effect base.hint(Reference($name),$environment) => callable(env.get($environment,$name));
+effect callable(base.Signature($params,$result)) => Callable($params,$result);
+effect base.check(Reference($name),$environment,$expected)
+    => base.expect(base.Typed(callable(env.get($environment,$name)),FunctionAddress($name)),$expected);
+effect base.hint(ValueCall($callee,$arguments),$environment) => value_result(base.hint($callee,$environment));
+effect value_result(Callable($params,$result)) => $result;
+effect base.check(ValueCall($callee,$arguments),$environment,$expected)
+    => bind($checked,base.check($callee,$environment,base.Any()),invoke($checked,$arguments,$environment,$expected));
+effect invoke(base.Typed(Callable($params,$result),$value),$arguments,$environment,$expected)
+    => base.expect(base.Typed($result,IndirectCall(base.Typed(Callable($params,$result),$value),base.check_arguments($arguments,$params,$environment))),$expected);
+effect base.signature_result(base.Slot(Callable($params,$result),$identity)) => $result;
+effect base.call_checked($name,$arguments,base.Slot(Callable($params,$result),$identity),$environment,$expected)
+    => base.expect(base.Typed($result,IndirectCall(base.Typed(Callable($params,$result),base.Read($identity)),
+        base.check_arguments($arguments,$params,$environment))),$expected);
+effect base.lower(base.Typed($type,FunctionAddress($name)),$environment)
+    => mlir.op("func.constant",[],[types.repr($type)],[RawAttr("value",concat("@",$name))],[]);
+effect base.lower(base.Typed($result,IndirectCall($callee,$arguments)),$environment)
+    => mlir.op("func.call_indirect",list.prepend(base.lower($callee,$environment),base.lower_arguments($arguments,$environment)),base.result_types($result),[],[]);
+effect base.storage_type(Callable($params,$result)) => fail("mutable function values require pointer-storage lowering");

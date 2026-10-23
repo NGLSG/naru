@@ -1,0 +1,422 @@
+module naru;
+
+use std.string;
+use std.fs;
+
+// AOT specialization compiles syntax templates, syntax constructors, effect
+// patterns and effect bodies into native Vyx. Pratt scheduling retains grammar
+// metadata; matching and constructing a selected rule execute generated code.
+
+public fn freeze_id(id: i64) -> string { return naru_number(id); }
+
+public fn freeze_location(n: Node) -> string {
+    return quoted(n.file) + ", " + freeze_id(n.line) + ", " + freeze_id(n.column);
+}
+
+// Frozen metadata is a compact, length-prefixed constant table. Only this
+// one-time initializer decodes records; effect and syntax bodies stay native.
+// Keeping records out of generated ASTs bounds host optimizer memory.
+class FrozenDataReader {
+    public data: string;
+    public pos: i64;
+    public valid: bool;
+    public static fn new(data: string) -> FrozenDataReader { return FrozenDataReader { data: data, pos: 0, valid: true }; }
+    public fn number() -> i64 {
+        var negative = false; var value: i64 = 0; var digits: i64 = 0;
+        if (self.pos < self.data.len && str_char_at(self.data,self.pos) == 45) { negative = true; self.pos = self.pos + 1; }
+        while (self.pos < self.data.len) {
+            let c = str_char_at(self.data,self.pos); self.pos = self.pos + 1;
+            if (c == 58) { if (digits == 0) { self.valid = false; } return negative ? -value : value; }
+            if (!naru_digit(c)) { self.valid = false; return 0; }
+            value = value * 10 + (c - 48) as i64; digits = digits + 1;
+        }
+        self.valid = false; return 0;
+    }
+    public fn text() -> string {
+        let length = self.number();
+        if (length < 0 || length > self.data.len - self.pos) { self.valid = false; return ""; }
+        let result = self.data.substring(self.pos,self.pos + length); self.pos = self.pos + length; return result;
+    }
+}
+public fn frozen_load_data(e: &mut Engine, group: i64, data: string) {
+    var reader = FrozenDataReader.new(data);
+    while (reader.valid && reader.pos < reader.data.len) {
+        if (group == 0) {
+            let kind = reader.number(); let text = reader.text(); let first = reader.number(); let last = reader.number(); let count = reader.number();
+            let file = reader.text(); let line = reader.number(); let column = reader.number();
+            // Frozen and dynamic nodes share the same stable, borrowed text contract.
+            e.nodes.push(Node { kind: kind as i32, text: e.intern(text), first: first, last: last, count: count, file: e.intern(file), line: line, column: column, evaluated: false });
+        } else if (group == 1) {
+            let value = reader.number(); let next = reader.number(); e.edges.push(Edge { value: value, next: next });
+        } else if (group == 2) {
+            let category = reader.text(); let pattern = reader.number(); let rhs = reader.number(); let guard = reader.number(); let precedence = reader.number();
+            let right_assoc = reader.number() != 0; let fallback = reader.number() != 0; let module_name = reader.text(); let file = reader.text(); let line = reader.number();
+            e.syntax_rules.push(SyntaxRule { category: category, pattern: pattern, rhs: rhs, guard: guard, precedence: precedence, right_assoc: right_assoc,
+                fallback: fallback, module_name: module_name, file: file, line: line, next: -1 });
+        } else if (group == 3) {
+            let lhs = reader.number(); let rhs = reader.number(); let guard = reader.number(); let fallback = reader.number() != 0;
+            let module_name = reader.text(); let file = reader.text(); let line = reader.number();
+            e.effect_rules.push(EffectRule { lhs: lhs, rhs: rhs, guard: guard, fallback: fallback, module_name: module_name, file: file, line: line, next: -1 });
+        } else if (group == 4) {
+            let path = reader.text(); let name = reader.text(); let imports = reader.number(); let hash = reader.text();
+            e.modules.push(ModuleInfo { path: path, name: str_dup(name), imports: imports }); e.rule_hashes.put(name,hash);
+        } else if (group == 5) {
+            let kind = reader.number(); let name = reader.text(); let module_name = reader.text(); let full_name = reader.text(); let declared = reader.number() != 0;
+            e.symbols.push(RuleSymbol { kind: kind as i32, name: name, module_name: module_name, full_name: full_name, declared_here: declared });
+        } else { reader.valid = false; }
+    }
+    if (!reader.valid) { e.reject("corrupt frozen metadata"); }
+}
+public fn freeze_pack_number(data: &mut StringBuilder, value: i64) { data.appendI64(value); data.append(":"); }
+public fn freeze_pack_text(data: &mut StringBuilder, value: string) { freeze_pack_number(data,value.len); data.append(value); }
+public fn freeze_load(e: &mut Engine, out: &mut StringBuilder) {
+    out.append("public fn specialized_available() -> bool { return true; }\n\n");
+    out.append("public fn specialized_effect_count() -> i64 { return " + freeze_id(e.effect_rules.len) + "; }\n");
+    out.append("public fn specialized_syntax_count() -> i64 { return " + freeze_id(e.syntax_rules.len) + "; }\n\n");
+    var i: i64 = 0;
+    while (i < e.modules.len) { out.append("// frozen module: " + quoted(e.modules.get(i).path) + "\n"); i = i + 1; }
+    out.append("public fn specialized_load(e: &mut Engine) {\n");
+    out.append("    if (e.nodes.len != 0 || e.modules.len != 0) { e.reject(\"specialized_load requires a fresh Engine\"); return; }\n");
+    var group: i64 = 0;
+    while (group < 6) {
+        var length: i64 = 0;
+        if (group == 0) { length = e.nodes.len; } else if (group == 1) { length = e.edges.len; }
+        else if (group == 2) { length = e.syntax_rules.len; } else if (group == 3) { length = e.effect_rules.len; }
+        else if (group == 4) { length = e.modules.len; } else { length = e.symbols.len; }
+        i = 0;
+        while (i < length) {
+            var data = std.string.StringBuilder.create(); var end = i + 128; if (end > length) { end = length; }
+            while (i < end) {
+                if (group == 0) {
+                    let n = e.node(i); freeze_pack_number(&mut data,n.kind as i64); freeze_pack_text(&mut data,n.text);
+                    freeze_pack_number(&mut data,n.first); freeze_pack_number(&mut data,n.last); freeze_pack_number(&mut data,n.count);
+                    freeze_pack_text(&mut data,n.file); freeze_pack_number(&mut data,n.line); freeze_pack_number(&mut data,n.column);
+                } else if (group == 1) {
+                    let edge = e.edge(i); freeze_pack_number(&mut data,edge.value); freeze_pack_number(&mut data,edge.next);
+                } else if (group == 2) {
+                    let r = e.syntax_rules.get(i); freeze_pack_text(&mut data,r.category); freeze_pack_number(&mut data,r.pattern); freeze_pack_number(&mut data,r.rhs);
+                    freeze_pack_number(&mut data,r.guard); freeze_pack_number(&mut data,r.precedence); freeze_pack_number(&mut data,r.right_assoc ? 1 : 0);
+                    freeze_pack_number(&mut data,r.fallback ? 1 : 0); freeze_pack_text(&mut data,r.module_name); freeze_pack_text(&mut data,r.file); freeze_pack_number(&mut data,r.line);
+                } else if (group == 3) {
+                    let r = e.effect_rules.get(i); freeze_pack_number(&mut data,r.lhs); freeze_pack_number(&mut data,r.rhs); freeze_pack_number(&mut data,r.guard);
+                    freeze_pack_number(&mut data,r.fallback ? 1 : 0); freeze_pack_text(&mut data,r.module_name); freeze_pack_text(&mut data,r.file); freeze_pack_number(&mut data,r.line);
+                } else if (group == 4) {
+                    let m = e.modules.get(i); freeze_pack_text(&mut data,m.path); freeze_pack_text(&mut data,m.name); freeze_pack_number(&mut data,m.imports);
+                    freeze_pack_text(&mut data,project_hash(e,m.path));
+                } else {
+                    let symbol = e.symbols.get(i); freeze_pack_number(&mut data,symbol.kind as i64); freeze_pack_text(&mut data,symbol.name);
+                    freeze_pack_text(&mut data,symbol.module_name); freeze_pack_text(&mut data,symbol.full_name); freeze_pack_number(&mut data,symbol.declared_here ? 1 : 0);
+                }
+                i = i + 1;
+            }
+            let owned = data.build(); out.append("    frozen_load_data(e, " + freeze_id(group) + ", " + quoted(owned.as_str()) + ");\n");
+        }
+        group = group + 1;
+    }
+    out.append("    e.linked = true;\n}\n\n");
+}
+
+// Emit straight-line shape checks and capture binding, not a pattern walker.
+public fn freeze_pattern(e: &mut Engine, pattern: i64, value: string, out: &mut StringBuilder) {
+    let n = e.node(pattern);
+    if (n.kind == 3) {
+        out.append("    if (!bind_value(e, bindings, " + quoted(n.text) + ", " + value + ")) { return false; }\n");
+        return;
+    }
+    let name = "p" + freeze_id(pattern);
+    out.append("    let " + name + " = e.node(" + value + ");\n");
+    out.append("    if (" + name + ".kind != " + freeze_id(n.kind as i64) + " || " + name + ".text != "
+        + quoted(n.text) + " || " + name + ".count != " + freeze_id(n.count) + ") { return false; }\n");
+    var edge = n.first; var index: i64 = 0;
+    while (edge >= 0) {
+        let item = e.edge(edge);
+        let child_name = "v" + freeze_id(item.value);
+        out.append("    let " + child_name + " = e.child(" + value + ", " + freeze_id(index) + ");\n");
+        freeze_pattern(e, item.value, child_name, out);
+        edge = item.next; index = index + 1;
+    }
+}
+
+// Scalar constants and captures share a small native helper rather than one
+// duplicate function per leaf. Captures are values, never evaluated again.
+public fn frozen_leaf(e: &mut Engine, rt: &mut Runtime, id: i64, bindings: i64, depth: i64) -> i64 {
+    if (!rule_evaluation_step(e,rt,id,depth)) { return -1; }
+    let n = e.node(id);
+    if (n.kind != 3) { return id; }
+    let value = binding_get(e,bindings,n.text);
+    if (value < 0) { e.at_error(n.file,n.line,n.column,"unbound $" + n.text); }
+    return value;
+}
+
+public fn freeze_call(e: &mut Engine, id: i64, bindings: string, depth: string) -> string {
+    let n = e.node(id);
+    if (n.kind != 0 && n.kind != 4 && n.kind != 5) {
+        return "frozen_leaf(e, rt, " + freeze_id(id) + ", " + bindings + ", " + depth + ")";
+    }
+    return "frozen_body_" + freeze_id(id) + "(e, rt, " + bindings + ", " + depth + ")";
+}
+
+public fn freeze_syntax_capture(e: &mut Engine, pattern: i64, name: string) -> string {
+    var edge = e.node(pattern).first;
+    while (edge >= 0) {
+        let item = e.edge(edge); let capture = e.node(item.value);
+        if (capture.kind == 3 && capture.text == name) { return "capture_" + freeze_id(item.value); }
+        edge = item.next;
+    }
+    return "-1";
+}
+
+// Emit a constructor tree directly. Syntax captures are already native locals,
+// so neither a run-time template walker nor substitution/binding lookup remains.
+public fn freeze_syntax_value_scoped(e: &mut Engine, id: i64, pattern: i64, locals: i64, out: &mut StringBuilder) -> string {
+    let node = e.node(id);
+    if (node.kind == 3) {
+        if (locals >= 0 && stx_has_name(e, locals, node.text)) { return freeze_id(id); }
+        let capture = node.text == "_" ? "-1" : freeze_syntax_capture(e, pattern, node.text);
+        if (capture == "-1") {
+            out.append("    e.at_error(" + freeze_location(node) + ", " + quoted("unbound variable $" + node.text) + ");\n");
+        }
+        return capture;
+    }
+    if (node.kind >= 6 || node.count == 0) { return freeze_id(id); }
+    let name = "syntax_value_" + freeze_id(id);
+    out.append("    let " + name + " = e.add_node(" + freeze_id(node.kind as i64) + ", "
+        + quoted(node.text) + ", " + freeze_location(node) + ");\n");
+    // A bind pattern is a lexical declaration, not a substitution template.
+    // Its initializer sees the outer scope; only its body sees the new names.
+    // These scope lists exist solely while generating native constructors.
+    if (node.kind == 4 && node.text == "bind" && node.count == 3) {
+        let declaration = e.child(id, 0);
+        out.append("    e.add_child(" + name + ", " + freeze_id(declaration) + ");\n");
+        let value = freeze_syntax_value_scoped(e, e.child(id, 1), pattern, locals, out);
+        out.append("    if (!e.good()) { return -1; }\n");
+        out.append("    e.add_child(" + name + ", " + value + ");\n");
+        let inner = e.add_node(5, "", node.file, node.line, node.column);
+        if (locals >= 0) { stx_collect_vars(e, locals, inner); }
+        stx_collect_vars(e, declaration, inner);
+        let body = freeze_syntax_value_scoped(e, e.child(id, 2), pattern, inner, out);
+        out.append("    if (!e.good()) { return -1; }\n");
+        out.append("    e.add_child(" + name + ", " + body + ");\n");
+        return name;
+    }
+    var edge = node.first;
+    while (edge >= 0) {
+        let item = e.edge(edge);
+        let value = freeze_syntax_value_scoped(e, item.value, pattern, locals, out);
+        out.append("    if (!e.good()) { return -1; }\n");
+        out.append("    e.add_child(" + name + ", " + value + ");\n");
+        edge = item.next;
+    }
+    return name;
+}
+
+public fn freeze_syntax_value(e: &mut Engine, id: i64, pattern: i64, out: &mut StringBuilder) -> string {
+    return freeze_syntax_value_scoped(e, id, pattern, -1, out);
+}
+
+public fn freeze_syntax_matcher(e: &mut Engine, rule_id: i64, out: &mut StringBuilder) {
+    let rule = e.syntax_rules.get(rule_id);
+    out.append("fn frozen_syntax_" + freeze_id(rule_id)
+        + "(e: &mut Engine, g: &mut Grammar, s: &mut Stream, left: i64, depth: i64) -> i64 {\n");
+    out.append("    let start = s.pos;\n    if (!e.good()) { return -1; }\n");
+    out.append("    if (!syntax_evaluation_step(e,g,s)) { return -1; }\n");
+    var edge = e.node(rule.pattern).first; var index: i64 = 0;
+    while (edge >= 0) {
+        let item = e.edge(edge); let part = e.node(item.value);
+        if (part.kind == 1) {
+            out.append("    if (!syntax_literal_matches(e," + freeze_id(item.value) + ",s.peek())) { s.pos = start; return -1; }\n");
+            out.append("    s.take();\n");
+        } else {
+            let capture = "capture_" + freeze_id(item.value);
+            let category = e.node(e.child(item.value, 0)).text;
+            var bp = "0";
+            if (category == rule.category) {
+                bp = "(left >= 0 ? " + freeze_id(rule.precedence + (rule.right_assoc ? 0 : 1)) + " : " + freeze_id(rule.precedence) + ")";
+            }
+            if (index == 0) {
+                out.append("    var " + capture + ": i64 = left;\n");
+                out.append("    if (left < 0) { " + capture + " = parse_category(e, g, s, " + quoted(category)
+                    + ", " + bp + ", depth + 1); }\n");
+            } else {
+                out.append("    let " + capture + " = parse_category(e, g, s, " + quoted(category)
+                    + ", " + bp + ", depth + 1);\n");
+            }
+            out.append("    if (" + capture + " < 0) { s.pos = start; return -1; }\n");
+        }
+        out.append("    if (s.pos > g.farthest) { g.farthest = s.pos; }\n");
+        edge = item.next; index = index + 1;
+    }
+    out.append("    if (!e.good()) { return -1; }\n");
+    if (rule.guard >= 0) {
+        out.append("    let guard_bindings = e.add_node(5, \"\", s.path, s.peek().line, s.peek().column);\n");
+        var guard_edge = e.node(rule.pattern).first;
+        while (guard_edge >= 0) {
+            let item = e.edge(guard_edge); let part = e.node(item.value);
+            if (part.kind == 3) { out.append("    bind_value(e, guard_bindings, " + quoted(part.text) + ", capture_" + freeze_id(item.value) + ");\n"); }
+            guard_edge = item.next;
+        }
+        out.append("    let eligible = syntax_guard_matches(e, g, " + freeze_id(rule.guard) + ", guard_bindings, depth);\n");
+        out.append("    release_bindings(e,guard_bindings);\n    if (!eligible) { s.pos = start; return -1; }\n");
+    }
+    let result = freeze_syntax_value(e, rule.rhs, rule.pattern, out);
+    out.append("    let result = " + result + ";\n");
+    out.append("    if (result >= 0) {\n        var node = e.node(result);\n        let origin = s.tokens.get(start);\n");
+    out.append("        node.file = e.intern(origin.file); node.line = origin.line; node.column = origin.column;\n        e.nodes.set(result, node);\n    }\n");
+    out.append("    return result;\n}\n\n");
+}
+
+public fn freeze_syntax_dispatch(e: &mut Engine, out: &mut StringBuilder) {
+    var i: i64 = 0;
+    while (i < e.syntax_rules.len) { freeze_syntax_matcher(e, i, out); i = i + 1; }
+    out.append("public fn specialized_syntax_match(e: &mut Engine, g: &mut Grammar, s: &mut Stream, rule_id: i64, left: i64, depth: i64) -> i64 {\n");
+    i = 0;
+    while (i < e.syntax_rules.len) {
+        out.append("    if (rule_id == " + freeze_id(i) + ") { return frozen_syntax_" + freeze_id(i) + "(e, g, s, left, depth); }\n");
+        i = i + 1;
+    }
+    out.append("    e.reject(\"unknown specialized syntax rule\"); return -1;\n}\n\n");
+}
+
+public fn freeze_body(e: &mut Engine, id: i64, out: &mut StringBuilder) {
+    let n = e.node(id);
+    if (n.kind != 0 && n.kind != 4 && n.kind != 5) { return; }
+    // Child expressions have their own compiled functions. The generated
+    // parent invokes only the children demanded by a lazy primitive.
+    var edge = n.first;
+    while (edge >= 0) {
+        let item = e.edge(edge);
+        freeze_body(e, item.value, out);
+        edge = item.next;
+    }
+    if (n.kind == 4 && n.text == "bind" && n.count == 3) {
+        out.append("fn frozen_bind_" + freeze_id(id) + "(e: &mut Engine, value: i64, bindings: i64) -> bool {\n");
+        freeze_pattern(e, e.child(id, 0), "value", out);
+        out.append("    return true;\n}\n\n");
+    }
+    out.append("fn frozen_body_" + freeze_id(id) + "(e: &mut Engine, rt: &mut Runtime, bindings: i64, depth: i64) -> i64 {\n");
+    out.append("    if (!rule_evaluation_step(e,rt," + freeze_id(id) + ",depth)) { return -1; }\n");
+    if (n.kind == 4 && n.text == "bind" && n.count == 3) {
+        out.append("    let value = " + freeze_call(e, e.child(id, 1), "bindings", "depth + 1") + ";\n");
+        out.append("    if (!e.good()) { return -1; }\n    let inner = e.add_node(5, \"\", " + freeze_location(n) + ");\n");
+        out.append("    if (!frozen_bind_" + freeze_id(id) + "(e, value, inner)) { e.at_error(" + freeze_location(n)
+            + ", \"bind pattern does not match \" + render_term(e, value)); return -1; }\n");
+        out.append("    let scoped = binding_merge(e, bindings, inner);\n");
+        out.append("    let result = " + freeze_call(e,e.child(id,2),"scoped","depth + 1") + ";\n");
+        out.append("    e.release_frame(scoped); release_bindings(e,inner); return result;\n}\n\n");
+        return;
+    }
+    if (n.kind == 4 && n.text.starts_with("mlir.")) {
+        out.append("    if (rt.guard_depth > 0) { e.reject(\"rule guards cannot construct or mutate IR\"); return -1; }\n");
+    }
+    if (n.kind == 4 && (n.text == "choose" || n.text == "seq" || n.text == "mlir.region" || n.text == "mlir.in_block" || n.text == "mlir.with_block")) {
+        let arity: i64 = n.text == "choose" ? 3 : (n.text == "seq" || n.text == "mlir.in_block" || n.text == "mlir.with_block" ? 2 : 1);
+        if (n.count != arity) {
+            out.append("    e.at_error(" + freeze_location(n) + ", " + quoted(n.text + " expects " + freeze_id(arity) + " arguments") + "); return -1;\n}\n\n");
+            return;
+        }
+        if (n.text == "choose") {
+            out.append("    let condition = " + freeze_call(e, e.child(id, 0), "bindings", "depth + 1") + ";\n");
+            out.append("    if (!e.good()) { return -1; }\n");
+            out.append("    let truth = rule_truth(e, condition);\n");
+            out.append("    if (truth) { return " + freeze_call(e, e.child(id, 1), "bindings", "depth + 1") + "; }\n");
+            out.append("    return " + freeze_call(e, e.child(id, 2), "bindings", "depth + 1") + ";\n}\n\n");
+        } else if (n.text == "seq") {
+            out.append("    " + freeze_call(e, e.child(id, 0), "bindings", "depth + 1") + ";\n");
+            out.append("    return " + freeze_call(e, e.child(id, 1), "bindings", "depth + 1") + ";\n}\n\n");
+        } else if (n.text == "mlir.in_block" || n.text == "mlir.with_block") {
+            out.append("    let block = " + freeze_call(e, e.child(id, 0), "bindings", "depth + 1") + ";\n");
+            out.append("    if (!e.good()) { return -1; }\n");
+            out.append("    if (e.node(block).kind != 9) { e.reject(" + quoted(n.text + " requires a block") + "); return -1; }\n");
+            out.append("    let saved = rt.active_region;\n    rt.active_region = e.child(block, 1);\n");
+            out.append("    let result = " + freeze_call(e, e.child(id, 1), "bindings", "depth + 1") + ";\n");
+            out.append("    rt.active_region = saved;\n    return e.good() ? " + (n.text == "mlir.with_block" ? "result" : "block") + " : -1;\n}\n\n");
+        } else {
+            out.append("    let saved = rt.active_region;\n");
+            out.append("    let region = e.add_node(8, \"region\", " + freeze_location(n) + ");\n");
+            out.append("    rt.active_region = region;\n");
+            out.append("    " + freeze_call(e, e.child(id, 0), "bindings", "depth + 1") + ";\n");
+            out.append("    rt.active_region = saved;\n    return e.good() ? region : -1;\n}\n\n");
+        }
+        return;
+    }
+    out.append("    let value = e.add_node(" + freeze_id(n.kind as i64) + ", " + quoted(n.text) + ", " + freeze_location(n) + ");\n");
+    edge = n.first;
+    while (edge >= 0) {
+        let item = e.edge(edge);
+        let child = "c" + freeze_id(item.value);
+        out.append("    let " + child + " = " + freeze_call(e, item.value, "bindings", "depth + 1") + ";\n");
+        out.append("    if (" + child + " < 0 || !e.good()) { return -1; }\n");
+        out.append("    e.add_child(value, " + child + ");\n");
+        edge = item.next;
+    }
+    if (n.kind != 4) { out.append("    return e.complete_value(value);\n}\n\n"); }
+    else if (builtin_name(n.text)) { out.append("    let result = eval_builtin(e, rt, value, depth);\n    e.release_frame(value); return result;\n}\n\n"); }
+    else { out.append("    let result = specialized_dispatch(e, rt, value, depth);\n    e.release_frame(value); return result;\n}\n\n"); }
+}
+
+// Candidate scheduling is shared with dynamic overlays. Frozen heads/guards
+// and RHS functions remain native, reached through bounded generated routers.
+// Avoid one giant duplicated dispatch graph in the host optimizer.
+public fn freeze_dispatch(e: &mut Engine, out: &mut StringBuilder) {
+    out.append("public fn specialized_dispatch(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64) -> i64 {\n    return dispatch_effect(e, rt, call, depth);\n}\n\n");
+}
+
+public fn write_specialization(e: &mut Engine, path: string) -> bool {
+    if (!e.good()) { return false; }
+    if (!e.linked) { e.reject("rules must be linked before AOT specialization"); return false; }
+    var out = std.string.StringBuilder.create();
+    out.append("module naru;\nuse std.collections;\nuse std.string;\n\n");
+    out.append("// Generated by Naru. Syntax and effect matchers and constructors are native Vyx.\n\n");
+    freeze_load(e, &mut out);
+    if (!e.good()) { return false; }
+    freeze_syntax_dispatch(e, &mut out);
+    var i: i64 = 0;
+    while (i < e.effect_rules.len) {
+        let rule = e.effect_rules.get(i);
+        out.append("fn frozen_match_" + freeze_id(i) + "(e: &mut Engine, call: i64, bindings: i64) -> bool {\n");
+        freeze_pattern(e, rule.lhs, "call", &mut out);
+        out.append("    return true;\n}\n\n");
+        if (rule.guard >= 0) { freeze_body(e, rule.guard, &mut out); }
+        freeze_body(e, rule.rhs, &mut out);
+        i = i + 1;
+    }
+    freeze_dispatch(e, &mut out);
+    i = 0;
+    while (i < e.effect_rules.len) {
+        let begin = i; var end = i + 64; if (end > e.effect_rules.len) { end = e.effect_rules.len; }
+        out.append("fn frozen_rule_match_" + freeze_id(begin) + "(e: &mut Engine, rt: &mut Runtime, rule: i64, call: i64, bindings: i64, depth: i64) -> bool {\n");
+        while (i < end) {
+            let rule = e.effect_rules.get(i);
+            out.append("    if (rule == " + freeze_id(i) + ") {\n        if (!frozen_match_" + freeze_id(i) + "(e, call, bindings)) { return false; }\n");
+            if (rule.guard >= 0) {
+                out.append("        rt.guard_depth = rt.guard_depth + 1;\n        let guard = " + freeze_call(e,rule.guard,"bindings","depth + 1") + ";\n        rt.guard_depth = rt.guard_depth - 1;\n        return e.good() && rule_truth(e, guard);\n");
+            } else { out.append("        return true;\n"); }
+            out.append("    }\n"); i = i + 1;
+        }
+        out.append("    return false;\n}\n\n");
+        out.append("fn frozen_rule_body_" + freeze_id(begin) + "(e: &mut Engine, rt: &mut Runtime, rule: i64, bindings: i64, depth: i64) -> i64 {\n");
+        var at = begin;
+        while (at < end) {
+            out.append("    if (rule == " + freeze_id(at) + ") { return " + freeze_call(e,e.effect_rules.get(at).rhs,"bindings","depth + 1") + "; }\n"); at = at + 1;
+        }
+        out.append("    return -1;\n}\n\n");
+    }
+    out.append("public fn specialized_rule_match(e: &mut Engine, rt: &mut Runtime, rule: i64, call: i64, bindings: i64, depth: i64) -> bool {\n    if (rule < 0) { return false; }\n");
+    i = 0;
+    while (i < e.effect_rules.len) {
+        let end = i + 64;
+        out.append("    if (rule < " + freeze_id(end) + ") { return frozen_rule_match_" + freeze_id(i) + "(e, rt, rule, call, bindings, depth); }\n"); i = end;
+    }
+    out.append("    return false;\n}\n\npublic fn specialized_rule_body(e: &mut Engine, rt: &mut Runtime, rule: i64, bindings: i64, depth: i64) -> i64 {\n    if (rule < 0) { return -1; }\n");
+    i = 0;
+    while (i < e.effect_rules.len) {
+        let end = i + 64;
+        out.append("    if (rule < " + freeze_id(end) + ") { return frozen_rule_body_" + freeze_id(i) + "(e, rt, rule, bindings, depth); }\n"); i = end;
+    }
+    out.append("    return -1;\n}\n");
+    let owned = out.build();
+    if (!e.good()) { return false; }
+    let absolute = naru_absolute_path(path); let text = owned.as_str();
+    if (naru_atomic_text(absolute.c_str(), absolute.len, text.c_str(), text.len) != 0) { e.reject("cannot write specialization: " + path); return false; }
+    return true;
+}

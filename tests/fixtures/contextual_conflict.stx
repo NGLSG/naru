@@ -1,0 +1,3 @@
+mod contextual_conflict;
+use contextual_frontend;
+syntax contextual.item `$name:ident;` when env.contains(syntax.context(),$name) => Conflict($name);

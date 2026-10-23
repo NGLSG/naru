@@ -1,0 +1,27 @@
+[package]
+name = "async-tasks"
+version = "0.1.0"
+entry = "main.nru"
+
+[dependencies.std]
+path = "../../dialects"
+package = "naru-stdlib"
+version = "^0.2.0"
+
+[language]
+dialects = ["std/coro"]
+unit = "program"
+relation = "coro.emit_program"
+
+[build]
+output = "target/async.exe"
+
+[backend]
+target = "exe"
+opt_level = "2"
+pass_plugins = ["../../target/naru_coro_plugin.dll"]
+lowering_pipeline = "builtin.module(convert-scf-to-cf,convert-async-to-llvm,naru-coro-msvc-allocation,convert-to-llvm,reconcile-unrealized-casts)"
+
+[link]
+runtime = "crt-static"
+libraries = ["../../target/naru_tasks.lib"]

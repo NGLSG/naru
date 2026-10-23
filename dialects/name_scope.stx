@@ -1,0 +1,27 @@
+// Immutable lexical name facts, independent of a source language.
+// Namespace and payload are opaque terms supplied by the language library.
+mod name_scope;
+
+effect root() => Frame(symbol("scope"),env.empty(),env.empty());
+effect child(Frame($identity,$local,$visible)) => Frame(symbol("scope"),env.empty(),$visible);
+effect frame_identity(Frame($identity,$local,$visible)) => $identity;
+effect declaration_identity(Frame($identity,$local,$visible),$namespace,$name)
+    => Identity($identity,$namespace,$name);
+effect contains(Frame($identity,$local,$visible),$namespace,$name)
+    => env.contains($visible,NameKey($namespace,$name));
+effect contains_local(Frame($identity,$local,$visible),$namespace,$name)
+    => env.contains($local,NameKey($namespace,$name));
+effect lookup(Frame($identity,$local,$visible),$namespace,$name)
+    => choose(env.contains($visible,NameKey($namespace,$name)),env.get($visible,NameKey($namespace,$name)),Missing());
+effect local(Frame($identity,$local,$visible),$namespace,$name)
+    => choose(env.contains($local,NameKey($namespace,$name)),env.get($local,NameKey($namespace,$name)),Missing());
+// Same-frame redeclaration policy belongs to the caller. Updating a binding
+// preserves its declaration identity; entering another frame changes it.
+effect put(Frame($identity,$local,$visible),$namespace,$name,$value)
+    => bind($binding,Binding(Identity($identity,$namespace,$name),$value),
+        Frame($identity,env.put($local,NameKey($namespace,$name),$binding),
+            env.put($visible,NameKey($namespace,$name),$binding)));
+effect binding_identity(Binding($identity,$value)) => $identity;
+effect value(Binding($identity,$value)) => $value;
+effect local_bindings(Frame($identity,$local,$visible)) => env.entries($local);
+effect visible_bindings(Frame($identity,$local,$visible)) => env.entries($visible);

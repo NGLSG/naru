@@ -1,0 +1,3 @@
+mod source_inspect;
+effect inspect($items) => list.map("source_inspect.frame", source.modules());
+effect frame([$name, $path, $imports, $items]) => [$name, size($imports), size($items)];

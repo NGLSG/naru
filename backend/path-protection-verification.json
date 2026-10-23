@@ -1,0 +1,12 @@
+{
+  "mlir_version": "LLVM (http://llvm.org/):\n  LLVM version 24.0.0\n  Optimized build with assertions.",
+  "tests": [
+    {
+      "test": "path-protection",
+      "passed": true,
+      "detail": "9 output/report input collisions rejected, including target, IRDL, plugins and a hard-linked report path",
+      "seconds": 1.2453
+    }
+  ],
+  "passed": true
+}

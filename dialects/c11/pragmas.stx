@@ -1,0 +1,47 @@
+// C11 _Pragma executes through the same open handler as #pragma. The MSVC
+// token-form __pragma is a separately selected target interface.
+mod c11.pragmas;
+use c11.pp;
+use c11.pp_macros;
+use c11.lex;
+
+effect c11.pp.expand_token($at,$hide,$rest,$macros,$depth) when c11.pragmas.operator(c11.lex.spelling($at))
+    => c11.pragmas.invoke(c11.lex.spelling($at),$at,$hide,$rest,$macros,$depth);
+effect c11.pragmas.operator($name) => or(eq($name,"_Pragma"),eq($name,"__pragma"));
+effect c11.pragmas.invoke($name,$at,$hide,c11.pp.EmptyWork(),$macros,$depth) => c11.lex.error($at,"pragma operator requires parentheses");
+effect c11.pragmas.invoke($name,$at,$hide,c11.pp.CursorWork($cursor,$tail),$macros,$depth)
+    => bind($work,c11.pp.CursorWork($cursor,$tail),bind(c11.pp.MarkedToken($open,$unused),c11.pp.work_head($work),
+        choose(eq(c11.lex.spelling($open),"("),
+            bind([$args,$rest,$close_hide],c11.pp.marked_arguments(c11.pp.work_next($work),$at),
+                c11.pragmas.arguments($name,$args,$rest,$macros,$depth,$at)),c11.lex.error($at,"pragma operator requires parentheses"))));
+effect c11.pragmas.arguments("_Pragma",[$argument],$rest,$macros,$depth,$at)
+    => bind([$expanded,$final],c11.pp.expand_marked_result($argument,$macros,add($depth,1)),
+        c11.pragmas.string_argument(c11.pp.unmark($expanded),$rest,$final,$depth,$at));
+effect c11.pragmas.arguments("__pragma",$arguments,$rest,$macros,$depth,$at)
+    => bind([$expanded,$final],c11.pp.expand_marked_result(c11.pp_macros.join_arguments($arguments,$at),$macros,add($depth,1)),
+        c11.pragmas.execute(c11.pp.unmark($expanded),$rest,$final,$depth,$at));
+effect[fallback] c11.pragmas.arguments($name,$args,$rest,$macros,$depth,$at) => c11.lex.error($at,"_Pragma requires one string literal operand");
+effect c11.pragmas.string_argument([$literal],$rest,$macros,$depth,$at) when eq(c11.lex.kind($literal),3)
+    => bind($source,c11.pragmas.destringize(c11.lex.spelling($literal),$at),
+        bind(c11.pp.Located($tokens,$origin),c11.pp.relocate(c11.lex.literal_tokens(c11.lex.scan_phase3($source,arg($at,2))),$at),
+            c11.pragmas.execute($tokens,$rest,$macros,$depth,$at)));
+effect[fallback] c11.pragmas.string_argument($tokens,$rest,$macros,$depth,$at) => c11.lex.error($at,"_Pragma requires one string literal operand");
+// C11 destringization changes only escaped quote/backslash, not C execution
+// escapes. Tokenization starts at phase 3: no new trigraph/splice pass.
+effect c11.pragmas.destringize($raw,$at)
+    => bind($offset,choose(text.starts($raw,"L\""),2,choose(text.starts($raw,"\""),1,-1)),
+        choose(and(not(lt($offset,0)),text.ends($raw,"\"")),
+            bind(c11.pragmas.Destringizing($source,$index,$end,$chunks),rule.iterate("c11.pragmas.destringize_step",
+                c11.pragmas.Destringizing($raw,$offset,sub(text.len($raw),1),[]),1000000),text.join(list.reverse($chunks),"")),
+            c11.lex.error($at,"_Pragma requires an ordinary or L-prefixed string literal")));
+effect c11.pragmas.destringize_step(c11.pragmas.Destringizing($source,$index,$end,$chunks)) when eq($index,$end)
+    => [0,c11.pragmas.Destringizing($source,$index,$end,$chunks)];
+effect c11.pragmas.destringize_step(c11.pragmas.Destringizing($source,$index,$end,$chunks)) when lt($index,$end)
+    => bind($escaped,choose(and(eq(text.byte($source,$index),92),lt(add($index,1),$end)),
+        or(eq(text.byte($source,add($index,1)),34),eq(text.byte($source,add($index,1)),92)),0),
+        [1,c11.pragmas.Destringizing($source,add($index,choose($escaped,2,1)),$end,
+            list.prepend(text.slice($source,add($index,choose($escaped,1,0)),add($index,choose($escaped,2,1))),$chunks))]);
+effect c11.pragmas.execute($tokens,$rest,$macros,$depth,$at)
+    => bind(c11.pp.State($chunks,$final,$conditions,$pending),c11.pp.enabled("pragma",$tokens,c11.pp.State([],$macros,[],[]),$at),
+        bind(c11.pp.Marked($output,$unused),c11.pp.mark(list.flatten(list.reverse($chunks)),env.empty()),
+            [1,c11.pp.Expansion($rest,$final,$depth),$output]));

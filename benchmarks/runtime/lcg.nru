@@ -1,0 +1,14 @@
+// Naru
+fn kernel(n: u32, seed: u32) -> u32 {
+    var i: u32 = 0;
+    var state: u32 = seed;
+    while i < n {
+        state = state * 1664525 + 1013904223;
+        i = i + 1;
+    }
+    return state;
+}
+
+fn main() -> i32 {
+    return kernel(100000000, 12345) as i32;
+}

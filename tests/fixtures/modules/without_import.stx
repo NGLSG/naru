@@ -1,0 +1,2 @@
+mod without_import;
+effect test() => a.run(a.X());

@@ -1,0 +1,1378 @@
+{
+  "format": 1,
+  "standard": "ISO C11; WG14 N1570 plus individually recorded defect reports",
+  "reference": "https://www.open-std.org/jtc1/sc22/wg14/www/docs/n1570.pdf",
+  "target": "windows-x86_64-llp64",
+  "status": "in_progress",
+  "full_conformance_claimed": false,
+  "architecture": {
+    "language_semantics": "composable STX modules; no C keyword or C semantic dispatch in core",
+    "shared_infrastructure": "context, parsing, tree, layout, storage, CFG and general IR facilities",
+    "backend": "in-process MLIR and target lowering",
+    "standard_library": "actual target system headers and C runtime",
+    "parallelism": "bounded independent build and test jobs; ordered callbacks within an Engine"
+  },
+  "acceptance": {
+    "per_work_item": [
+      "clause and paragraph inventory, including constraints and applicable defect reports",
+      "defined positive programs and independently checked required diagnostics",
+      "O0 and O2 execution, side effects and ABI when applicable",
+      "dynamic and frozen rule parity, including composed rule modules",
+      "compiler, backend, rules, inputs and target library fingerprints",
+      "remaining limitations and implementation-defined choices recorded explicitly"
+    ],
+    "full_support": [
+      "all work items complete with reviewable acceptance evidence",
+      "all configured suites and unchanged real project gates pass on the same final snapshot",
+      "all standard headers and library interfaces accounted for on the target",
+      "VLA, atomics, complex and thread capabilities implemented, not waived as optional",
+      "translation limits, required diagnostics and implementation documentation audited",
+      "no unsupported feature silently accepted and no external C compiler substitutes for Naru"
+    ],
+    "corpus": "tests/c11/conformance.json",
+    "dynamic_runner": "tests/c11_conformance.py",
+    "frozen_runner": "test.ps1 -C11Aot -Jobs 4",
+    "real_project_runner": "tests/c11_stress.py",
+    "runtime_restrictions": "Naru compilation with empty PATH and subprocesses forbidden; native backend report verified",
+    "undefined_behavior": "diagnostic policy recorded separately; never require an oracle rejection or runtime agreement for undefined behavior",
+    "coverage_percentage": null,
+    "pending_feature_corpus": "tests/c11/support-probes.json",
+    "pending_feature_runner": "tests/c11_support.py",
+    "system_header_runner": "tests/c11_headers.py",
+    "allocation_runner": "tests/allocation.py",
+    "full_runner": "tests/c11_full_support.py",
+    "full_project_command": "test.ps1 -C11Full -Jobs 4"
+  },
+  "phases": [
+    {
+      "id": "declarations-and-scopes",
+      "status": "in_progress",
+      "work_items": [
+        {
+          "id": "automatic-storage",
+          "clauses": [
+            "6.7.1",
+            "6.7.5p2",
+            "6.7.6.3p2",
+            "6.9p2"
+          ],
+          "status": "in_progress",
+          "implementation": [
+            "dialects/c11/storage.stx"
+          ],
+          "features": [
+            "storage"
+          ],
+          "remaining": [
+            "complete storage-class paragraph/diagnostic audit and VM lifetime integration"
+          ],
+          "evidence": [
+            "tests/c11_conformance.py",
+            "tests/c11_specifiers.py"
+          ]
+        },
+        {
+          "id": "specifier-normalization",
+          "clauses": [
+            "6.7",
+            "6.7.1",
+            "6.7.2",
+            "6.7.3",
+            "6.7.4",
+            "6.7.5"
+          ],
+          "status": "in_progress",
+          "features": [
+            "declarations",
+            "storage",
+            "alignment"
+          ],
+          "remaining": [
+            "_Atomic type-specifier/qualifier composition depends on the atomic phase",
+            "_Thread_local storage combinations depend on the thread-storage phase",
+            "_Noreturn function specifier depends on the inline/noreturn phase",
+            "complete paragraph and diagnostic audit, including parameter array qualifiers"
+          ],
+          "implementation": [
+            "dialects/c11/specifiers.stx",
+            "dialects/c11/declarators.stx",
+            "dialects/c11/types.stx"
+          ],
+          "evidence": [
+            "tests/c11_specifiers.py",
+            "tests/c11/specifiers.json"
+          ]
+        },
+        {
+          "id": "tag-and-enum-scope",
+          "clauses": [
+            "6.2.1",
+            "6.2.3",
+            "6.7.2.1",
+            "6.7.2.2",
+            "6.7.2.3"
+          ],
+          "status": "in_progress",
+          "implementation": [
+            "dialects/name_scope.stx",
+            "dialects/c11/names.stx",
+            "dialects/c11/scopes.stx",
+            "dialects/c11/objects.stx",
+            "dialects/c11/enums.stx",
+            "dialects/c11/sema.stx",
+            "dialects/c11/types.stx"
+          ],
+          "features": [
+            "scope",
+            "declarations"
+          ],
+          "remaining": [
+            "complete clause inventory, expression tag-point interactions and final dynamic/frozen acceptance",
+            "all incomplete declaration/storage/ABI constraints and VM interactions"
+          ],
+          "evidence": [
+            "tests/c11_tags.py",
+            "tests/c11_static_literals.py",
+            "tests/c11_declaration_model.py",
+            "tests/c11/declaration-model.json"
+          ]
+        },
+        {
+          "id": "linkage-and-local-extern",
+          "clauses": [
+            "6.2.2",
+            "6.7",
+            "6.9.2"
+          ],
+          "status": "in_progress",
+          "features": [
+            "linkage",
+            "scope"
+          ],
+          "remaining": [
+            "tentative definitions and complete object/function linkage constraint audit",
+            "cross-translation-unit compatibility and final dynamic/frozen integrated acceptance"
+          ],
+          "implementation": [
+            "dialects/c11/types.stx",
+            "dialects/c11/scopes.stx",
+            "dialects/c11/names.stx",
+            "dialects/c11/objects.stx",
+            "dialects/c11/sema.stx"
+          ],
+          "evidence": [
+            "tests/c11_declaration_model.py",
+            "tests/c11/declaration-model.json"
+          ]
+        },
+        {
+          "id": "iso-inline-and-noreturn",
+          "clauses": [
+            "6.7.4",
+            "6.9"
+          ],
+          "status": "in_progress",
+          "features": [
+            "inline",
+            "linkage"
+          ],
+          "remaining": [
+            "final dynamic/frozen and cross-unit acceptance of ISO inline declaration facts and available_externally emission",
+            "complete 6.7.4 paragraph/diagnostic audit including internal-linkage prototypes",
+            "_Noreturn LLVM attribute and actual stdnoreturn.h acceptance"
+          ],
+          "implementation": [
+            "dialects/c11/functions.stx",
+            "dialects/c11/specifiers.stx",
+            "dialects/c11/sema.stx",
+            "backend/native/bridge.cpp"
+          ],
+          "evidence": [
+            "tests/c11_language_features.py",
+            "tests/c11/language-features.json"
+          ]
+        },
+        {
+          "id": "function-declaration-model",
+          "clauses": [
+            "6.7.6.3",
+            "6.9.1"
+          ],
+          "status": "in_progress",
+          "features": [
+            "functions",
+            "declarations"
+          ],
+          "remaining": [
+            "complete 6.7.6.3/6.9.1 paragraph and parameter constraint audit including VLA/VM integration",
+            "cross-unit old-style/default-promotion ABI evidence and final dynamic/frozen integrated acceptance"
+          ],
+          "implementation": [
+            "dialects/c11/types.stx",
+            "dialects/c11/scopes.stx",
+            "dialects/c11/names.stx",
+            "dialects/c11/objects.stx",
+            "dialects/c11/sema.stx"
+          ],
+          "evidence": [
+            "tests/c11_declaration_model.py",
+            "tests/c11/declaration-model.json",
+            "tests/c11_nonprototype_abi.py",
+            "tests/c11_sdk_wide.py",
+            "tests/c11/sdk-wide.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "types-and-abi",
+      "status": "in_progress",
+      "work_items": [
+        {
+          "id": "compatibility-and-composite-types",
+          "clauses": [
+            "6.2.5",
+            "6.2.7",
+            "6.7.3",
+            "6.7.6"
+          ],
+          "status": "in_progress",
+          "features": [
+            "types",
+            "conversions"
+          ],
+          "remaining": [
+            "VLA/VM and atomic composite type interactions",
+            "restrict association/constraints and full compatibility paragraph audit",
+            "final dynamic/frozen acceptance and cross-unit compatibility audit"
+          ],
+          "implementation": [
+            "dialects/c11/types.stx",
+            "dialects/c11/scopes.stx",
+            "dialects/c11/names.stx",
+            "dialects/c11/objects.stx",
+            "dialects/c11/sema.stx"
+          ],
+          "evidence": [
+            "tests/c11_declaration_model.py",
+            "tests/c11/declaration-model.json"
+          ]
+        },
+        {
+          "id": "expression-constraints",
+          "clauses": [
+            "6.3",
+            "6.5"
+          ],
+          "status": "in_progress",
+          "features": [
+            "conversions",
+            "expressions",
+            "generic"
+          ],
+          "remaining": [
+            "complete operand and lvalue constraints",
+            "pointer conversions and conditional result types",
+            "_Generic compatible types and qualified rvalue/DR 423/481 audit",
+            "complete sequencing and volatile paragraph audit"
+          ],
+          "implementation": [
+            "dialects/c11/objects.stx",
+            "dialects/c11/sema.stx"
+          ],
+          "evidence": [
+            "tests/c11_temporaries.py",
+            "tests/c11_composition.py",
+            "tests/dialect_debug.py"
+          ]
+        },
+        {
+          "id": "bit-fields",
+          "clauses": [
+            "6.7.2.1",
+            "6.2.6.1",
+            "6.5.3.2"
+          ],
+          "status": "in_progress",
+          "features": [
+            "declarations",
+            "types",
+            "alignment"
+          ],
+          "remaining": [
+            "final clause and required-diagnostic audit of named/unnamed/zero-width fields and initializer traversal",
+            "MS allocation-unit interoperability, volatile access policy and complete promotion audit",
+            "deferred dynamic/frozen acceptance and independent target ABI oracle"
+          ],
+          "implementation": [
+            "dialects/c11/bitfields.stx",
+            "dialects/c11/members.stx",
+            "dialects/storage.stx",
+            "dialects/c11/packing.stx"
+          ],
+          "evidence": [
+            "tests/c11_vm_layout.py",
+            "tests/c11/vm-layout.json",
+            "tests/c11_packing.py",
+            "tests/c11/packing.json",
+            "docs/c11-packing.md"
+          ],
+          "verification": "source implemented; acceptance deferred; no pass claim"
+        },
+        {
+          "id": "aggregate-calling-abi",
+          "clauses": [
+            "6.5.2.2",
+            "6.9.1"
+          ],
+          "status": "in_progress",
+          "features": [
+            "types",
+            "system-crt"
+          ],
+          "remaining": [
+            "final acceptance of shared Win64 signature, entry, direct/indirect call, variadic and sret classification",
+            "independent Clang/MSVC caller and callee object interoperability at O0 and O2",
+            "over-aligned, flexible-member and complex carrier target ABI audit",
+            "packed scalar/bit-field/pointer records and explicit-alignment composition across independent C objects",
+            "canonical foreign declarations accessing alternative physical global images in both compiler directions"
+          ],
+          "implementation": [
+            "dialects/c11/abi.stx",
+            "dialects/c11/sema.stx",
+            "dialects/base.stx",
+            "dialects/c11/aggregate_alignment.stx",
+            "dialects/c11/members.stx",
+            "dialects/c11/static_image.stx",
+            "dialects/storage.stx"
+          ],
+          "evidence": [
+            "tests/c11_abi.py",
+            "tests/c11/abi.json",
+            "tests/c11_abi_interop.py",
+            "tests/c11/abi-interop.json",
+            "tests/c11_system_control.py",
+            "tests/c11/system-control.json",
+            "tests/c11_packing.py",
+            "tests/c11/packing.json",
+            "docs/c11-packing.md",
+            "tests/c11_static_images.py",
+            "tests/c11/static-images.json",
+            "docs/c11-static-images.md"
+          ],
+          "verification": "source implemented; final build/freezing/acceptance deferred; no pass claim"
+        },
+        {
+          "id": "target-implementation-contract",
+          "clauses": [
+            "5.2.4.2",
+            "6.2.6",
+            "6.2.8",
+            "Annex J.3"
+          ],
+          "status": "in_progress",
+          "features": [
+            "limits",
+            "types",
+            "alignment"
+          ],
+          "remaining": [
+            "integer floating pointer and character choices",
+            "object representations and alignment choices",
+            "numeric limits and implementation documentation",
+            "final target packing, required-alignment propagation and union bit-field layout acceptance",
+            "final acceptance of implemented packed atomic native/lock routing and independently audited atomic helper/representation ABI"
+          ],
+          "implementation": [
+            "dialects/c11/packing.stx",
+            "dialects/c11/types.stx",
+            "dialects/c11/members.stx",
+            "dialects/c11/bitfields.stx",
+            "dialects/storage.stx",
+            "dialects/layout.stx",
+            "dialects/c11/atomic_alignment.stx",
+            "dialects/memory_paths.stx"
+          ],
+          "evidence": [
+            "tests/c11_packing.py",
+            "tests/c11/packing.json",
+            "docs/c11-packing.md",
+            "tests/c11_atomic_alignment.py",
+            "tests/c11/atomic-alignment.json",
+            "docs/c11-atomic-alignment.md"
+          ],
+          "verification": "source only; target layout policy and pointer-preserving packed records implemented; final integrated acceptance deferred"
+        }
+      ]
+    },
+    {
+      "id": "initialization-and-lifetime",
+      "status": "in_progress",
+      "work_items": [
+        {
+          "id": "initializer-walk",
+          "clauses": [
+            "6.7.9"
+          ],
+          "status": "in_progress",
+          "features": [
+            "initialization"
+          ],
+          "remaining": [
+            "complete 6.7.9 paragraph/required-diagnostic audit on the final dynamic/frozen snapshot",
+            "VM, atomic, bit-field and expanded character literal interactions after their phases"
+          ],
+          "implementation": [
+            "dialects/c11/initializers.stx",
+            "dialects/c11/sema.stx",
+            "dialects/c11/objects.stx",
+            "dialects/c11/syntax.stx",
+            "dialects/c11/static_image.stx",
+            "dialects/storage.stx"
+          ],
+          "evidence": [
+            "tests/c11_initializers.py",
+            "tests/c11/initializers.json",
+            "tests/c11_static_images.py",
+            "tests/c11/static-images.json",
+            "docs/c11-static-images.md"
+          ]
+        },
+        {
+          "id": "constant-and-address-expressions",
+          "clauses": [
+            "6.6",
+            "6.7.9p4"
+          ],
+          "status": "in_progress",
+          "features": [
+            "constants",
+            "initialization"
+          ],
+          "remaining": [
+            "complete permitted constant-expression forms and required diagnostics inventory",
+            "VM and atomic type interactions after those phases",
+            "all static initializer constraint paragraphs",
+            "final LLVM/COFF relocation and runtime acceptance of static global images for nested unaligned pointers, mixed union arrays, overrides and cross-unit canonical declarations"
+          ],
+          "implementation": [
+            "dialects/c11/constants.stx",
+            "dialects/c11/initializers.stx",
+            "dialects/c11/static_image.stx",
+            "dialects/storage.stx",
+            "dialects/c11/sema.stx"
+          ],
+          "evidence": [
+            "tests/c11_static_literals.py",
+            "tests/c11_conformance.py",
+            "tests/c11_packing.py",
+            "tests/c11/packing.json",
+            "docs/c11-packing.md",
+            "tests/c11_static_images.py",
+            "tests/c11/static-images.json",
+            "docs/c11-static-images.md"
+          ],
+          "verification": "Source static physical image plans implemented; pure layout planning precedes region emission; original source constant constraints retained; consolidated build/freezing/acceptance deferred"
+        },
+        {
+          "id": "compound-literal-storage",
+          "clauses": [
+            "6.2.4",
+            "6.5.2.5"
+          ],
+          "status": "in_progress",
+          "features": [
+            "lifetime",
+            "initialization"
+          ],
+          "remaining": [
+            "complete lifetime and constraint paragraph audit, including block reentry",
+            "VM/atomic compound literal constraints after those phases"
+          ],
+          "implementation": [
+            "dialects/allocation.stx",
+            "dialects/c11/initializers.stx",
+            "dialects/c11/objects.stx"
+          ],
+          "evidence": [
+            "tests/allocation.py",
+            "tests/c11_static_literals.py",
+            "tests/c11_temporaries.py"
+          ]
+        },
+        {
+          "id": "storage-and-jump-lifetime",
+          "clauses": [
+            "6.2.4",
+            "6.8.6.1",
+            "6.9.2"
+          ],
+          "status": "in_progress",
+          "features": [
+            "lifetime",
+            "statements",
+            "linkage"
+          ],
+          "remaining": [
+            "complete object-storage/lifetime paragraph inventory",
+            "VM scope jump restrictions with VLA phase"
+          ],
+          "implementation": [
+            "dialects/allocation.stx",
+            "dialects/c11/initializers.stx",
+            "dialects/c11/sema.stx"
+          ],
+          "evidence": [
+            "tests/allocation.py",
+            "tests/c11_static_literals.py",
+            "tests/c11_temporaries.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "translation-preprocessor-and-characters",
+      "status": "in_progress",
+      "work_items": [
+        {
+          "id": "translation-phases",
+          "clauses": [
+            "5.1.1.2",
+            "5.1.1.3",
+            "6.4"
+          ],
+          "status": "pending",
+          "features": [
+            "translation"
+          ],
+          "remaining": [
+            "phase ordering trigraphs splicing and comments",
+            "physical source positions through includes and macros",
+            "required diagnostics with preserved previous artifacts"
+          ]
+        },
+        {
+          "id": "preprocessor-completeness",
+          "clauses": [
+            "6.10"
+          ],
+          "status": "in_progress",
+          "features": [
+            "preprocessing"
+          ],
+          "remaining": [
+            "final acceptance of marked argument suppression, cached prescan, replacement-origin paste, placemarkers and whitespace",
+            "final acceptance of shared _Pragma/__pragma/#pragma state in ordinary/include/line/conditional scanning",
+            "final acceptance of per-Engine __DATE__/__TIME__, reproducible SOURCE_DATE_EPOCH and full predefined macro audit",
+            "physical source coordinates, final source-stream packing acceptance, translation limits and complete 6.10/DR audit",
+            "final acceptance of SDK pragma lib/linker metadata and include/block/global provenance"
+          ],
+          "evidence": [
+            "tests/c11_sdk_wide.py",
+            "tests/c11/sdk-wide.json",
+            "tests/c11_preprocessor.py",
+            "tests/c11/preprocessor.json",
+            "docs/c11-preprocessor.md",
+            "tests/c11_packing.py",
+            "tests/c11/packing.json",
+            "docs/c11-packing.md"
+          ],
+          "implementation": [
+            "dialects/c11/pp.stx",
+            "dialects/c11/link_directives.stx",
+            "dialects/linker.stx",
+            "dialects/c11/pp_macros.stx",
+            "dialects/c11/pragmas.stx",
+            "dialects/c11/lex.stx",
+            "dialects/c11/msvc.stx",
+            "dialects/c11/packing.stx",
+            "dialects/c11/translation.stx",
+            "src/source_tools.vyx",
+            "src/model.vyx",
+            "backend/native/toolchain.cpp"
+          ],
+          "verification": "marked expansion, packing stream state and stable time macros implemented in source; final build/freezing/runtime acceptance deferred"
+        },
+        {
+          "id": "source-and-execution-characters",
+          "clauses": [
+            "5.2.1",
+            "6.4.2",
+            "6.4.3",
+            "6.4.4.4",
+            "6.4.5"
+          ],
+          "status": "in_progress",
+          "features": [
+            "identifiers",
+            "literals"
+          ],
+          "remaining": [
+            "final dynamic/frozen acceptance of UCN, Annex D identifiers, UTF8/16/32 and wide literal composition",
+            "actual uchar.h/wchar.h interface and ABI audit",
+            "all source/execution character constraints and implementation-defined policy audit",
+            "macro spelling, stringification, phase ordering and source position acceptance",
+            "final acceptance of implicit static const __func__ arrays, nested lexical reads and per-function object lifetime",
+            "basic execution character values remain equal across ordinary/wide constants; DR 333 macro policy and UTF predefinitions audit"
+          ],
+          "implementation": [
+            "dialects/c11/characters.stx",
+            "dialects/c11/lex.stx",
+            "dialects/c11/pp.stx",
+            "dialects/unicode.stx",
+            "src/source_tools.vyx",
+            "dialects/c11/names.stx",
+            "dialects/c11/scopes.stx"
+          ],
+          "evidence": [
+            "tests/c11_language_features.py",
+            "tests/c11/language-features.json",
+            "tests/frontend_infra.py",
+            "tests/c11_sdk_wide.py",
+            "tests/c11/sdk-wide.json",
+            "docs/c11-sdk-wide.md"
+          ]
+        },
+        {
+          "id": "minimum-limits",
+          "clauses": [
+            "5.2.4.1",
+            "5.2.4.2"
+          ],
+          "status": "in_progress",
+          "features": [
+            "limits"
+          ],
+          "remaining": [
+            "all remaining 5.2.4.1 minimum translation limits",
+            "large declaration and nested expression paths",
+            "127 parameter final dynamic and frozen parity; depth remains 1024"
+          ],
+          "implementation": [
+            "dialects/c11/sema.stx",
+            "tests/c11_conformance.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "c11-capabilities",
+      "status": "in_progress",
+      "work_items": [
+        {
+          "id": "generic-assertion-and-alignment",
+          "clauses": [
+            "6.5.1.1",
+            "6.7.5",
+            "6.7.10"
+          ],
+          "status": "in_progress",
+          "features": [
+            "generic",
+            "alignment",
+            "constants"
+          ],
+          "remaining": [
+            "VM, atomic and bit-field generic interactions; complete compatibility/prototype audit",
+            "final target acceptance of member _Alignas offsets/physical representation, nested and atomic members, and over-aligned storage",
+            "static assertion integer constant diagnostics inventory"
+          ],
+          "implementation": [
+            "dialects/c11/sema.stx",
+            "dialects/c11/types.stx",
+            "dialects/c11/constants.stx",
+            "dialects/c11/layout.stx",
+            "dialects/c11/members.stx",
+            "dialects/c11/static_image.stx",
+            "dialects/storage.stx"
+          ],
+          "evidence": [
+            "tests/c11_generic.py",
+            "tests/c11/generic.json",
+            "tests/c11_specifiers.py",
+            "tests/c11_layout.py",
+            "tests/c11_vm_layout.py",
+            "tests/c11/vm-layout.json",
+            "tests/c11_static_images.py",
+            "tests/c11/static-images.json",
+            "docs/c11-static-images.md"
+          ]
+        },
+        {
+          "id": "vla-and-vm-types",
+          "clauses": [
+            "6.7.6.2",
+            "6.7.6.3",
+            "6.8.6.1"
+          ],
+          "status": "in_progress",
+          "features": [
+            "vla",
+            "lifetime",
+            "statements"
+          ],
+          "remaining": [
+            "final dynamic/frozen acceptance of captured dimensions, dynamic sizeof, row strides and VM typedef/static pointer interactions",
+            "complete declaration/compatibility/prototype-scope audit, including optional evaluation of size-irrelevant bounds",
+            "target acceptance of stack mark restoration on lexical exits, loops and goto, and required crossing-jump diagnostics"
+          ],
+          "implementation": [
+            "dialects/c11/parameter_arrays.stx",
+            "dialects/c11/declarators.stx",
+            "dialects/c11/vla.stx",
+            "dialects/c11/vla_flow.stx",
+            "dialects/stack_regions.stx"
+          ],
+          "evidence": [
+            "tests/c11_language_features.py",
+            "tests/c11/language-features.json",
+            "tests/c11_vm_layout.py",
+            "tests/c11/vm-layout.json"
+          ],
+          "verification": "source implemented; acceptance deferred; no pass claim"
+        },
+        {
+          "id": "atomics",
+          "clauses": [
+            "6.7.2.4",
+            "6.5",
+            "7.17"
+          ],
+          "status": "in_progress",
+          "features": [
+            "atomics"
+          ],
+          "remaining": [
+            "final acceptance of atomic type/qualifier composition, native loads/stores/CAS/RMW, dynamic orders and fences",
+            "final acceptance of the actual LLVM resource header provider, complete 7.17 interface inventory, six addressable functions and cross-unit symbol identity",
+            "final acceptance of floating RMW exception hold/clear/merge, including forced CAS failures, original trap masks and RHS flag preservation",
+            "foreign compiler aggregate-atomic ABI policy and multithreaded semantic acceptance",
+            "final forced-misalignment and cache-line-crossing acceptance for shared native/locked load/store/exchange/CAS/update routing",
+            "DR 465 type-query/null-pointer consistency, once-only argument evaluation and target address-query extension acceptance",
+            "foreign misaligned helper ABI, DLL shared-lock protocol and atomic aggregate representation interoperability remain separate unproven target contracts"
+          ],
+          "implementation": [
+            "dialects/c11/atomics.stx",
+            "dialects/c11/sema.stx",
+            "dialects/c11/pp.stx",
+            "dialects/c11/fenv.stx",
+            "dialects/floating.stx",
+            "dialects/ir_effects.stx",
+            "backend/native/bridge.cpp",
+            "dialects/c11/system_headers.stx",
+            "dialects/headers.stx",
+            "dialects/c11/atomic_api.stx",
+            "dialects/c11/abi.stx",
+            "dialects/c11/atomic_alignment.stx",
+            "dialects/memory_paths.stx"
+          ],
+          "evidence": [
+            "tests/c11_atomics.py",
+            "tests/c11/atomics.json",
+            "tests/c11_fenv.py",
+            "tests/c11/fenv.json",
+            "tests/c11_threads.py",
+            "tests/c11/threads.json",
+            "tests/c11_library_contract.py",
+            "tests/c11/library-contract.json",
+            "tests/c11_reference_headers.py",
+            "tests/c11_atomic_alignment.py",
+            "tests/c11/atomic-alignment.json",
+            "docs/c11-atomic-alignment.md"
+          ],
+          "verification": "Source native/locked routing now uses per-address alignment for every operation; non-atomic locked/expected accesses use alignment=1. Typed standard queries use per-type DR 465 results. Final build/freezing/execution remains deferred."
+        },
+        {
+          "id": "complex",
+          "clauses": [
+            "6.2.5",
+            "6.3",
+            "6.5",
+            "7.3"
+          ],
+          "status": "in_progress",
+          "features": [
+            "complex",
+            "types",
+            "system-crt"
+          ],
+          "remaining": [
+            "final acceptance of complex type/real-domain conversions, APFloat constants, storage and Win64 call classification",
+            "real UCRT complex header/library carrier interoperability and complete ISO 7.3 interface spelling audit",
+            "IEEE exceptional cases, very disparate nonzero components, fenv and rounding-mode requirements"
+          ],
+          "implementation": [
+            "dialects/c11/complex.stx",
+            "dialects/c11/complex_crt.stx",
+            "dialects/complex_numbers.stx",
+            "backend/native/bridge.cpp",
+            "dialects/c11/fenv.stx",
+            "dialects/floating.stx",
+            "dialects/ir_effects.stx",
+            "dialects/c11/system_headers.stx",
+            "dialects/headers.stx",
+            "dialects/c11/functions.stx",
+            "dialects/c11/syntax.stx"
+          ],
+          "evidence": [
+            "tests/c11_complex.py",
+            "tests/c11/complex.json",
+            "tests/c11_fenv.py",
+            "tests/c11/fenv.json",
+            "tests/c11_library_contract.py",
+            "tests/c11/library-contract.json",
+            "tests/c11_reference_headers.py"
+          ],
+          "verification": "source implemented; acceptance deferred; no pass claim"
+        },
+        {
+          "id": "thread-storage-and-library",
+          "clauses": [
+            "6.2.4",
+            "6.7.1",
+            "7.26"
+          ],
+          "status": "in_progress",
+          "features": [
+            "threads",
+            "storage",
+            "system-crt"
+          ],
+          "remaining": [
+            "final dynamic/frozen and cross-unit acceptance of _Thread_local, allowed storage pairs and redeclaration diagnostics",
+            "native TLS per-thread identity and concurrent block-static initialization acceptance",
+            "final acceptance of actual target thread interfaces, synchronization, TSS destructors, timed operations and all 7.26 semantics",
+            "host library gaps explicitly accounted for",
+            "final TLS isolation and cross-unit acceptance using the pinned SDK tls_mode enum; source fix and static-image composition remain unexecuted"
+          ],
+          "implementation": [
+            "dialects/c11/thread_storage.stx",
+            "dialects/c11/specifiers.stx",
+            "dialects/c11/sema.stx",
+            "dialects/c11/constants.stx",
+            "dialects/c11/lex.stx",
+            "dialects/c11/msvc.stx",
+            "dialects/c11/abi.stx",
+            "dialects/c11/static_image.stx",
+            "dialects/storage.stx"
+          ],
+          "evidence": [
+            "tests/c11_language_features.py",
+            "tests/c11/language-features.json",
+            "tests/c11/support-probes.json",
+            "tests/c11_threads.py",
+            "tests/c11/threads.json",
+            "tests/c11_static_images.py",
+            "tests/c11/static-images.json",
+            "docs/c11-static-images.md"
+          ],
+          "verification": "source implemented; final build/freezing/acceptance deferred; no pass claim"
+        },
+        {
+          "id": "capability-macros",
+          "clauses": [
+            "6.10.8",
+            "7.1"
+          ],
+          "status": "pending",
+          "features": [
+            "preprocessing",
+            "standard-headers"
+          ],
+          "remaining": [
+            "truthful feature macros and implementation identity",
+            "conditionally supported interfaces agree with actual capability",
+            "no unsupported optional capability counted complete"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "library-and-engineering-acceptance",
+      "status": "in_progress",
+      "work_items": [
+        {
+          "id": "all-standard-headers",
+          "clauses": [
+            "7.1.2",
+            "7.1.4",
+            "7.2-7.29"
+          ],
+          "status": "in_progress",
+          "implementation": [
+            "tests/c11_headers.py",
+            "dialects/c11/fenv.stx",
+            "dialects/floating.stx",
+            "dialects/ir_effects.stx",
+            "backend/native/bridge.cpp",
+            "dialects/c11/aggregate_alignment.stx",
+            "dialects/c11/nonlocal_jumps.stx",
+            "dialects/c11/lex.stx",
+            "dialects/c11/msvc.stx",
+            "dialects/layout.stx",
+            "dialects/machine_context.stx",
+            "dialects/c11/system_headers.stx",
+            "dialects/headers.stx",
+            "dialects/c11/sdk_intrinsics.stx",
+            "dialects/simd_bits.stx",
+            "dialects/storage.stx",
+            "dialects/c11/link_directives.stx",
+            "dialects/linker.stx"
+          ],
+          "features": [
+            "standard-headers",
+            "system-crt"
+          ],
+          "remaining": [
+            "final acceptance of actual fenv selectany/inline bodies, pragma policy and setjmp aligned record types",
+            "final acceptance of target-reserved declaration words, including restricted pointer parameters in actual threads.h",
+            "final acceptance of compiler-owned atomic resource header API and truthful target capability predefinitions",
+            "final acceptance of actual UCRT tgmath provider, ISO complex declaration adapters, reserved inline helper COMDAT and explicit independent Clang header/oracle view",
+            "all header combinations and actual interfaces beyond empty-TU smoke",
+            "actual system library declarations without replacement headers",
+            "final acceptance of original VC intrinsic declaration headers and 14 supported bit-scan/SIMD interfaces used by UCRT wchar inline code; unimplemented foreign SIMD interfaces/ABI are not certified"
+          ],
+          "evidence": [
+            "tests/c11_fenv.py",
+            "tests/c11/fenv.json",
+            "tests/c11_system_control.py",
+            "tests/c11/system-control.json",
+            "tests/c11_threads.py",
+            "tests/c11/threads.json",
+            "tests/c11_library_contract.py",
+            "tests/c11/library-contract.json",
+            "tests/c11_reference_headers.py",
+            "tests/c11_sdk_wide.py",
+            "tests/c11/sdk-wide.json",
+            "docs/c11-sdk-wide.md"
+          ],
+          "verification": "source implemented; final build/freezing/acceptance deferred; no pass claim"
+        },
+        {
+          "id": "system-runtime-semantics",
+          "clauses": [
+            "7.2-7.29"
+          ],
+          "status": "in_progress",
+          "features": [
+            "system-crt"
+          ],
+          "remaining": [
+            "final acceptance of variadic interfaces, actual setjmp hidden-frame ABI/returns_twice, longjmp, unwind and volatile/VLA interactions",
+            "final acceptance of strict floating emission, dynamic rounding, real UCRT fenv interfaces and atomic retry flags; locale wide and Unicode interfaces remain",
+            "all required system ABI interfaces accounted for",
+            "mandatory ISO FILE orientation: actual UCRT inline fwide discards stream state; compatibility implementation and independently specified acceptance still required",
+            "final acceptance of real UCRT ISO wide-format configuration, official iso_stdio_wide_specifiers library, varargs and cross-unit helper storage"
+          ],
+          "implementation": [
+            "dialects/c11/fenv.stx",
+            "dialects/floating.stx",
+            "dialects/ir_effects.stx",
+            "backend/native/bridge.cpp",
+            "dialects/c11/nonlocal_jumps.stx",
+            "dialects/c11/abi.stx",
+            "dialects/machine_context.stx",
+            "dialects/c11/sdk_intrinsics.stx",
+            "dialects/c11/aggregate_alignment.stx",
+            "dialects/c11/system_headers.stx",
+            "dialects/simd_bits.stx",
+            "dialects/storage.stx",
+            "dialects/c11/link_directives.stx",
+            "dialects/linker.stx"
+          ],
+          "evidence": [
+            "tests/c11_fenv.py",
+            "tests/c11/fenv.json",
+            "tests/c11_system_control.py",
+            "tests/c11/system-control.json",
+            "tests/c11_sdk_wide.py",
+            "tests/c11/sdk-wide.json",
+            "docs/c11-sdk-wide.md"
+          ],
+          "verification": "source implemented; final build/freezing/acceptance deferred; no pass claim"
+        },
+        {
+          "id": "unchanged-projects",
+          "clauses": [
+            "5.1.1",
+            "6.9"
+          ],
+          "status": "pending",
+          "features": [
+            "translation",
+            "linkage",
+            "preprocessing",
+            "system-crt"
+          ],
+          "remaining": [
+            "pinned unchanged multiunit projects and upstream tests",
+            "large source preprocessing and build graph inputs",
+            "final snapshot source and toolchain fingerprints"
+          ]
+        },
+        {
+          "id": "dynamic-frozen-and-composition",
+          "clauses": [
+            "5.1.1"
+          ],
+          "status": "in_progress",
+          "features": [
+            "translation"
+          ],
+          "remaining": [
+            "all language cases and feature probes on one rebuilt final C11 snapshot",
+            "all overlays and exact final snapshot acceptance, including current initializer and generic changes"
+          ],
+          "implementation": [
+            "src/freeze.vyx",
+            "tests/syntax_bind.py",
+            "tests/frozen_snapshot.py"
+          ],
+          "evidence": [
+            "target/c11-progress-acceptance.json",
+            "tests/c11_full_support.py"
+          ]
+        },
+        {
+          "id": "final-standard-audit",
+          "clauses": [
+            "5.1.1.3",
+            "Annex J"
+          ],
+          "status": "pending",
+          "features": [
+            "translation",
+            "limits",
+            "declarations",
+            "system-crt"
+          ],
+          "remaining": [
+            "paragraph-level standard and defect report review",
+            "diagnostics defined behavior implementation choices and extensions distinguished",
+            "all previous gaps closed with evidence before any completeness claim"
+          ]
+        }
+      ]
+    }
+  ],
+  "execution": {
+    "started_on": "2026-10-13",
+    "status": "active",
+    "runner": "tests/c11_full_support.py",
+    "current_batch": "concurrency-and-numeric",
+    "verification_policy": {
+      "mode": "deferred-until-integrated-acceptance",
+      "requested_on": "2026-10-13",
+      "reason": "User requested implementation only; do not rebuild, freeze or run acceptance during feature implementation",
+      "final_prerequisites": [
+        "rebuild Naru core and in-process MLIR bridge",
+        "regenerate project locks",
+        "freeze the final rule closure",
+        "run dynamic/frozen suites and target ABI cases"
+      ]
+    },
+    "parallel_jobs": 4,
+    "policy": "Batches identify implementation order; shared foundations may land before their final audit. A passing probe never closes an entire work item.",
+    "generic_defect_policy": {
+      "reference": "https://www.open-std.org/jtc1/sc22/wg14/www/docs/n2243.htm",
+      "reports": [
+        "DR 423",
+        "DR 481"
+      ],
+      "choice": "Apply the recorded DR 423/481 resolution: as-if lvalue, array-to-pointer and function-to-pointer conversions to the controlling type, with no evaluation. Qualified rvalues lose top-level qualifiers.",
+      "remaining": "VM/atomic interactions and complete compatibility/prototype audit remain required."
+    },
+    "batches": [
+      {
+        "id": "declaration-foundation",
+        "work_items": [
+          "automatic-storage",
+          "specifier-normalization",
+          "tag-and-enum-scope",
+          "linkage-and-local-extern",
+          "function-declaration-model",
+          "compatibility-and-composite-types"
+        ],
+        "exit_checks": [
+          "Declarations, identities, prototype/nonprototype compatibility, linkage and required diagnostics"
+        ]
+      },
+      {
+        "id": "expressions-and-abi",
+        "work_items": [
+          "iso-inline-and-noreturn",
+          "expression-constraints",
+          "aggregate-calling-abi"
+        ],
+        "exit_checks": [
+          "Value categories, unevaluated contexts, inline linkage and target aggregate ABI"
+        ]
+      },
+      {
+        "id": "initializer-traversal",
+        "work_items": [
+          "initializer-walk",
+          "constant-and-address-expressions",
+          "compound-literal-storage",
+          "storage-and-jump-lifetime"
+        ],
+        "exit_checks": [
+          "One current-object traversal for automatic/static initialization and array inference, designator chains and overriding"
+        ]
+      },
+      {
+        "id": "vm-and-layout",
+        "work_items": [
+          "bit-fields",
+          "vla-and-vm-types",
+          "generic-assertion-and-alignment"
+        ],
+        "exit_checks": [
+          "Runtime bounds, VM lifetime/jump constraints, allocation units and over-aligned storage"
+        ]
+      },
+      {
+        "id": "translation",
+        "work_items": [
+          "translation-phases",
+          "preprocessor-completeness",
+          "source-and-execution-characters",
+          "minimum-limits"
+        ],
+        "exit_checks": [
+          "Phase order, macros, source maps, UCN/UTF and all minimum limits"
+        ]
+      },
+      {
+        "id": "concurrency-and-numeric",
+        "work_items": [
+          "atomics",
+          "complex",
+          "thread-storage-and-library",
+          "capability-macros",
+          "target-implementation-contract"
+        ],
+        "exit_checks": [
+          "Memory ordering, TLS, system APIs, complex ABI, truthful macros and documented representations"
+        ]
+      },
+      {
+        "id": "system-and-final-audit",
+        "work_items": [
+          "all-standard-headers",
+          "system-runtime-semantics",
+          "unchanged-projects",
+          "dynamic-frozen-and-composition",
+          "final-standard-audit"
+        ],
+        "exit_checks": [
+          "Actual header interfaces, unchanged projects, exact two-mode final snapshot and paragraph/defect-report audit"
+        ]
+      }
+    ],
+    "suites": [
+      {
+        "id": "conformance",
+        "runner": "tests/c11_conformance.py"
+      },
+      {
+        "id": "specifiers",
+        "runner": "tests/c11_specifiers.py"
+      },
+      {
+        "id": "generic",
+        "runner": "tests/c11_generic.py"
+      },
+      {
+        "id": "initializers",
+        "runner": "tests/c11_initializers.py"
+      },
+      {
+        "id": "declaration-model",
+        "runner": "tests/c11_declaration_model.py"
+      },
+      {
+        "id": "nonprototype-abi",
+        "runner": "tests/c11_nonprototype_abi.py"
+      },
+      {
+        "id": "static-literals",
+        "runner": "tests/c11_static_literals.py"
+      },
+      {
+        "id": "temporaries",
+        "runner": "tests/c11_temporaries.py"
+      },
+      {
+        "id": "scopes",
+        "runner": "tests/c11_scopes.py"
+      },
+      {
+        "id": "tags",
+        "runner": "tests/c11_tags.py"
+      },
+      {
+        "id": "composition",
+        "runner": "tests/c11_composition.py"
+      },
+      {
+        "id": "allocation",
+        "runner": "tests/allocation.py"
+      },
+      {
+        "id": "name-scope",
+        "runner": "tests/name_scope.py"
+      },
+      {
+        "id": "pending-features",
+        "runner": "tests/c11_support.py"
+      },
+      {
+        "id": "language-features",
+        "runner": "tests/c11_language_features.py"
+      },
+      {
+        "id": "vm-layout",
+        "runner": "tests/c11_vm_layout.py"
+      },
+      {
+        "id": "atomics",
+        "runner": "tests/c11_atomics.py"
+      },
+      {
+        "id": "aggregate-abi",
+        "runner": "tests/c11_abi.py"
+      },
+      {
+        "id": "aggregate-abi-interop",
+        "runner": "tests/c11_abi_interop.py"
+      },
+      {
+        "id": "complex",
+        "runner": "tests/c11_complex.py"
+      },
+      {
+        "id": "header-features",
+        "runner": "tests/c11_header_features.py"
+      },
+      {
+        "id": "floating-environment",
+        "runner": "tests/c11_fenv.py"
+      },
+      {
+        "id": "system-control",
+        "runner": "tests/c11_system_control.py"
+      },
+      {
+        "id": "system-threads",
+        "runner": "tests/c11_threads.py"
+      },
+      {
+        "id": "library-contract",
+        "runner": "tests/c11_library_contract.py"
+      },
+      {
+        "id": "sdk-wide-characters",
+        "runner": "tests/c11_sdk_wide.py"
+      },
+      {
+        "id": "preprocessor",
+        "runner": "tests/c11_preprocessor.py"
+      },
+      {
+        "id": "system-headers",
+        "runner": "tests/c11_headers.py",
+        "arguments": [
+          "--jobs",
+          "1"
+        ]
+      },
+      {
+        "id": "unchanged-projects",
+        "runner": "tests/c11_stress.py"
+      },
+      {
+        "id": "target-packing-time",
+        "runner": "tests/c11_packing.py"
+      },
+      {
+        "id": "static-object-images",
+        "runner": "tests/c11_static_images.py"
+      },
+      {
+        "id": "atomic-alignment",
+        "runner": "tests/c11_atomic_alignment.py"
+      }
+    ],
+    "floating_environment_policy": {
+      "default": "FENV_ACCESS ON conservatively for every C runtime function; no implicit contraction",
+      "implementation": "generic floating lowering hooks and an effectful region envelope; LLVM export emits enclosed operations in place",
+      "target": "Windows x86_64 MSVC/UCRT only; fenv_t opaque buffer 8 bytes with alignment 16, FE_ALL_EXCEPT=31, verified against real SDK header in deferred corpus",
+      "atomic_rmw": "RHS and lvalue evaluated before hold; discard failed-attempt flags; restore prior environment and raise successful-attempt flags",
+      "remaining": "consolidated O0/O2 dynamic/frozen runs, forced CAS failures, hardware traps and full Annex F/G audit",
+      "verification": "not executed"
+    },
+    "goal_mode": {
+      "status": "active",
+      "requested_on": "2026-10-14",
+      "objective": "Full C11 feature compatibility on the declared target, including optional VLA/atomic/complex/thread capabilities, real headers/runtime and integrated engineering acceptance",
+      "completion": "All work items require reviewed same-snapshot acceptance evidence; source additions alone do not complete the goal",
+      "workflow": "Implement first; final unified native/core build, lock regeneration, freeze and dynamic/frozen O0/O2 acceptance remain deferred per user request"
+    },
+    "system_header_contract": {
+      "provider_policy": "Default per-header exclusion keeps actual UCRT tgmath.h and actual LLVM resource stdatomic.h; project include directories and include_next remain composable. target_header_policy=raw opts out of target routing.",
+      "complex_contract": "Normalize 66 ISO complex function prototypes after layout-checked UCRT carrier typedefs; add missing complex/CMPLX macros after the real header; retain carrier fields and reserved header helper bodies.",
+      "atomic_functions": "Six standard flag/fence functions emitted from checked atomic rules with linkonce COMDAT; source definitions retain ownership.",
+      "reference_policy": "Explicit unmodified-file Clang VFS view for target tgmath; alternate carrier oracle or compiler-header support sources are labeled and hashed, never compiled by Naru.",
+      "verification": "source-only; 31 deferred inputs; no compiler/test execution or compatibility claim"
+    },
+    "sdk_wide_contract": {
+      "implicit_identifier": "__func__ uses ordinary static const array declaration, lexical scope and hoisting, inserted only when referenced",
+      "header_infrastructure": "Original VC intrinsic header providers; intrin_type composes with declared aggregate alignment; shared format-parametric integer SIMD, bit scan and object linker metadata",
+      "wide_stdio": "Default _CRT_STDIO_ISO_WIDE_SPECIFIERS=1 selects actual UCRT ISO mode and its official library through pragma metadata; no private printf or scanf runtime",
+      "known_semantic_gap": "Actual UCRT fwide returns mode and ignores FILE orientation; mandatory stream contract is queued as a failure, never waived",
+      "verification": "source-only; 42 deferred inputs; no compiler, freezing or runtime execution"
+    },
+    "preprocessor_contract": {
+      "state": "Expansion returns marked output and terminal macro/pragma facts; directive/file boundaries and include/line/conditional paths retain effects",
+      "substitution": "Per-token hides retained; ordinary parameters prescanned lazily once; raw #/## operands kept; only replacement-origin paste operators execute",
+      "pragma": "_Pragma destringizes only quote/backslash and scans phase 3; __pragma selected target syntax; both share existing directive handlers",
+      "diagnostics": "Malformed unused macro definitions, nonidentifier defined/ifdef/undef, decimal line-number grammar and ordinary filename checked",
+      "verification": "source-only; 54 deferred inputs; no compiler/freezing/runtime execution"
+    },
+    "packing_time_contract": {
+      "state": "Translation-stream pack cap and labeled stack captured on definitions; parser annotations materialize after macro replacement only",
+      "storage": "Generic packed-layout shapes retain scalar/pointer fields and explicit padding; record and bit-field adapters share named aggregate offsets",
+      "clock": "Generic per-Engine host clock snapshot; local calendar or validated UTC SOURCE_DATE_EPOCH; C macro spelling remains STX policy",
+      "remaining": "Final global storage-image/COFF relocation acceptance, packed atomic routing acceptance, target atomic ABI audit and integrated same-snapshot acceptance",
+      "verification": "source only; 50 deferred inputs and 4 new ABI groups; no compiler/freezing/runtime execution"
+    },
+    "static_image_contract": {
+      "implementation": "Checked C initializer tree selects physical global storage shapes independently from canonical source/value types; opaque addresses, byte offsets, size/alignment and symbol properties retained",
+      "shared_infrastructure": "Deferred storage images with bit-offset child indexes, collapsed projections, pure shape planning and delayed IR producers",
+      "tls_fix": "Pinned local MLIR GlobalOp schema requires tls_mode i64 enum; GeneralDynamic=1 replaces ignored thread_local_ unit attribute in declarations and definitions",
+      "evidence": "31 deferred C inputs, 3 additional independent-object groups, 10 additional generic storage inputs; no compiler/test execution",
+      "verification": "source-only; all standard audits and O0/O2 dynamic/frozen/native-object gates remain pending"
+    },
+    "atomic_alignment_contract": {
+      "dispatch": "1/2/4/8-byte image operations prove operand-size address alignment before LLVM atomics; one-byte objects always native; larger or unaligned accesses consistently use the same COMDAT support lock",
+      "ordinary_memory": "Locked operations, atomic_init and CAS expected objects use explicit alignment=1 and preserve volatility where applicable",
+      "query": "Standard typed query follows DR 465, permits typed null, and evaluates the pointer argument once; separate reserved address query reports actual alignment eligibility for packed extensions",
+      "reference": "Forced packed tests have a labeled naturally aligned Clang semantic oracle; no foreign misaligned-helper or aggregate atomic representation equivalence is inferred",
+      "evidence": "39 deferred C inputs plus 12 new generic memory-path inputs; no compiler/tests executed",
+      "type_identity": "Standard declaration capture preserves an opaque atomic_flag nominal identity across local function-name/typedef shadows; layout impostors are rejected",
+      "independent_abi": "Three additional foreign-object groups share naturally aligned atomic int/pointer values and CAS functions in both compiler directions; no acceptance execution yet"
+    }
+  },
+  "follow_on_proof": {
+    "id": "gcc-source-build",
+    "status": "pending",
+    "separate_from_c11_completeness": true,
+    "remaining": [
+      "pin GCC source version and dependencies",
+      "historical C bootstrap and modern C++14 prerequisites tracked separately",
+      "GNU extensions C++ dialect and build-tool integration",
+      "configured build stage artifact and upstream tests"
+    ]
+  }
+}

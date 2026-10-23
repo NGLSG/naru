@@ -1,0 +1,23 @@
+// Actual MSVC x64 setjmp ABI: the header exposes one buffer argument, while
+// the runtime also consumes the caller's frame address. Buffer layout remains
+// the system header's jmp_buf; this module defines no substitute runtime.
+mod c11.nonlocal_jumps;
+use c11.abi;
+use c11.types;
+use machine_context;
+use control;
+
+effect c11.nonlocal_jumps.name($name) => or(eq($name,"_setjmp"),eq($name,"_setjmpex"));
+effect c11.nonlocal_jumps.prototype([c11.types.Pointer($element)],c11.types.IntType(3,32,0),0) => 1;
+effect[fallback] c11.nonlocal_jumps.prototype($parameters,$result,$variadic) => fail("MSVC setjmp requires an int result and one buffer pointer");
+effect c11.abi.prototype_interface($name,$params,$result,$variadic) when c11.nonlocal_jumps.name($name)
+    => seq(c11.nonlocal_jumps.prototype($params,$result,$variadic),
+        c11.abi.PrototypeInterface("!llvm.func<i32 (!llvm.ptr, !llvm.ptr)>",
+            [RawAttr("arg_attrs","[{}, {}]"),RawAttr("returns_twice","unit")]));
+effect c11.abi.call_interface(c11.abi.Direct($name),[$buffer],$parameters,c11.abi.Scalar($result),$variadic,$classes)
+    when c11.nonlocal_jumps.name($name)
+    => seq(c11.nonlocal_jumps.prototype($parameters,$result,$variadic),
+        c11.abi.CallInterface([$buffer,machine_context.frame_address(0)],
+            list.concat($classes,[c11.abi.Scalar(c11.types.Pointer(control.Void()))]),[RawAttr("returns_twice","unit")]));
+effect c11.abi.call_interface(c11.abi.Direct("longjmp"),$arguments,$parameters,$result,$variadic,$classes)
+    => c11.abi.CallInterface($arguments,$classes,[RawAttr("noreturn","unit")]);

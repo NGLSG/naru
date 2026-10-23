@@ -1,0 +1,43 @@
+// Additive phase registration. Unknown optional predecessors are ignored;
+// installed predecessors must finish first. Duplicate names and cycles fail.
+mod pipeline;
+
+effect[fallback] steps() => NoStep();
+effect run($items) => bind($steps, collect("pipeline.steps", []),
+    bind($ordered, order(clean($steps), clean($steps)),
+        list.fold("pipeline.execute", schedule($ordered, [], env.empty(), names($ordered, env.empty())), $items)));
+effect execute($items,Step($name,$after,$relation)) => apply($relation,[$items]);
+effect clean([]) => [];
+effect clean($steps) when lt(0, size($steps)) => clean_head(list.head($steps), list.tail($steps));
+effect clean_head(NoStep(), $rest) => clean($rest);
+effect clean_head(Step($name, $after, $relation), $rest) => list.prepend(Step($name, $after, $relation), clean($rest));
+effect clean_head(Step($name,$after,$before,$relation),$rest) => list.prepend(Step($name,$after,$before,$relation),clean($rest));
+effect order([],$all) => [];
+effect order($steps,$all) when lt(0,size($steps)) => list.prepend(order_step(list.head($steps),$all),order(list.tail($steps),$all));
+effect order_step(Step($name,$after,$relation),$all) => Step($name,list.concat($after,predecessors($name,$all)),$relation);
+effect order_step(Step($name,$after,$before,$relation),$all) => Step($name,list.concat($after,predecessors($name,$all)),$relation);
+effect predecessors($name,[]) => [];
+effect predecessors($name,$steps) when lt(0,size($steps)) => predecessor(list.head($steps),$name,list.tail($steps));
+effect predecessor(Step($name,$after,$before,$relation),$wanted,$rest) => choose(member($wanted,$before),
+    list.prepend($name,predecessors($wanted,$rest)),predecessors($wanted,$rest));
+effect predecessor(Step($name,$after,$relation),$wanted,$rest) => predecessors($wanted,$rest);
+effect member($value,[]) => 0;
+effect member($value,$values) when lt(0,size($values)) => or(eq($value,list.head($values)),member($value,list.tail($values)));
+effect names([], $seen) => $seen;
+effect names($steps, $seen) when lt(0, size($steps)) => register(list.head($steps), list.tail($steps), $seen);
+effect register(Step($name, $after, $relation), $rest, $seen) => choose(env.contains($seen, $name),
+    fail(concat("duplicate pipeline stage: ", $name)), names($rest, env.put($seen, $name, 1)));
+effect schedule([], $items, $done, $installed) => $items;
+effect schedule($steps, $items, $done, $installed) when lt(0, size($steps))
+    => select($steps, [], $items, $done, $installed);
+effect select([], $skipped, $items, $done, $installed) => fail("pipeline dependency cycle");
+effect select($steps, $skipped, $items, $done, $installed) when lt(0, size($steps))
+    => attempt(list.head($steps), list.tail($steps), $skipped, $items, $done, $installed);
+effect attempt(Step($name, $after, $relation), $rest, $skipped, $items, $done, $installed)
+    => choose(ready($after, $done, $installed),
+        schedule(list.concat($skipped, $rest), list.concat($items,[Step($name,$after,$relation)]), env.put($done, $name, 1), $installed),
+        select($rest, list.concat($skipped, [Step($name, $after, $relation)]), $items, $done, $installed));
+effect ready([], $done, $installed) => 1;
+effect ready($after, $done, $installed) when lt(0, size($after))
+    => choose(and(env.contains($installed, list.head($after)), not(env.contains($done, list.head($after)))),
+        0, ready(list.tail($after), $done, $installed));

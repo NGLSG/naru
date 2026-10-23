@@ -1,0 +1,3 @@
+mod right_associative;
+use base;
+syntax expr[70,right] `$a:expr ** $b:expr` => Power($a, $b);

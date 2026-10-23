@@ -1,0 +1,47 @@
+// Exact spelling and contextual numeric policy. Defaults are library choices.
+mod numbers;
+use types;
+
+effect suffixes() => [
+    Suffix("i128", Signed(128)), Suffix("u128", Unsigned(128)),
+    Suffix("i64", Signed(64)), Suffix("u64", Unsigned(64)),
+    Suffix("i32", Signed(32)), Suffix("u32", Unsigned(32)),
+    Suffix("i16", Signed(16)), Suffix("u16", Unsigned(16)),
+    Suffix("i8", Signed(8)), Suffix("u8", Unsigned(8)),
+    Suffix("f8E4M3B11FNUZ", Real("f8E4M3B11FNUZ")),
+    Suffix("f8E4M3FNUZ", Real("f8E4M3FNUZ")), Suffix("f8E5M2FNUZ", Real("f8E5M2FNUZ")),
+    Suffix("f8E5M3FNU", Real("f8E5M3FNU")), Suffix("f8E8M0FNU", Real("f8E8M0FNU")),
+    Suffix("f8E4M3FN", Real("f8E4M3FN")), Suffix("f8E5M2", Real("f8E5M2")),
+    Suffix("f8E4M3", Real("f8E4M3")), Suffix("f8E3M4", Real("f8E3M4")),
+    Suffix("f6E2M3FN", Real("f6E2M3FN")), Suffix("f6E3M2FN", Real("f6E3M2FN")),
+    Suffix("f4E2M1FN", Real("f4E2M1FN")), Suffix("tf32", Real("tf32")),
+    Suffix("bf16", Real("bf16")), Suffix("f16", Real("f16")),
+    Suffix("f32", Real("f32")), Suffix("f64", Real("f64")),
+    Suffix("f80", Real("f80")), Suffix("f128", Real("f128"))];
+effect decode($raw) => strip($raw, suffixes());
+effect strip($raw, []) => Untyped($raw);
+effect strip($raw, $suffixes) when lt(0, size($suffixes)) => strip_one($raw, list.head($suffixes), list.tail($suffixes));
+effect strip_one($raw, Suffix($suffix, $descriptor), $tail)
+    => choose(text.ends($raw, $suffix),
+        Number($descriptor, text.slice($raw, 0, sub(text.len($raw), text.len($suffix)))), strip($raw, $tail));
+// Decimal and C/LLVM hexadecimal floating spellings are both accepted. A
+// radix prefix alone remains an integer; hex-float syntax is identified by a
+// dot or a binary exponent marker (p/P).
+effect floating($raw) => choose(radix($raw),
+    or(text.contains($raw, "."), or(text.contains($raw, "p"), text.contains($raw, "P"))),
+    or(text.contains($raw, "."), or(text.contains($raw, "e"), text.contains($raw, "E"))));
+effect radix($raw) => choose(text.starts($raw, "-"), radix_unsigned(text.slice($raw, 1, text.len($raw))), radix_unsigned($raw));
+effect radix_unsigned($raw) => or(text.starts($raw, "0x"), or(text.starts($raw, "0X"),
+    or(text.starts($raw, "0b"), or(text.starts($raw, "0B"),
+    or(text.starts($raw, "0o"), text.starts($raw, "0O"))))));
+effect default_type(Untyped($raw)) => choose(floating($raw), Real("f64"), Signed(32));
+effect default_type(Number($descriptor, $raw)) => $descriptor;
+effect integer($raw, Signed($width)) => bounded(int.parse($raw), types.width($width), 1);
+effect integer($raw, Unsigned($width)) => bounded(int.parse($raw), types.width($width), 0);
+effect bounded($value, $width, $signed) => choose(int.fits($value, $width, $signed), $value,
+    fail(concat("integer literal outside declared type range: ", text($value))));
+// IEEE rounding is explicit. Inexact decimal literals are permitted; overflow,
+// invalid operation and underflow are rejected by this standard policy.
+effect real($raw, Real($format)) => rounded(float.attr($raw, $format, 0));
+effect rounded([$attribute, $status]) => choose(eq(int.and($status, 13), 0), $attribute,
+    fail("floating literal overflow, underflow or invalid operation"));

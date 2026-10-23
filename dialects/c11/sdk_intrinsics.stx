@@ -1,0 +1,84 @@
+// Reserved compiler interfaces used by actual UCRT wchar inline definitions.
+// Header declarations and carrier fields remain authoritative. Only this
+// declared operation set receives intrinsic semantics; no C keyword in core.
+mod c11.sdk_intrinsics;
+use c11.sema;
+use c11.types;
+use c11.names;
+use c11.objects;
+use c11.union_storage;
+use base;
+use types;
+use storage;
+use simd_bits;
+
+effect c11.sdk_intrinsics.name($name) => or(c11.sdk_intrinsics.scan_name($name),text.contains(
+    " _mm_set1_epi16 _mm_cvtsi32_si128 _mm_loadu_si128 _mm_loadl_epi64 _mm_cmpeq_epi16 _mm_movemask_epi8 _mm256_broadcastw_epi16 _mm256_loadu_si256 _mm256_cmpeq_epi16 _mm256_movemask_epi8 ",concat(" ",concat($name," "))));
+effect c11.sdk_intrinsics.scan_name($name) => text.contains(" _BitScanForward _BitScanForward64 _BitScanReverse _BitScanReverse64 ",concat(" ",concat($name," ")));
+effect c11.sema.named_call($name,$arguments,$environment,$expected) when c11.sdk_intrinsics.name($name)
+    => c11.sdk_intrinsics.call($name,$arguments,c11.sema.lookup_name($environment,$name),$environment,$expected);
+effect c11.sema.named_call_at($frame,$name,$arguments,$environment,$expected) when c11.sdk_intrinsics.name($name)
+    => c11.sdk_intrinsics.call($name,$arguments,c11.sema.lookup_at($frame,$name,$environment),$environment,$expected);
+effect c11.sdk_intrinsics.call($name,$arguments,c11.sema.CSignature($params,$result,0,0),$environment,$expected)
+    => bind($type,c11.sema.value_type(c11.sema.complete_type($result,$environment)),
+        bind($args,c11.sema.arguments($arguments,$params,0,$environment),seq(c11.sdk_intrinsics.signature($name,$type,$args),
+            c11.sema.contextual(base.Typed($type,c11.sdk_intrinsics.Intrinsic($name,$args)),$expected))));
+effect[fallback] c11.sdk_intrinsics.call($name,$arguments,$binding,$environment,$expected)
+    => c11.sema.call($name,$arguments,$binding,$environment,$expected);
+effect c11.sdk_intrinsics.carrier($type,$bytes) => choose(and(or(c11.sdk_intrinsics.record($type),c11.sdk_intrinsics.union($type)),
+    and(eq(c11.types.bytes($type),$bytes),not(lt(c11.types.alignment($type),$bytes)))),1,fail("unexpected SDK SIMD carrier layout"));
+effect c11.sdk_intrinsics.record(c11.types.Record($name,$fields)) => 1;
+effect[fallback] c11.sdk_intrinsics.record($type) => 0;
+effect c11.sdk_intrinsics.union(c11.types.Union($name,$fields)) => 1;
+effect[fallback] c11.sdk_intrinsics.union($type) => 0;
+effect c11.sdk_intrinsics.integer($type,$bits) => choose(and(c11.types.is_integer($type),eq(mul(c11.types.bytes($type),8),$bits)),1,fail("unexpected SDK intrinsic integer width"));
+effect c11.sdk_intrinsics.pointer(c11.types.Pointer($element)) => 1;
+effect[fallback] c11.sdk_intrinsics.pointer($type) => fail("SDK intrinsic requires a pointer");
+effect c11.sdk_intrinsics.signature($name,$result,[base.Typed(c11.types.Pointer($index),$p),base.Typed($mask,$v)]) when c11.sdk_intrinsics.scan_name($name)
+    => seq(c11.sdk_intrinsics.integer($result,8),seq(choose(c11.types.compatible($index,c11.types.integer("unsigned long")),1,
+        fail("SDK bit scan requires an unsigned long output pointer")),c11.sdk_intrinsics.integer($mask,choose(text.ends($name,"64"),64,32))));
+effect c11.sdk_intrinsics.signature("_mm_set1_epi16",$result,[base.Typed($input,$v)])
+    => seq(c11.sdk_intrinsics.carrier($result,16),c11.sdk_intrinsics.integer($input,16));
+effect c11.sdk_intrinsics.signature("_mm_cvtsi32_si128",$result,[base.Typed($input,$v)])
+    => seq(c11.sdk_intrinsics.carrier($result,16),c11.sdk_intrinsics.integer($input,32));
+effect c11.sdk_intrinsics.signature($name,$result,[base.Typed($pointer,$v)]) when or(eq($name,"_mm_loadu_si128"),eq($name,"_mm_loadl_epi64"))
+    => seq(c11.sdk_intrinsics.carrier($result,16),c11.sdk_intrinsics.pointer($pointer));
+effect c11.sdk_intrinsics.signature("_mm256_loadu_si256",$result,[base.Typed($pointer,$v)])
+    => seq(c11.sdk_intrinsics.carrier($result,32),c11.sdk_intrinsics.pointer($pointer));
+effect c11.sdk_intrinsics.signature("_mm256_broadcastw_epi16",$result,[base.Typed($input,$v)])
+    => seq(c11.sdk_intrinsics.carrier($result,32),c11.sdk_intrinsics.carrier($input,16));
+effect c11.sdk_intrinsics.signature($name,$result,[base.Typed($a,$av),base.Typed($b,$bv)]) when or(eq($name,"_mm_cmpeq_epi16"),eq($name,"_mm256_cmpeq_epi16"))
+    => bind($bytes,choose(eq($name,"_mm_cmpeq_epi16"),16,32),seq(c11.sdk_intrinsics.carrier($result,$bytes),
+        seq(c11.sdk_intrinsics.carrier($a,$bytes),c11.sdk_intrinsics.carrier($b,$bytes))));
+effect c11.sdk_intrinsics.signature($name,$result,[base.Typed($input,$v)]) when or(eq($name,"_mm_movemask_epi8"),eq($name,"_mm256_movemask_epi8"))
+    => seq(c11.sdk_intrinsics.integer($result,32),c11.sdk_intrinsics.carrier($input,choose(eq($name,"_mm_movemask_epi8"),16,32)));
+effect[fallback] c11.sdk_intrinsics.signature($name,$result,$args) => fail(concat("unexpected SDK intrinsic declaration: ",$name));
+
+effect c11.sdk_intrinsics.vector(base.Typed($type,$value),$environment,$lanes,$bits)
+    => storage.reinterpret(base.lower(base.Typed($type,$value),$environment),c11.union_storage.shape($type),simd_bits.shape($lanes,$bits));
+effect c11.sdk_intrinsics.result($value,$type,$lanes,$bits)
+    => storage.reinterpret($value,simd_bits.shape($lanes,$bits),c11.union_storage.shape($type));
+effect base.lower(base.Typed($type,c11.sdk_intrinsics.Intrinsic($name,[$pointer,$mask])),$environment) when c11.sdk_intrinsics.scan_name($name)
+    => bind($p,base.lower($pointer,$environment),bind($m,base.lower($mask,$environment),bind($bits,mul(c11.types.bytes(arg($mask,0)),8),
+        bind($present,mlir.op("llvm.icmp",[$m,storage.integer(0,$bits)],["i1"],[Attr("predicate",1,"i64")],[]),
+            seq(mlir.op("scf.if",[$present],[],[],[mlir.region(seq(mlir.op("llvm.store",[
+                storage.resize(simd_bits.scan($m,$bits,text.contains($name,"Reverse")),$bits,32),$p],[],[Attr("alignment",4,"i64")],[]),
+                mlir.op("scf.yield",[],[],[],[])))]),mlir.op("llvm.zext",[$present],["i8"],[],[]))))));
+effect base.lower(base.Typed($type,c11.sdk_intrinsics.Intrinsic("_mm_set1_epi16",[$value])),$environment)
+    => c11.sdk_intrinsics.result(simd_bits.splat(base.lower($value,$environment),8,16),$type,8,16);
+effect base.lower(base.Typed($type,c11.sdk_intrinsics.Intrinsic("_mm_cvtsi32_si128",[$value])),$environment)
+    => storage.reinterpret(storage.resize(base.lower($value,$environment),32,128),storage.Scalar("i128",128,128,"integer"),c11.union_storage.shape($type));
+effect base.lower(base.Typed($type,c11.sdk_intrinsics.Intrinsic("_mm256_broadcastw_epi16",[$value])),$environment)
+    => c11.sdk_intrinsics.result(simd_bits.splat(simd_bits.extract(c11.sdk_intrinsics.vector($value,$environment,8,16),0,16),16,16),$type,16,16);
+effect base.lower(base.Typed($type,c11.sdk_intrinsics.Intrinsic("_mm_loadu_si128",[$pointer])),$environment)
+    => c11.sdk_intrinsics.result(simd_bits.load(base.lower($pointer,$environment),16,8,1),$type,16,8);
+effect base.lower(base.Typed($type,c11.sdk_intrinsics.Intrinsic("_mm256_loadu_si256",[$pointer])),$environment)
+    => c11.sdk_intrinsics.result(simd_bits.load(base.lower($pointer,$environment),32,8,1),$type,32,8);
+effect base.lower(base.Typed($type,c11.sdk_intrinsics.Intrinsic("_mm_loadl_epi64",[$pointer])),$environment)
+    => storage.reinterpret(storage.resize(mlir.op("llvm.load",[base.lower($pointer,$environment)],["i64"],[Attr("alignment",1,"i64")],[]),64,128),
+        storage.Scalar("i128",128,128,"integer"),c11.union_storage.shape($type));
+effect base.lower(base.Typed($type,c11.sdk_intrinsics.Intrinsic($name,[$left,$right])),$environment) when or(eq($name,"_mm_cmpeq_epi16"),eq($name,"_mm256_cmpeq_epi16"))
+    => bind($lanes,choose(eq($name,"_mm_cmpeq_epi16"),8,16),bind($a,c11.sdk_intrinsics.vector($left,$environment,$lanes,16),
+        bind($b,c11.sdk_intrinsics.vector($right,$environment,$lanes,16),c11.sdk_intrinsics.result(simd_bits.equal($a,$b,$lanes,16),$type,$lanes,16))));
+effect base.lower(base.Typed($type,c11.sdk_intrinsics.Intrinsic($name,[$value])),$environment) when or(eq($name,"_mm_movemask_epi8"),eq($name,"_mm256_movemask_epi8"))
+    => bind($lanes,choose(eq($name,"_mm_movemask_epi8"),16,32),simd_bits.sign_mask(c11.sdk_intrinsics.vector($value,$environment,$lanes,8),$lanes,8,32));

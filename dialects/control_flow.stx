@@ -1,0 +1,31 @@
+// Low-level backend fixture for block arguments, backedges and verification.
+// Ordinary program loops are defined by base.stx, including runtime benchmarks.
+// The compiler core does not recognize SumLoop or this surface spelling.
+mod control_flow;
+
+syntax item `sum_loop` => SumLoop();
+effect emit(SumLoop()) => function(mlir.block([]), mlir.block(["i32", "i32"]), mlir.block(["i32", "i32"]), mlir.block(["i32"]));
+
+effect constant($n) => mlir.op("arith.constant", [], ["i32"], [Attr("value", $n, "i32")], []);
+effect plus($a, $b) => mlir.op("arith.addi", [$a, $b], ["i32"], [], []);
+effect jump($block, $values) => mlir.op("cf.br", $values, [], [], [], [$block]);
+
+effect function($entry, $head, $body, $exit)
+    => seq(fill($entry, $head, $body, $exit),
+        mlir.op("func.func", [], [], [Attr("sym_name", "main"), RawAttr("function_type", "() -> i32")],
+            [mlir.region_blocks([$entry, $head, $body, $exit])]));
+
+effect fill($entry, $head, $body, $exit)
+    => seq(mlir.in_block($entry, jump($head, [constant(0), constant(0)])),
+        seq(mlir.in_block($head, condition($body, $exit, mlir.block_arg($head, 0), mlir.block_arg($head, 1))),
+        seq(mlir.in_block($body, jump($head, [plus(mlir.block_arg($body, 0), constant(1)),
+            plus(mlir.block_arg($body, 1), mlir.block_arg($body, 0))])),
+            mlir.in_block($exit, mlir.op("func.return",
+                [plus(mlir.block_arg($exit, 0), mlir.block_arg($exit, 0))], [], [], [])))));
+
+effect condition($body, $exit, $i, $sum)
+    => branch($body, $exit, $i, $sum,
+        mlir.op("arith.cmpi", [$i, constant(7)], ["i1"], [Attr("predicate", 2, "i64")], []));
+effect branch($body, $exit, $i, $sum, $condition)
+    => mlir.op("cf.cond_br", [$condition, $i, $sum, $sum], [],
+        [RawAttr("operandSegmentSizes", "array<i32: 1, 2, 1>")], [], [$body, $exit]);

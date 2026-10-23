@@ -1,0 +1,18 @@
+// Runtime memory-policy selection. Callers supply target pointer width and
+// callbacks; no source-language type, ownership or atomic rule lives here.
+mod memory_paths;
+use storage;
+
+effect memory_paths.aligned($pointer,$alignment,$pointer_bits)
+    => seq(choose(and(lt(0,$alignment),eq(int.and($alignment,sub($alignment,1)),0)),1,
+        fail("runtime memory alignment must be a positive power of two")),
+        choose(eq($alignment,1),storage.integer(1,1),
+            mlir.op("llvm.icmp",[mlir.op("llvm.and",[mlir.op("llvm.ptrtoint",[$pointer],[storage.integer_type($pointer_bits)],[],[]),
+                storage.integer(sub($alignment,1),$pointer_bits)],[storage.integer_type($pointer_bits)],[],[]),storage.integer(0,$pointer_bits)],
+                ["i1"],[Attr("predicate",0,"i64")],[])));
+effect memory_paths.select($condition,$results,$left,$left_args,$right,$right_args)
+    => mlir.op("scf.if",[$condition],$results,[],[
+        mlir.region(memory_paths.yield(apply($left,$left_args),$results)),
+        mlir.region(memory_paths.yield(apply($right,$right_args),$results))]);
+effect memory_paths.yield($value,$results) => mlir.op("scf.yield",choose(eq(size($results),0),[],
+    choose(eq(size($results),1),[$value],$value)),[],[],[]);

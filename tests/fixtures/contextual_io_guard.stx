@@ -1,0 +1,3 @@
+mod contextual_io_guard;
+use contextual_frontend;
+syntax contextual.item `read $name:ident;` when source.exists($name) => Read($name);

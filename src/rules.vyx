@@ -1,0 +1,659 @@
+module naru;
+use std.collections;
+use std.string;
+
+extern "C" {
+    fn naru_exact_eval(op: rawptr, op_len: i64, a: rawptr, a_len: i64, b: rawptr, b_len: i64, option: i64) -> rawptr;
+    fn naru_exact_error() -> rawptr;
+    fn naru_exact_flags() -> i32;
+}
+
+public fn rule_tool_name(name: string) -> bool {
+    return source_tool_name(name) || name == "syntax.context" || name == "rule.select" || name == "rule.iterate" || name == "list.unfold" || name == "list.cursor"
+        || name == "list.cursor.empty" || name == "list.cursor.head" || name == "list.cursor.tail"
+        || name == "bind" || name == "apply" || name == "collect" || name == "term" || name == "symbol"
+        || name == "list.head" || name == "list.tail" || name == "list.prepend" || name == "list.concat" || name == "list.flatten" || name == "list.map" || name == "list.fold"
+        || name == "env.empty" || name == "env.put" || name == "env.get" || name == "env.contains" || name == "env.entries"
+        || name == "logic.fresh" || name == "logic.unify" || name == "logic.resolve"
+        || name == "int.parse" || name == "int.neg" || name == "int.fits" || name == "int.add" || name == "int.sub"
+        || name == "int.mul" || name == "int.div" || name == "int.rem" || name == "int.lt"
+        || name == "int.and" || name == "int.or" || name == "int.xor" || name == "int.shl" || name == "int.shr"
+        || name == "text.len" || name == "text.slice" || name == "text.contains" || name == "text.starts" || name == "text.ends"
+        || name == "float.attr" || name == "float.convert" || name == "float.from_int" || name == "float.to_int"
+        || name == "float.add" || name == "float.sub" || name == "float.mul" || name == "float.div"
+        || name == "float.neg" || name == "float.compare" || name == "source.modules" || name == "source.location" || name == "term.kind"
+        || name == "term.children" || name == "term.rebuild";
+}
+
+public fn scalar_text(e: &mut Engine, id: i64) -> string {
+    let n = e.node(id);
+    if (n.kind != 1 && n.kind != 2) { e.reject("expected text or an exact integer"); return ""; }
+    return n.text;
+}
+
+public fn exact_node(e: &mut Engine, call: i64, operation: string, a: string, b: string, option: i64, floating: bool) -> i64 {
+    let pointer = naru_exact_eval(operation.c_str(), operation.len, a.c_str(), a.len, b.c_str(), b.len, option);
+    let n = e.node(call);
+    if (pointer == null) {
+        e.at_error(n.file, n.line, n.column, str_dup(from_cstr(naru_exact_error()))); return -1;
+    }
+    let text = str_dup(from_cstr(pointer));
+    let result = e.add_node(floating && operation != "float.to_int" ? 1 : 2, text, n.file, n.line, n.column);
+    if (!floating) { return result; }
+    let pair = e.add_node(5, "", n.file, n.line, n.column);
+    e.add_child(pair, result);
+    e.add_child(pair, e.add_node(2, naru_number(naru_exact_flags() as i64), n.file, n.line, n.column));
+    return pair;
+}
+
+public fn require_env(e: &mut Engine, id: i64) -> bool {
+    if (id >= 0 && e.node(id).kind == 11) { return true; }
+    e.reject("expected an immutable environment"); return false;
+}
+
+public fn env_lookup(e: &mut Engine, environment: i64, key: i64) -> i64 {
+    if (!require_env(e, environment)) { return -1; }
+    if (e.env_roots.contains(environment)) {
+        let hash = environment_key_hash(e, key); var entry = e.env_roots.get(environment);
+        while (entry >= 0) {
+            let n = e.index(entry);
+            if (n.bit >= 0) { entry = ((hash >> n.bit) & 1) == 0 ? n.left : n.right; }
+            else {
+                if (n.hash != hash) { return -1; }
+                if (term_equal(e, n.key, key)) { return n.value; }
+                entry = n.right;
+            }
+        }
+        return -1;
+    }
+    var current = environment;
+    while (e.node(current).count == 3) {
+        if (term_equal(e, e.child(current, 1), key)) { return e.child(current, 2); }
+        current = e.child(current, 0);
+    }
+    return -1;
+}
+// Enumerate current bindings, never representation/history nodes. Tree order
+// is deterministic for a snapshot but is not declaration/insertion order.
+public fn environment_entries(e: &mut Engine, rt: &mut Runtime, environment: i64, origin: Node) -> i64 {
+    if (!require_env(e,environment)) { return -1; }
+    var root: i64 = -1;
+    if (e.env_roots.contains(environment)) { root = e.env_roots.get(environment); }
+    else {
+        var parents = Vec::<i64>.new(); var current = environment;
+        while (e.node(current).count == 3) { parents.push(current); current = e.child(current,0); }
+        var i = parents.len;
+        while (i > 0) { i = i - 1; let parent = parents.get(i); let key = e.child(parent,1);
+            root = environment_index_put(e,root,key,e.child(parent,2),environment_key_hash(e,key)); }
+    }
+    let result = e.add_node(5,"",origin.file,origin.line,origin.column);
+    var pending = Vec::<i64>.new(); pending.push(root); var index: i64 = 0;
+    while (index < pending.len && e.good()) {
+        let id = pending.get(index); index = index + 1;
+        if (id < 0) { continue; }
+        rt.steps = rt.steps + 1;
+        if (rt.steps > rt.limit) { e.reject("environment enumeration budget exhausted"); return -1; }
+        let entry = e.index(id);
+        if (entry.bit >= 0) { pending.push(entry.left); pending.push(entry.right); }
+        else {
+            let pair = e.add_node(5,"",origin.file,origin.line,origin.column);
+            e.add_child(pair,entry.key); e.add_child(pair,entry.value); e.add_child(result,e.complete_value(pair));
+            pending.push(entry.right);
+        }
+    }
+    return e.complete_value(result);
+}
+
+public fn env_insert(e: &mut Engine, environment: i64, key: i64, value: i64) -> i64 {
+    if (!require_env(e, environment)) { return -1; }
+    let node = e.add_node(11, "env", "<environment>", 1, 1);
+    var root: i64 = -1;
+    if (e.env_roots.contains(environment)) { root = e.env_roots.get(environment); }
+    else {
+        // Legacy/frozen environment data can still use the parent chain. Build
+        // its index from oldest to newest once when extending it.
+        var parents = Vec::<i64>.new(); var current = environment;
+        while (e.node(current).count == 3) { parents.push(current); current = e.child(current, 0); }
+        var i = parents.len;
+        while (i > 0) { i = i - 1; let parent = parents.get(i); let old_key = e.child(parent, 1);
+            root = environment_index_put(e, root, old_key, e.child(parent, 2), environment_key_hash(e, old_key)); }
+    }
+    e.env_roots.put(node, environment_index_put(e, root, key, value, environment_key_hash(e, key)));
+    return node;
+}
+
+public fn environment_key_hash(e: &mut Engine, key: i64) -> i64 {
+    let n = e.node(key);
+    // Opaque identities are intentionally hashed by arena id; ordinary terms
+    // use structure, exactly matching term_equal's open constructor semantics.
+    if (n.kind >= 6) { return key % 2147483647; }
+    var hash: i64 = (n.kind as i64 + 1) * 131; var i: i64 = 0;
+    while (i < n.text.len) { hash = (hash * 131 + str_char_at(n.text, i) as i64) % 2147483647; i = i + 1; }
+    var edge = n.first;
+    while (edge >= 0) { let item = e.edge(edge); hash = (hash * 131 + environment_key_hash(e, item.value)) % 2147483647; edge = item.next; }
+    return hash;
+}
+public fn environment_index_leaf(e: &mut Engine, key: i64, value: i64, hash: i64, next: i64) -> i64 {
+    return e.add_env_index(EnvIndex { bit: -1, left: -1, right: next, hash: hash, key: key, value: value });
+}
+public fn environment_index_splice(e: &mut Engine, root: i64, leaf: i64, bit: i64, hash: i64) -> i64 {
+    let n = e.index(root); let id = e.env_index.len;
+    if (n.bit < bit) {
+        let zero = ((hash >> bit) & 1) == 0;
+        return e.add_env_index(EnvIndex { bit: bit, left: zero ? leaf : root, right: zero ? root : leaf, hash: 0, key: -1, value: -1 });
+    }
+    var copy = n;
+    if (((hash >> n.bit) & 1) == 0) { copy.left = environment_index_splice(e, n.left, leaf, bit, hash); }
+    else { copy.right = environment_index_splice(e, n.right, leaf, bit, hash); }
+    return e.add_env_index(copy);
+}
+public fn environment_index_replace(e: &mut Engine, root: i64, key: i64, value: i64, hash: i64) -> i64 {
+    let n = e.index(root);
+    if (n.bit < 0) { return environment_collision_replace(e,root,key,value,hash); }
+    var copy = n;
+    if (((hash >> n.bit) & 1) == 0) { copy.left = environment_index_replace(e, n.left, key, value, hash); }
+    else { copy.right = environment_index_replace(e, n.right, key, value, hash); }
+    return e.add_env_index(copy);
+}
+public fn environment_collision_replace(e: &mut Engine, root: i64, key: i64, value: i64, hash: i64) -> i64 {
+    if (root < 0) { return environment_index_leaf(e,key,value,hash,-1); }
+    let n = e.index(root);
+    if (term_equal(e,n.key,key)) { return environment_index_leaf(e,key,value,hash,n.right); }
+    return environment_index_leaf(e,n.key,n.value,n.hash,environment_collision_replace(e,n.right,key,value,hash));
+}
+public fn environment_index_put(e: &mut Engine, root: i64, key: i64, value: i64, hash: i64) -> i64 {
+    if (root < 0) { return environment_index_leaf(e, key, value, hash, -1); }
+    var terminal = root;
+    while (e.index(terminal).bit >= 0) { let n = e.index(terminal); terminal = ((hash >> n.bit) & 1) == 0 ? n.left : n.right; }
+    let different = hash ^ e.index(terminal).hash;
+    if (different == 0) { return environment_index_replace(e, root, key, value, hash); }
+    var bit: i64 = 30;
+    while (((different >> bit) & 1) == 0) { bit = bit - 1; }
+    return environment_index_splice(e, root, environment_index_leaf(e, key, value, hash, -1), bit, hash);
+}
+
+public fn logic_deref(e: &mut Engine, value: i64, environment: i64) -> i64 {
+    var current = value; var steps: i64 = 0;
+    while (e.node(current).kind == 10) {
+        let bound = env_lookup(e, environment, current);
+        if (bound < 0) { return current; }
+        current = bound; steps = steps + 1;
+        if (steps > e.nodes.len) { e.reject("cyclic logic substitution"); return -1; }
+    }
+    return current;
+}
+
+public fn logic_occurs(e: &mut Engine, rt: &mut Runtime, variable: i64, value: i64, environment: i64) -> bool {
+    var pending = Vec::<i64>.new(); pending.push(value);
+    var index: i64 = 0;
+    while (index < pending.len && e.good()) {
+        rt.steps = rt.steps + 1;
+        if (rt.steps > rt.limit) { e.reject("occurs check budget exhausted"); return true; }
+        let current = logic_deref(e, pending.get(index), environment); index = index + 1;
+        if (current < 0) { return true; }
+        if (current == variable) { return true; }
+        let n = e.node(current);
+        if (n.kind == 0 || n.kind == 5) {
+            var edge = n.first;
+            while (edge >= 0) { let item = e.edge(edge); pending.push(item.value); edge = item.next; }
+        }
+    }
+    return false;
+}
+
+public fn logic_result(e: &mut Engine, success: bool, environment: i64, reason: string) -> i64 {
+    let list = e.add_node(5, "", "<unification>", 1, 1);
+    e.add_child(list, bool_node(e, success)); e.add_child(list, environment);
+    e.add_child(list, e.add_node(1, reason, "<unification>", 1, 1));
+    return list;
+}
+
+public fn logic_unify(e: &mut Engine, rt: &mut Runtime, first: i64, second: i64, initial: i64) -> i64 {
+    if (!require_env(e, initial)) { return -1; }
+    var environment = initial;
+    var pending = Vec::<i64>.new(); pending.push(first); pending.push(second);
+    var index: i64 = 0;
+    while (index < pending.len && e.good()) {
+        rt.steps = rt.steps + 1;
+        if (rt.steps > rt.limit) { e.reject("unification budget exhausted"); return -1; }
+        let a = logic_deref(e, pending.get(index), environment);
+        let b = logic_deref(e, pending.get(index + 1), environment); index = index + 2;
+        if (a < 0 || b < 0) { return -1; }
+        if (a == b) { continue; }
+        if (e.node(a).kind == 10 || e.node(b).kind == 10) {
+            let variable = e.node(a).kind == 10 ? a : b;
+            let value = variable == a ? b : a;
+            if (logic_occurs(e, rt, variable, value, environment)) { return logic_result(e, false, initial, "occurs check failed"); }
+            environment = env_insert(e, environment, variable, value); continue;
+        }
+        let x = e.node(a); let y = e.node(b);
+        if (x.kind >= 6 || y.kind >= 6 || x.kind != y.kind || x.text != y.text || x.count != y.count) {
+            return logic_result(e, false, initial, "term constructors or atoms do not match");
+        }
+        var xe = x.first; var ye = y.first;
+        while (xe >= 0) {
+            let xx = e.edge(xe); let yy = e.edge(ye);
+            pending.push(xx.value); pending.push(yy.value); xe = xx.next; ye = yy.next;
+        }
+    }
+    return logic_result(e, true, environment, "");
+}
+
+public fn logic_resolve(e: &mut Engine, rt: &mut Runtime, value: i64, environment: i64, depth: i64) -> i64 {
+    rt.steps = rt.steps + 1;
+    if (depth > rt.depth_limit || rt.steps > rt.limit) { e.reject("logic resolution budget exhausted"); return -1; }
+    let current = logic_deref(e, value, environment);
+    if (current < 0) { return -1; }
+    let n = e.node(current);
+    if ((n.kind != 0 && n.kind != 5) || n.count == 0) { return current; }
+    let copy = e.add_node(n.kind, n.text, n.file, n.line, n.column);
+    var edge = n.first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edge(edge);
+        let child = logic_resolve(e, rt, item.value, environment, depth + 1);
+        if (child < 0) { return -1; }
+        e.add_child(copy, child); edge = item.next;
+    }
+    return copy;
+}
+
+public fn rule_apply(e: &mut Engine, rt: &mut Runtime, name: string, arguments: i64, depth: i64, origin: Node) -> i64 {
+    if (e.node(arguments).kind != 5) { e.reject("apply arguments must be a list"); return -1; }
+    let full_name = resolve_entry(e, name);
+    if (!e.good()) { return -1; }
+    let owned_scope = e.begin_scope();
+    let call = e.add_node(4, full_name, origin.file, origin.line, origin.column);
+    var edge = e.node(arguments).first;
+    while (edge >= 0) { let item = e.edge(edge); e.add_child(call, item.value); edge = item.next; }
+    let result = eval_term(e, rt, call, depth + 1); e.release_frame(call);
+    if (owned_scope) { e.end_scope(result); }
+    return result;
+}
+
+// Additive relations deliberately collect peers. Ordinary calls retain strict
+// ambiguity diagnostics; fallback facts participate only when no peer matches.
+public fn rule_collect(e: &mut Engine, rt: &mut Runtime, name: string, arguments: i64, depth: i64, origin: Node) -> i64 {
+    if (!ir_list(e, arguments)) { return -1; }
+    let full_name = resolve_entry(e, name);
+    if (!e.good()) { return -1; }
+    let call = e.add_node(4, full_name, origin.file, origin.line, origin.column);
+    var edge = e.node(arguments).first;
+    while (edge >= 0) { let item = e.edge(edge); e.add_child(call, item.value); edge = item.next; }
+    let key = full_name + ":" + naru_number(e.node(arguments).count);
+    let result = e.add_node(5, "", origin.file, origin.line, origin.column);
+    if (!rt.heads.contains(key)) { e.release_frame(call); return result; }
+    var matches = Vec::<i64>.new(); var bindings_list = Vec::<i64>.new();
+    var ordinary = false; var candidates = effect_candidates(e,rt.heads.get(key),call);
+    var rule_id = effect_candidate_next(e,&mut candidates);
+    while (rule_id >= 0 && e.good()) {
+        rt.steps = rt.steps + 1;
+        if (rt.steps > rt.limit) { e.reject("rule collection budget exhausted"); return -1; }
+        let rule = e.effect_rules.get_ref(rule_id);
+        let bindings = e.add_node(5, "", origin.file, origin.line, origin.column);
+        let eligible = effect_matches(e, rt, rule_id, call, bindings, depth);
+        if (!e.good()) { return -1; }
+        if (eligible) { matches.push(rule_id); bindings_list.push(bindings); if (!rule.fallback) { ordinary = true; } }
+        else { release_bindings(e,bindings); }
+        rule_id = effect_candidate_next(e,&mut candidates);
+    }
+    var i: i64 = 0;
+    while (i < matches.len && e.good()) {
+        let selected = matches.get(i); let rule = e.effect_rules.get_ref(selected);
+        if (!ordinary || !rule.fallback) {
+            let value = effect_body(e, rt, selected, bindings_list.get(i), depth);
+            if (value < 0) { return -1; }
+            e.add_child(result, value);
+        }
+        release_bindings(e,bindings_list.get(i));
+        i = i + 1;
+    }
+    e.release_frame(call); return e.good() ? result : -1;
+}
+
+// Cursor views share immutable list edges. Advancing allocates one view node;
+// it neither traverses the list nor copies the remaining elements.
+public fn list_cursor(e: &mut Engine, first: i64, last: i64, count: i64, origin: Node) -> i64 {
+    let id = e.add_node(13, "cursor", origin.file, origin.line, origin.column);
+    var cursor = e.node(id); cursor.first = first; cursor.last = last; cursor.count = count;
+    e.nodes.set(id, cursor); return id;
+}
+
+// Pure lexicographic ranking is reusable outside the parser. Empty ranks reject
+// a candidate; peers with equal maximal ranks remain an error.
+public fn rule_select(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64) -> i64 {
+    if (!expect_arity(e,call,3)) { return -1; }
+    let n = e.node(call); let candidates = e.child(call,0);
+    if (!ir_list(e,candidates)) { return -1; }
+    let relation = scalar_text(e,e.child(call,1)); let context = e.child(call,2);
+    var best: i64 = -1; var best_rank = Vec::<i64>.new(); var tied = false;
+    var index: i64 = 0; var edge = e.node(candidates).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edge(edge);
+        let args = e.add_node(5,"",n.file,n.line,n.column);
+        e.add_child(args,item.value); e.add_child(args,context);
+        let rank_scope = e.begin_scope();
+        rt.guard_depth = rt.guard_depth + 1;
+        let rank = rule_apply(e,rt,relation,args,depth,n);
+        rt.guard_depth = rt.guard_depth - 1; e.release_frame(args);
+        if (!e.good() || rank < 0) { if (rank_scope) { e.end_scope(-1); } return -1; }
+        var values = Vec::<i64>.new();
+        if (e.node(rank).kind == 2) { values.push(scalar_int(e,rank)); }
+        else if (ir_list(e,rank)) {
+            var part = e.node(rank).first;
+            while (part >= 0 && e.good()) {
+                rt.steps = rt.steps + 1;
+                if (rt.steps > rt.limit) { e.reject("candidate ranking budget exhausted"); break; }
+                let value = e.edge(part);
+                values.push(scalar_int(e,value.value)); part = value.next;
+            }
+        }
+        // Only native scalar ranks survive; all temporary callback terms can
+        // be reclaimed immediately, including each non-winning score.
+        if (rank_scope) { e.end_scope(-1); }
+        if (!e.good()) { return -1; }
+        if (values.len > 0) {
+            var comparison: i64 = 0; var i: i64 = 0;
+            while (i < values.len && i < best_rank.len && comparison == 0) {
+                if (values.get(i) > best_rank.get(i)) { comparison = 1; }
+                else if (values.get(i) < best_rank.get(i)) { comparison = -1; }
+                i = i + 1;
+            }
+            if (comparison == 0 && values.len != best_rank.len) { comparison = values.len > best_rank.len ? 1 : -1; }
+            if (best < 0 || comparison > 0) { best = index; best_rank = values; tied = false; }
+            else if (comparison == 0) { tied = true; }
+        }
+        index = index + 1; edge = item.next;
+    }
+    if (!e.good()) { return -1; }
+    if (best < 0) { e.reject("candidate ranking rejected every candidate"); return -1; }
+    if (tied) { e.reject("ambiguous ranked candidates: equal maximal ranks"); return -1; }
+    return e.add_node(2,naru_number(best),n.file,n.line,n.column);
+}
+
+public fn eval_rule_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64) -> i64 {
+    let n = e.node(call); let name = n.text;
+    if (name == "syntax.context") {
+        if (!expect_arity(e, call, 0)) { return -1; }
+        if (rt.parse_context < 0) { e.reject("syntax.context is only available in a contextual parser"); return -1; }
+        return rt.parse_context;
+    }
+    if (name == "rule.select") { return rule_select(e,rt,call,depth); }
+    if (source_tool_name(name)) { return eval_source_tool(e, rt, call, depth); }
+    if (name == "list.cursor" || name.starts_with("list.cursor.")) {
+        if (!expect_arity(e, call, 1)) { return -1; }
+        let input = e.child(call, 0); let cursor = e.node(input);
+        if (name == "list.cursor") {
+            if (!ir_list(e, input)) { return -1; }
+            return list_cursor(e, cursor.first, cursor.last, cursor.count, n);
+        }
+        if (cursor.kind != 13) { e.reject("expected a list cursor"); return -1; }
+        if (name == "list.cursor.empty") { return bool_node(e, cursor.count == 0); }
+        if (cursor.count == 0) { e.reject("cannot read or advance an empty list cursor"); return -1; }
+        let edge = e.edge(cursor.first);
+        if (name == "list.cursor.head") { return edge.value; }
+        return list_cursor(e, edge.next, cursor.last, cursor.count - 1, n);
+    }
+    if (name == "list.unfold") {
+        if (!expect_arity(e, call, 3)) { return -1; }
+        let target = scalar_text(e, e.child(call, 0)); var state = e.child(call, 1);
+        let limit = scalar_int(e, e.child(call, 2)); var steps: i64 = 0;
+        if (limit < 1 || limit > rt.limit) { e.reject("list.unfold limit must be positive and within the evaluation budget"); return -1; }
+        let owned_scope = e.begin_scope(); var finished = false;
+        var collection_limit: i64 = 8192;
+        let output = e.add_node(5, "", n.file, n.line, n.column);
+        while (steps < limit && e.good()) {
+            let arguments = e.add_node(5, "", n.file, n.line, n.column); e.add_child(arguments, state);
+            let result = rule_apply(e, rt, target, arguments, depth, n);
+            e.release_frame(arguments);
+            if (!e.good() || !ir_list(e, result)) { break; }
+            if (e.node(result).count != 3) { e.reject("list.unfold step must return [continue, state, chunk]"); break; }
+            let chunk = e.child(result, 2);
+            if (!ir_list(e, chunk)) { break; }
+            var edge = e.node(chunk).first;
+            while (edge >= 0) { let item = e.edge(edge); e.add_child(output, item.value); edge = item.next; }
+            state = e.child(result, 1);
+            if (!rule_truth(e, e.child(result, 0))) { finished = true; break; }
+            steps = steps + 1;
+            if (e.scope_allocation_count() >= collection_limit) {
+                e.collect_scope_pair(output,state);
+                collection_limit = e.scope_allocation_count() * 2 + 8192;
+            }
+        }
+        if (e.good() && !finished) { e.reject("list.unfold step budget exhausted"); }
+        let result = e.good() ? e.complete_value(output) : -1;
+        if (owned_scope) { e.end_scope(result); }
+        return result;
+    }
+    if (name == "rule.iterate") {
+        if (!expect_arity(e, call, 3)) { return -1; }
+        let target = scalar_text(e, e.child(call, 0)); var state = e.child(call, 1);
+        let limit = scalar_int(e, e.child(call, 2)); var steps: i64 = 0;
+        if (limit < 1 || limit > rt.limit) { e.reject("rule.iterate limit must be positive and within the evaluation budget"); return -1; }
+        let owned_scope = e.begin_scope(); var finished = false;
+        var collection_limit: i64 = 8192;
+        while (steps < limit && e.good()) {
+            let arguments = e.add_node(5, "", n.file, n.line, n.column); e.add_child(arguments, state);
+            let result = rule_apply(e, rt, target, arguments, depth, n);
+            e.release_frame(arguments);
+            if (!e.good() || !ir_list(e, result)) { break; }
+            if (e.node(result).count != 2) { e.reject("rule.iterate step must return [continue, state]"); break; }
+            state = e.child(result, 1);
+            if (!rule_truth(e, e.child(result, 0))) { finished = true; break; }
+            steps = steps + 1;
+            // Batch collection bounds discarded iteration states. Scale the
+            // next threshold with survivors to avoid rescanning a growing
+            // output tree or deep work stack on every iteration.
+            if (e.scope_allocation_count() >= collection_limit) {
+                e.collect_scope(state);
+                collection_limit = e.scope_allocation_count() * 2 + 8192;
+            }
+        }
+        if (e.good() && !finished) { e.reject("rule.iterate step budget exhausted"); }
+        let output = e.good() ? state : -1;
+        if (owned_scope) { e.end_scope(output); }
+        return output;
+    }
+    if (name == "source.modules") {
+        if (!expect_arity(e, call, 0)) { return -1; }
+        if (e.source_modules < 0) { e.reject("source.modules requires a loaded source program"); return -1; }
+        return e.source_modules;
+    }
+    if (name == "term.children" || name == "term.rebuild") {
+        if (!expect_arity(e, call, name == "term.children" ? 1 : 2)) { return -1; }
+        let input = e.child(call, 0); let origin = e.node(input);
+        if (origin.kind != 0 && origin.kind != 5) { e.reject(name + " requires a constructor or list"); return -1; }
+        e.complete_value(input);
+        if (name == "term.children" && origin.kind == 5) { return input; }
+        var children = input;
+        if (name == "term.rebuild") {
+            children = e.child(call, 1);
+            if (!ir_list(e, children)) { return -1; }
+            let replacement = e.node(children);
+            var unchanged = origin.count == replacement.count;
+            var old_edge = origin.first; var new_edge = replacement.first;
+            while (unchanged && old_edge >= 0) {
+                let old_item = e.edge(old_edge); let new_item = e.edge(new_edge);
+                unchanged = old_item.value == new_item.value;
+                old_edge = old_item.next; new_edge = new_item.next;
+            }
+            if (unchanged) { return input; }
+        }
+        e.complete_value(children); let source = e.node(children);
+        // Borrow immutable edges and retain source provenance. Compare direct
+        // child identities once; never recursively compare whole subtrees.
+        let result = e.add_node(name == "term.children" ? 5 : origin.kind,
+            name == "term.children" ? "" : origin.text, origin.file, origin.line, origin.column);
+        var view = e.node(result); view.first = source.first; view.last = source.last; view.count = source.count;
+        view.evaluated = true; e.nodes.set(result, view); return result;
+    }
+    if (name == "source.location" || name == "term.kind") {
+        if (!expect_arity(e, call, 1)) { return -1; }
+        let origin = e.node(e.child(call, 0));
+        if (name == "term.kind") { return e.add_node(2, naru_number(origin.kind as i64), n.file, n.line, n.column); }
+        let location = e.add_node(5, "", n.file, n.line, n.column);
+        e.add_child(location, e.add_node(1, origin.file, n.file, n.line, n.column));
+        e.add_child(location, e.add_node(2, naru_number(origin.line), n.file, n.line, n.column));
+        e.add_child(location, e.add_node(2, naru_number(origin.column), n.file, n.line, n.column));
+        return location;
+    }
+    if (name == "apply") {
+        if (!expect_arity(e, call, 2)) { return -1; }
+        return rule_apply(e, rt, scalar_text(e, e.child(call, 0)), e.child(call, 1), depth, n);
+    }
+    if (name == "collect") {
+        if (!expect_arity(e, call, 2)) { return -1; }
+        return rule_collect(e, rt, scalar_text(e, e.child(call, 0)), e.child(call, 1), depth, n);
+    }
+    if (name == "term") {
+        if (!expect_arity(e, call, 2)) { return -1; }
+        let tag_name = scalar_text(e, e.child(call, 0)); let children = e.child(call, 1);
+        if (!ir_list(e, children) || tag_name.len == 0) { e.reject("term requires a nonempty tag and child list"); return -1; }
+        let value = e.add_node(0, tag_name, n.file, n.line, n.column);
+        var edge = e.node(children).first;
+        while (edge >= 0) { let item = e.edge(edge); e.add_child(value, item.value); edge = item.next; }
+        return value;
+    }
+    if (name == "symbol" || name == "logic.fresh") {
+        if (rt.guard_depth > 0) { e.reject("rule guards cannot create fresh identities"); return -1; }
+        if (!expect_arity(e, call, name == "symbol" ? 1 : 0)) { return -1; }
+        var prefix = "?";
+        if (name == "symbol") { prefix = scalar_text(e, e.child(call, 0)); }
+        let text = prefix + ".$" + naru_number(rt.fresh_counter); rt.fresh_counter = rt.fresh_counter + 1;
+        return e.add_node(name == "symbol" ? 12 : 10, text, n.file, n.line, n.column);
+    }
+    if (name == "env.empty") {
+        if (!expect_arity(e, call, 0)) { return -1; }
+        return e.add_node(11, "env", n.file, n.line, n.column);
+    }
+    if (name == "env.entries") {
+        if (!expect_arity(e,call,1)) { return -1; }
+        return environment_entries(e,rt,e.child(call,0),n);
+    }
+    if (name == "env.put") {
+        if (!expect_arity(e, call, 3)) { return -1; }
+        return env_insert(e, e.child(call, 0), e.child(call, 1), e.child(call, 2));
+    }
+    if (name == "env.get" || name == "env.contains") {
+        if (!expect_arity(e, call, 2)) { return -1; }
+        let value = env_lookup(e, e.child(call, 0), e.child(call, 1));
+        if (name == "env.contains") { return bool_node(e, value >= 0); }
+        if (value < 0) { e.at_error(n.file, n.line, n.column, "unbound environment key: " + render_term(e, e.child(call, 1))); }
+        return value;
+    }
+    if (name == "logic.unify") {
+        if (!expect_arity(e, call, 3)) { return -1; }
+        return logic_unify(e, rt, e.child(call, 0), e.child(call, 1), e.child(call, 2));
+    }
+    if (name == "logic.resolve") {
+        if (!expect_arity(e, call, 2) || !require_env(e, e.child(call, 1))) { return -1; }
+        return logic_resolve(e, rt, e.child(call, 0), e.child(call, 1), depth);
+    }
+    if (name == "list.head" || name == "list.tail") {
+        if (!expect_arity(e, call, 1)) { return -1; }
+        let list = e.child(call, 0);
+        if (!ir_list(e, list) || e.node(list).count == 0) { e.reject("list head/tail requires a nonempty list"); return -1; }
+        if (name == "list.head") { return e.child(list, 0); }
+        let result = e.add_node(5, "", n.file, n.line, n.column);
+        let source = e.node(list); var view = e.node(result);
+        e.complete_value(list);
+        view.first = e.edge(source.first).next; view.count = source.count - 1;
+        view.last = view.count == 0 ? -1 : source.last; view.evaluated = true;
+        e.nodes.set(result, view); return result;
+    }
+    if (name == "list.prepend" || name == "list.concat") {
+        if (!expect_arity(e, call, 2)) { return -1; }
+        let a = e.child(call, 0); let b = e.child(call, 1);
+        if (!ir_list(e, b) || (name == "list.concat" && !ir_list(e, a))) { return -1; }
+        let result = e.add_node(5, "", n.file, n.line, n.column);
+        if (name == "list.prepend") { e.add_child(result, a); }
+        else {
+            var edge = e.node(a).first;
+            while (edge >= 0) { let item = e.edge(edge); e.add_child(result, item.value); edge = item.next; }
+        }
+        // Copy only the left prefix, and share the immutable right tail.
+        // Prepend and tail are O(1); concatenation is O(size(left)).
+        let tail = e.node(b); e.complete_value(b); var out = e.node(result);
+        if (tail.count > 0) {
+            if (out.last < 0) { out.first = tail.first; }
+            else { var prior = e.edge(out.last); prior.next = tail.first; e.set_edge(out.last, prior); }
+            out.last = tail.last; out.count = out.count + tail.count;
+        }
+        out.evaluated = true; e.nodes.set(result, out); return result;
+    }
+    if (name == "list.flatten") {
+        if (!expect_arity(e, call, 1)) { return -1; }
+        let lists = e.child(call, 0); if (!ir_list(e, lists)) { return -1; }
+        let result = e.add_node(5, "", n.file, n.line, n.column); var outer = e.node(lists).first;
+        while (outer >= 0 && e.good()) {
+            let row = e.edge(outer); if (!ir_list(e, row.value)) { return -1; }
+            var inner = e.node(row.value).first;
+            while (inner >= 0) { let item = e.edge(inner); e.add_child(result, item.value); inner = item.next; }
+            outer = row.next;
+        }
+        return e.complete_value(result);
+    }
+    if (name == "list.fold") {
+        if (!expect_arity(e, call, 3)) { return -1; }
+        let target = scalar_text(e, e.child(call, 0)); let list = e.child(call, 1);
+        if (!ir_list(e, list)) { return -1; }
+        var result = e.child(call, 2); var edge = e.node(list).first;
+        let owned_scope = e.begin_scope(); var collection_limit: i64 = 8192;
+        while (edge >= 0 && e.good()) {
+            let item = e.edge(edge); let arguments = e.add_node(5, "", n.file, n.line, n.column);
+            e.add_child(arguments, result); e.add_child(arguments, item.value);
+            result = rule_apply(e, rt, target, arguments, depth, n);
+            e.release_frame(arguments);
+            if (result < 0) { break; }
+            edge = item.next;
+            if (e.scope_allocation_count() >= collection_limit) {
+                e.collect_scope(result);
+                collection_limit = e.scope_allocation_count() * 2 + 8192;
+            }
+        }
+        let output = e.good() ? result : -1;
+        if (owned_scope) { e.end_scope(output); }
+        return output;
+    }
+    if (name == "list.map") {
+        if (!expect_arity(e, call, 2)) { return -1; }
+        let target = scalar_text(e, e.child(call, 0)); let list = e.child(call, 1);
+        if (!ir_list(e, list)) { return -1; }
+        let result = e.add_node(5, "", n.file, n.line, n.column);
+        var edge = e.node(list).first;
+        while (edge >= 0 && e.good()) {
+            let item = e.edge(edge); let args = e.add_node(5, "", n.file, n.line, n.column); e.add_child(args, item.value);
+            let value = rule_apply(e, rt, target, args, depth, n);
+            e.release_frame(args);
+            if (value < 0) { return -1; }
+            e.add_child(result, value); edge = item.next;
+        }
+        return e.complete_value(result);
+    }
+    if (name.starts_with("text.")) {
+        if (!expect_arity(e, call, name == "text.len" ? 1 : name == "text.slice" ? 3 : 2)) { return -1; }
+        let value = scalar_text(e, e.child(call, 0));
+        if (name == "text.len") { return e.add_node(2, naru_number(value.len), n.file, n.line, n.column); }
+        if (name == "text.slice") {
+            let start = scalar_int(e, e.child(call, 1)); let end = scalar_int(e, e.child(call, 2));
+            if (start < 0 || end < start || end > value.len) { e.reject("text slice bounds are invalid"); return -1; }
+            return e.add_node(1, value.substring(start, end), n.file, n.line, n.column);
+        }
+        let pattern = scalar_text(e, e.child(call, 1));
+        if (name == "text.contains") { return bool_node(e, value.contains(pattern)); }
+        if (name == "text.starts") { return bool_node(e, value.starts_with(pattern)); }
+        if (name == "text.ends") { return bool_node(e, value.ends_with(pattern)); }
+    }
+    if (name.starts_with("int.") || name.starts_with("float.")) {
+        let floating = name.starts_with("float.");
+        let unary = name == "int.parse" || name == "int.neg" || name == "float.neg";
+        let arity: i64 = name == "int.fits" || (floating && !unary && name != "float.compare") ? 3 : unary ? 1 : 2;
+        if (!expect_arity(e, call, arity)) { return -1; }
+        let a = scalar_text(e, e.child(call, 0)); var b = "";
+        if (!unary) { b = scalar_text(e, e.child(call, 1)); }
+        var option: i64 = 0;
+        if (arity == 3) { option = scalar_int(e, e.child(call, 2)); }
+        if (!e.good()) { return -1; }
+        return exact_node(e, call, floating ? name : name.substring(4, name.len), a, b, option, floating && name != "float.compare");
+    }
+    e.at_error(n.file, n.line, n.column, "unknown rule primitive: " + name); return -1;
+}

@@ -1,0 +1,46 @@
+mod allocation_contract;
+use c11;
+use c11.syntax;
+use c11.initializers;
+use base;
+use tree;
+use allocation;
+
+effect syntax_site($source)
+    => bind($items,c11.frontend("probe.c",$source,env.empty()),
+        bind($literal,list.head(tree.fold($items,"allocation_contract.find_literal",[])),
+            bind($identity,c11.initializers.automatic_identity(arg($literal,2)),
+                bind($first,base.check($literal,env.empty(),base.Any()),
+                    bind($second,base.check($literal,env.empty(),base.Any()),
+                        [term.kind($identity),eq($identity,arg(list.head(tree.fold($first,"allocation_contract.find_reference",[])),1)),
+                            eq($identity,arg(list.head(tree.fold($second,"allocation_contract.find_reference",[])),1))])))));
+effect find_literal($seen,c11.syntax.CompoundLiteral($type,$initializer,$identity)) => list.prepend(c11.syntax.CompoundLiteral($type,$initializer,$identity),$seen);
+effect[fallback] find_literal($seen,$node) => $seen;
+effect find_reference($seen,c11.initializers.CompoundReference($type,$identity,$value)) => list.prepend(c11.initializers.CompoundReference($type,$identity,$value),$seen);
+effect[fallback] find_reference($seen,$node) => $seen;
+
+// A second language can provide allocation and lexical boundary facts using
+// constructors that neither C11 nor the generic visitor knows beforehand.
+effect allocation.site(Remember($identity)) => allocation.Site($identity,"allocation_contract.allocate",[]);
+effect allocation.children(Boundary($subtree)) => [];
+effect allocate() => mlir.op("llvm.alloca",[mlir.op("arith.constant",[],["i64"],[Attr("value",1,"i64")],[])],["!llvm.ptr"],[RawAttr("elem_type","i32")],[]);
+effect composed_sites()
+    => bind($identity,symbol("foreign.site"),bind($other,symbol("nested.scope"),
+        bind($entry,mlir.block([]),bind($env,allocation.plan_frame(
+            Unknown(Remember($identity),[Remember($identity)],Boundary(Remember($other))),$entry,env.empty()),
+                [size(env.entries($env)),eq(allocation.lookup($env,$identity),allocation.lookup($env,$identity))]))));
+effect allocation.site(Differently($identity)) => allocation.Site($identity,"allocation_contract.other_allocate",[]);
+effect other_allocate() => allocate();
+effect conflicting_sites()
+    => bind($identity,symbol("conflicting.site"),bind($entry,mlir.block([]),
+        allocation.plan_frame(Unknown(Remember($identity),Differently($identity)),$entry,env.empty())));
+effect allocation.site(WithWidth($identity,$width)) => allocation.Site($identity,"allocation_contract.allocate_width",[$width]);
+effect allocate_width($width) => mlir.op("llvm.alloca",[mlir.op("arith.constant",[],["i64"],[Attr("value",1,"i64")],[])],
+    ["!llvm.ptr"],[RawAttr("elem_type",concat("i",text($width)))],[]);
+effect conflicting_arguments()
+    => bind($identity,symbol("conflicting.arguments"),bind($entry,mlir.block([]),
+        allocation.plan_frame(Unknown(WithWidth($identity,32),WithWidth($identity,64)),$entry,env.empty())));
+effect prune_type_description()
+    => bind($identity,symbol("value.site"),bind($other,symbol("type.metadata"),bind($entry,mlir.block([]),
+        bind($env,allocation.plan_frame(base.Typed(UnknownType(Remember($other)),Remember($identity)),$entry,env.empty()),
+            size(env.entries($env))))));

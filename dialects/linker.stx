@@ -1,0 +1,6 @@
+// Object-file linker metadata, reusable by any source-language pipeline.
+mod linker;
+
+effect linker.options($options) => mlir.op("llvm.linker_options",[],[],[
+    RawAttr("options",concat("[",concat(text.join(list.map("linker.quote",$options),", "),"]")))],[]);
+effect linker.quote($option) => text.quote($option);

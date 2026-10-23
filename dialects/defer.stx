@@ -1,0 +1,83 @@
+// Calls capture their arguments at registration; cleanup runs in LIFO order
+// on fallthrough, return, break and continue. No runtime cleanup interpreter.
+mod defer;
+use base;
+use types;
+use control;
+use affine;
+use arrays;
+use functions;
+use pipeline;
+
+syntax statement `defer $call:expr;` => Statement($call);
+effect base.continue(Statement($call), $next) => Deferred($call, $next);
+effect control.append(Deferred($call, $next), $suffix) => Deferred($call, control.append($next, $suffix));
+effect control.range_continues(Deferred($call, $next), $increment) => Deferred($call, control.range_continues($next, $increment));
+effect pipeline.steps() => pipeline.Step("defer", ["generics", "records"], "defer.prepare");
+effect prepare($items) => defer.functions($items, base.declarations($items, env.empty()));
+effect functions([], $environment) => [];
+effect functions($items, $environment) when lt(0, size($items))
+    => list.prepend(defer.function(list.head($items), $environment), defer.functions(list.tail($items), $environment));
+effect function(base.TypedFunction($name, $params, $result, $body), $environment)
+    => base.TypedFunction($name, $params, $result, expand($body, Context([], [], NoLoop()), defer_scope($params,$environment), $result));
+effect defer_scope([],$environment) => $environment;
+effect defer_scope($params,$environment) when lt(0,size($params)) => bind(base.Param($name,$type),list.head($params),
+    defer_scope(list.tail($params),env.put($environment,$name,base.preparation_slot($type,symbol($name)))));
+effect[fallback] function($item, $environment) => $item;
+effect expand(Deferred(base.Call($name, $arguments), $next), $context, $environment, $result)
+    => bind($params, base.signature_params(env.get($environment, $name)),
+        bind([$callee_type,$callee],functions.capture_target($name,env.get($environment,$name)),bind($target,text(symbol("defer.target")),
+            bind([$captures, $bindings], capture($arguments, $params),
+                base.Let($target,$callee_type,$callee,wrap($bindings, expand($next, push(base.Call($target, $captures), $context),
+                    env.put($environment,$target,base.Slot($callee_type,symbol($target))), $result)))))));
+effect[fallback] expand(Deferred($other, $next), $context, $environment, $result) when not(eq(tag($other), tag(base.Call(0,0))))
+    => fail("defer requires a named function call");
+effect capture([], []) => [[], []];
+effect capture($arguments, $params) when and(eq(size($arguments), size($params)), lt(0, size($params)))
+    => bind($name, text(symbol("defer.arg")), bind([$rest, $bindings], capture(list.tail($arguments), list.tail($params)),
+        [list.prepend(captured_argument($name, list.head($params)), $rest),
+            list.prepend(Capture($name, list.head($params), list.head($arguments)), $bindings)]));
+effect capture($arguments, $params) when not(eq(size($arguments), size($params))) => fail("deferred call argument count mismatch");
+effect captured_argument($name, affine.Owned($type)) => affine.Move($name);
+effect[fallback] captured_argument($name, $type) => base.Name($name);
+effect wrap([], $body) => $body;
+effect wrap($bindings, $body) when lt(0, size($bindings))
+    => bind(Capture($name, $type, $value), list.head($bindings), base.Let($name, $type, $value, wrap(list.tail($bindings), $body)));
+effect push($call, Context($returns, $scope, NoLoop())) => Context(list.prepend($call, $returns), list.prepend($call, $scope), NoLoop());
+effect push($call, Context($returns, $scope, CleanupLoop($calls)))
+    => Context(list.prepend($call, $returns), list.prepend($call, $scope), CleanupLoop(list.prepend($call, $calls)));
+effect cleanup_calls([], $next) => $next;
+effect cleanup_calls($calls, $next) when lt(0, size($calls)) => control.Evaluate(list.head($calls), cleanup_calls(list.tail($calls), $next));
+effect expand(base.Return($value), Context($returns, $scope, $loop), $environment, $result)
+    => bind($name, text(symbol("return.value")),
+        base.Let($name, $result, $value, cleanup_calls($returns, base.Return(captured_argument($name, $result)))));
+effect expand(control.ReturnVoid(), Context($returns, $scope, $loop), $environment, $result) => cleanup_calls($returns, control.ReturnVoid());
+effect expand(base.End(), Context($returns, $scope, $loop), $environment, $result) => cleanup_calls($scope, base.End());
+effect expand(control.Break(), Context($returns, $scope, CleanupLoop($calls)), $environment, $result) => cleanup_calls($calls, control.Break());
+effect expand(control.Continue(), Context($returns, $scope, CleanupLoop($calls)), $environment, $result) => cleanup_calls($calls, control.Continue());
+effect expand(control.Break(), Context($returns, $scope, NoLoop()), $environment, $result) => control.Break();
+effect expand(control.Continue(), Context($returns, $scope, NoLoop()), $environment, $result) => control.Continue();
+effect expand(base.Let($name, $type, $value, $next), $context, $environment, $result)
+    => bind($expected,binding_type($type,$environment),bind($actual,arg(base.check($value,$environment,$expected),0),base.Let($name, $expected, $value,
+        expand($next, $context, env.put($environment,$name,base.preparation_slot($actual,symbol($name))), $result))));
+effect[fallback] binding_type($type,$environment) => $type;
+effect expand(base.Var($name, $type, $value, $next), $context, $environment, $result)
+    => bind($actual,arg(base.check($value,$environment,$type),0),base.Var($name, $type, $value,
+        expand($next, $context, env.put($environment,$name,base.preparation_slot($actual,symbol($name))), $result)));
+effect expand(base.Set($name, $value, $next), $context, $environment, $result)
+    => base.Set($name, $value, expand($next, $context, $environment, $result));
+effect expand(control.Evaluate($value, $next), $context, $environment, $result)
+    => control.Evaluate($value, expand($next, $context, $environment, $result));
+effect expand(affine.Write($reference, $value, $next), $context, $environment, $result)
+    => affine.Write($reference, $value, expand($next, $context, $environment, $result));
+effect expand(affine.Release($name, $next), $context, $environment, $result)
+    => affine.Release($name, expand($next, $context, $environment, $result));
+effect expand(arrays.ArrayStore($name,$index,$value,$next),$context,$environment,$result)
+    => arrays.ArrayStore($name,$index,$value,expand($next,$context,$environment,$result));
+effect expand(base.If($condition, $yes, $no, $next), Context($returns, $scope, $loop), $environment, $result)
+    => base.If($condition, expand($yes, Context($returns, [], $loop), $environment, $result),
+        expand($no, Context($returns, [], $loop), $environment, $result),
+        expand($next, Context($returns, $scope, $loop), $environment, $result));
+effect expand(base.While($condition, $body, $next), Context($returns, $scope, $loop), $environment, $result)
+    => base.While($condition, expand($body, Context($returns, [], CleanupLoop([])), $environment, $result),
+        expand($next, Context($returns, $scope, $loop), $environment, $result));

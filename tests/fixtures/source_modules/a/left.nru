@@ -1,0 +1,3 @@
+mod a.left;
+use shared;
+fn a_left() -> i32 { return 1; }

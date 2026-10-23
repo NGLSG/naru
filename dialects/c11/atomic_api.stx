@@ -1,0 +1,79 @@
+// Addressable functions declared by the actual LLVM resource stdatomic.h.
+// The target CRT does not export this compiler-header ABI. Emit deduplicated
+// definitions from the same checked atomic operations used by its macros.
+mod c11.atomic_api;
+use c11.abi;
+use c11.atomics;
+use c11.types;
+use c11.sema;
+use c11.objects;
+use base;
+use control;
+
+effect c11.atomic_api.name($name) => or(c11.atomic_api.fence_name($name),or(c11.atomic_api.test_name($name),c11.atomic_api.clear_name($name)));
+effect c11.atomic_api.fence_name($name) => or(eq($name,"atomic_thread_fence"),eq($name,"atomic_signal_fence"));
+effect c11.atomic_api.test_name($name) => or(eq($name,"atomic_flag_test_and_set"),eq($name,"atomic_flag_test_and_set_explicit"));
+effect c11.atomic_api.clear_name($name) => or(eq($name,"atomic_flag_clear"),eq($name,"atomic_flag_clear_explicit"));
+effect c11.abi.emit_prototype($name,$params,$result,$variadic,$attrs) when c11.atomic_api.name($name)
+    => seq(choose($variadic,fail("C atomic library function cannot be variadic"),1),
+        c11.atomic_api.definition($name,$params,$result,$attrs));
+// Ordinary pointer prototypes deliberately retain incomplete pointees. Only
+// these compiler-owned definitions request their flag layout while tag facts
+// are available; arbitrary pointer declarations keep that normal behavior.
+effect c11.sema.prototype_types_for($name,$types,$environment) when c11.atomic_api.name($name)
+    => c11.atomic_api.parameter_types($name,c11.sema.prototype_types($types,$environment),$environment);
+effect c11.atomic_api.parameter_types($name,$types,$environment) when c11.atomic_api.fence_name($name) => $types;
+effect c11.atomic_api.parameter_types($name,$types,$environment) when not(c11.atomic_api.fence_name($name))
+    => choose(eq(size($types),0),fail("C atomic flag function requires a flag pointer"),
+        list.prepend(c11.atomic_api.complete_flag_pointer(list.head($types),$environment),list.tail($types)));
+effect c11.atomic_api.complete_flag_pointer(c11.types.Pointer($object),$environment)
+    => c11.types.Pointer(c11.sema.complete_type($object,$environment));
+effect[fallback] c11.atomic_api.complete_flag_pointer($type,$environment) => fail("C atomic flag function requires a flag pointer");
+
+effect c11.atomic_api.parameter($type) => base.BoundParam($type,symbol("c.atomic.api.parameter"));
+effect c11.atomic_api.read(base.BoundParam($type,$identity)) => base.Typed($type,base.Read($identity));
+effect c11.atomic_api.order($parameter) => c11.atomics.DynamicOrder(
+    c11.sema.convert(c11.atomic_api.read($parameter),c11.types.integer("int")));
+effect c11.atomic_api.order_type($type) => choose(c11.types.is_integer($type),1,fail("C atomic library memory_order must have integer type"));
+effect c11.atomic_api.definition($name,[$order_type],control.Void(),$attrs) when c11.atomic_api.fence_name($name)
+    => seq(c11.atomic_api.order_type($order_type),bind($order,c11.atomic_api.parameter($order_type),
+        c11.sema.lower_inline_function($name,[$order],control.Void(),control.Evaluate(
+            base.Typed(control.Void(),c11.atomics.AtomicFence(eq($name,"atomic_signal_fence"),c11.atomic_api.order($order))),
+            control.ReturnVoid()),0,$attrs)));
+effect c11.atomic_api.definition($name,[$pointer_type],$result,$attrs) when or(eq($name,"atomic_flag_test_and_set"),eq($name,"atomic_flag_clear"))
+    => bind($pointer,c11.atomic_api.parameter($pointer_type),c11.atomic_api.flag_definition($name,[$pointer],$pointer,
+        c11.atomics.ConstantOrder(5),$result,$attrs));
+effect c11.atomic_api.definition($name,[$pointer_type,$order_type],$result,$attrs) when or(eq($name,"atomic_flag_test_and_set_explicit"),eq($name,"atomic_flag_clear_explicit"))
+    => seq(c11.atomic_api.order_type($order_type),bind($pointer,c11.atomic_api.parameter($pointer_type),bind($order,c11.atomic_api.parameter($order_type),
+        c11.atomic_api.flag_definition($name,[$pointer,$order],$pointer,c11.atomic_api.order($order),$result,$attrs))));
+effect[fallback] c11.atomic_api.definition($name,$params,$result,$attrs) => fail(concat("incompatible C atomic library prototype: ",$name));
+
+effect c11.atomic_api.flag_pointer(c11.types.Pointer($object)) => c11.atomic_api.flag_object($object);
+effect[fallback] c11.atomic_api.flag_pointer($type) => fail("C atomic flag function requires a flag pointer");
+effect c11.atomic_api.flag_object($object) => seq(choose(arg(c11.types.qualifiers($object),0),
+    fail("C atomic flag function cannot modify a const flag"),1),
+    seq(c11.atomic_api.flag_layout(c11.types.unqualified($object)),
+        c11.types.qualify(c11.atomics.Atomic(c11.types.CBool()),c11.types.qualifiers($object))));
+effect c11.atomic_api.flag_layout(c11.types.Record($name,[c11.types.Field("_Value",c11.atomics.Atomic(c11.types.CBool()))]))
+    => choose(and(eq(c11.types.bytes(c11.types.Record($name,[c11.types.Field("_Value",c11.atomics.Atomic(c11.types.CBool()))])),1),
+        eq(c11.types.alignment(c11.types.Record($name,[c11.types.Field("_Value",c11.atomics.Atomic(c11.types.CBool()))])),1)),1,
+        fail("unexpected compiler resource atomic_flag object representation"));
+effect[fallback] c11.atomic_api.flag_layout($type) => fail("unexpected compiler resource atomic_flag fields");
+// Its verified single field starts at offset zero. Opaque LLVM pointers retain
+// the exact same address while the operation receives the field qualifiers.
+effect c11.atomic_api.flag_address(base.BoundParam($type,$identity),$object)
+    => base.Typed(c11.types.Pointer($object),base.Read($identity));
+effect c11.atomic_api.flag_definition($name,$params,base.BoundParam($pointer_type,$identity),$order,c11.types.CBool(),$attrs)
+    when c11.atomic_api.test_name($name)
+    => bind($object,c11.atomic_api.flag_pointer($pointer_type),c11.sema.lower_inline_function($name,$params,c11.types.CBool(),
+        base.Return(base.Typed(c11.types.CBool(),c11.atomics.AtomicExchange($object,c11.types.CBool(),
+            c11.atomic_api.flag_address(base.BoundParam($pointer_type,$identity),$object),
+            base.Typed(c11.types.CBool(),base.Integer(1)),$order))),0,$attrs));
+effect c11.atomic_api.flag_definition($name,$params,base.BoundParam($pointer_type,$identity),$order,control.Void(),$attrs)
+    when c11.atomic_api.clear_name($name)
+    => bind($object,c11.atomic_api.flag_pointer($pointer_type),c11.sema.lower_inline_function($name,$params,control.Void(),
+        control.Evaluate(base.Typed(control.Void(),c11.atomics.AtomicStore($object,c11.types.CBool(),
+            c11.atomic_api.flag_address(base.BoundParam($pointer_type,$identity),$object),
+            base.Typed(c11.types.CBool(),base.Integer(0)),$order)),control.ReturnVoid()),0,$attrs));
+effect[fallback] c11.atomic_api.flag_definition($name,$params,$pointer,$order,$result,$attrs)
+    => fail(concat("incompatible C atomic flag result type: ",$name));

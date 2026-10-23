@@ -1,0 +1,419 @@
+module naru;
+use std.collections;
+use std.string;
+use std.fs;
+
+extern "C" {
+    fn naru_file_sha256(path: rawptr, length: i64) -> rawptr;
+    fn naru_atomic_text(path: rawptr, length: i64, text: rawptr, text_length: i64) -> i32;
+}
+
+@[derive(Clone)]
+struct ManifestField { public key: string; public value: string; }
+@[derive(Clone)]
+class Manifest {
+    public path: string;
+    public values: Dict<string, string>;
+    public fields: Vec<ManifestField>;
+    public dependencies: Vec<string>;
+    public exports: Vec<string>;
+    public static fn new(path: string) -> Manifest {
+        return Manifest { path: str_dup(path), values: Dict::<string, string>.new(),
+            fields: Vec::<ManifestField>.new(), dependencies: Vec::<string>.new(), exports: Vec::<string>.new() };
+    }
+}
+@[derive(Clone)]
+struct PackageEdge { public owner: i64; public alias: string; public target: i64; }
+class ProjectGraph {
+    public packages: Vec<Manifest>;
+    public edges: Vec<PackageEdge>;
+    public states: Dict<string, string>;
+    public identities: Dict<string, string>;
+    public order: Vec<i64>;
+    public root: i64;
+    public static fn new() -> ProjectGraph {
+        return ProjectGraph { packages: Vec::<Manifest>.new(), edges: Vec::<PackageEdge>.new(),
+            states: Dict::<string, string>.new(), identities: Dict::<string, string>.new(), order: Vec::<i64>.new(), root: -1 };
+    }
+}
+
+public fn project_manifest_path(path: string) -> string {
+    return naru_absolute_path(isDir(path) ? naru_join_path(path, "Naru.toml") : path);
+}
+public fn discover_project() -> string {
+    var directory = naru_absolute_path(".");
+    while (directory.len > 0) {
+        let candidate = naru_join_path(directory, "Naru.toml");
+        if (fileExists(candidate) && !isDir(candidate)) { return candidate; }
+        let parent = naru_dirname(directory);
+        if (str_to_lower(parent) == str_to_lower(directory)) { return ""; }
+        directory = str_dup(parent);
+    }
+    return "";
+}
+fn manifest_key(stream: &mut Stream) -> string {
+    let first = stream.take();
+    if (first.kind != 1 && first.kind != 3 && first.kind != 2) { stream.reject("expected a manifest key"); return ""; }
+    var key = str_dup(first.text);
+    if (first.kind == 3) { return key; }
+    while (stream.at(".") || stream.at("-")) {
+        let separator = stream.take().text;
+        let next = stream.take();
+        if (next.kind != 1 && next.kind != 2) { stream.reject("expected a key component"); return ""; }
+        key = key + separator + next.text;
+    }
+    return key;
+}
+fn manifest_dependency(m: &mut Manifest, name: string) {
+    var i: i64 = 0;
+    while (i < m.dependencies.len) { if (m.dependencies.get(i) == name) { return; } i = i + 1; }
+    m.dependencies.push(str_dup(name));
+}
+fn manifest_kind(key: string) -> string {
+    if (key == "language.dialects" || key == "language.rules" || key == "link.objects" || key == "link.libraries"
+        || key == "link.library_paths" || key == "backend.irdl" || key == "backend.dialect_plugins" || key == "backend.pass_plugins") { return "array"; }
+    if (key == "package.name" || key == "package.version" || key == "package.entry"
+        || key == "language.entry" || key == "language.relation" || key == "language.unit" || key == "language.frontend"
+        || key == "backend.target" || key == "backend.pipeline" || key == "backend.lowering_pipeline"
+        || key == "backend.opt_level" || key == "backend.triple" || key == "backend.cpu" || key == "backend.features"
+        || key == "build.output" || key == "build.output_dir" || key == "limits.rule_steps" || (key == "limits.parse_steps" || key == "limits.rule_depth" || key == "limits.parse_depth") || key == "link.runtime" || key == "link.subsystem"
+        || key == "link.native_entry" || key == "link.vc_tools_dir" || key == "link.windows_sdk_dir" || key == "link.windows_sdk_version") { return "string"; }
+    if ((key.starts_with("exports.") && key.len > 8) || (key.starts_with("frontend.") && key.len > 9)) { return "string"; }
+    if (key.starts_with("dependencies.")) {
+        let parent = naru_name_module(key);
+        if (parent == "dependencies") { return "table"; }
+        if (naru_name_module(parent) == "dependencies") {
+            let field = naru_short_name(key);
+            if (field == "path" || field == "version" || field == "package") { return "string"; }
+        }
+    }
+    return "";
+}
+fn manifest_value(m: &mut Manifest, stream: &mut Stream, key: string) -> bool {
+    let kind = manifest_kind(key);
+    if (kind.len == 0) { stream.reject("unsupported project key: " + key); return false; }
+    if (m.values.contains("kind:" + key)) { stream.reject("duplicate project key: " + key); return false; }
+    m.values.put("kind:" + key, str_dup(kind));
+    if (kind == "table") {
+        manifest_dependency(m, naru_short_name(key));
+        if (!stream.expect("{")) { return false; }
+        if (!stream.accept("}")) {
+            var finished = false;
+            while (!finished && stream.diagnostic.len == 0) {
+                let member = manifest_key(stream);
+                if (!stream.expect("=") || !manifest_value(m, stream, key + "." + member)) { return false; }
+                if (stream.accept("}")) { finished = true; }
+                else if (!stream.expect(",")) { return false; }
+                else if (stream.accept("}")) { finished = true; }
+            }
+        }
+    } else if (kind == "array") {
+        if (!stream.expect("[")) { return false; }
+        if (!stream.accept("]")) {
+            var finished = false;
+            while (!finished && stream.diagnostic.len == 0) {
+                let value = stream.take();
+                if (value.kind != 3 || value.text.len == 0) { stream.reject("project arrays require nonempty quoted strings: " + key); return false; }
+                m.fields.push(ManifestField { key: str_dup(key), value: str_dup(value.text) });
+                if (stream.accept("]")) { finished = true; }
+                else if (!stream.expect(",")) { return false; }
+                else if (stream.accept("]")) { finished = true; }
+            }
+        }
+    } else {
+        let value = stream.take();
+        let empty_allowed = key == "backend.pipeline" || key == "backend.lowering_pipeline" || key == "backend.features" || key == "backend.cpu" || key.starts_with("frontend.");
+        if ((value.kind != 3 && !((key == "backend.opt_level" || key == "limits.rule_steps" || (key == "limits.parse_steps" || key == "limits.rule_depth" || key == "limits.parse_depth")) && value.kind == 2)) || (value.text.len == 0 && !empty_allowed)) { stream.reject("project value must be quoted text: " + key); return false; }
+        m.values.put(str_dup(key), str_dup(value.text));
+        if (key.starts_with("exports.")) { m.exports.push(str_dup(key.substring(8, key.len))); }
+    }
+    return stream.diagnostic.len == 0;
+}
+fn parse_manifest(e: &mut Engine, path: string) -> Manifest {
+    var m = Manifest.new(path);
+    let source = naru_read_text(e, path);
+    if (!e.good()) { return m; }
+    var stream = tokenize(project_comments(source), path);
+    var section = "";
+    var sections = Dict::<string, string>.new();
+    while (stream.peek().kind != 0 && stream.diagnostic.len == 0) {
+        if (stream.accept("[")) {
+            section = manifest_key(&mut stream);
+            if (!stream.expect("]")) { break; }
+            if (sections.contains(section)) { stream.reject("duplicate project section: " + section); break; }
+            sections.put(str_dup(section), "1");
+            if (section != "package" && section != "language" && section != "backend" && section != "build"
+                && section != "link" && section != "exports" && section != "frontend" && section != "limits" && section != "dependencies" && naru_name_module(section) != "dependencies") {
+                stream.reject("unsupported project section: " + section); break;
+            }
+            if (naru_name_module(section) == "dependencies") {
+                if (m.values.contains("kind:" + section)) { stream.reject("duplicate dependency: " + section); break; }
+                m.values.put("kind:" + section, "table"); manifest_dependency(&mut m, naru_short_name(section));
+            }
+            continue;
+        }
+        let key = manifest_key(&mut stream);
+        if (!stream.expect("=") || !manifest_value(&mut m, &mut stream, section + "." + key)) { break; }
+    }
+    if (stream.diagnostic.len > 0) { e.reject(stream.diagnostic); }
+    return m;
+}
+fn semantic_version(text: string) -> i64 {
+    var component: i64 = 0; var result: i64 = 0; var parts: i64 = 0; var digits: i64 = 0; var i: i64 = 0;
+    while (i <= text.len) {
+        let c = i == text.len ? 46 : str_char_at(text, i);
+        if (c == 46) {
+            if (digits == 0 || component >= 1000000 || parts >= 3) { return -1; }
+            result = result * 1000000 + component; parts = parts + 1; component = 0; digits = 0;
+        } else if (naru_digit(c)) {
+            if (digits > 0 && component == 0) { return -1; }
+            component = component * 10 + (c - 48) as i64; digits = digits + 1;
+            if (component >= 1000000) { return -1; }
+        } else { return -1; }
+        i = i + 1;
+    }
+    return parts == 3 ? result : -1;
+}
+fn package_name_valid(name: string) -> bool {
+    if (name.len == 0 || !naru_ident_start(str_char_at(name, 0))) { return false; }
+    var i: i64 = 1;
+    while (i < name.len) { let c = str_char_at(name, i); if (!naru_ident_part(c) && c != 45) { return false; } i = i + 1; }
+    return true;
+}
+fn version_matches(actual: string, requested: string) -> bool {
+    let value = semantic_version(actual);
+    if (value < 0) { return false; }
+    if (requested == "*") { return true; }
+    let ranged = requested.starts_with("^") || requested.starts_with("~");
+    let minimum = semantic_version(ranged ? requested.substring(1, requested.len) : requested);
+    if (minimum < 0 || value < minimum) { return false; }
+    if (!ranged) { return value == minimum; }
+    if (requested.starts_with("~")) { return value / 1000000 == minimum / 1000000; }
+    if (minimum >= 1000000000000) { return value / 1000000000000 == minimum / 1000000000000; }
+    if (minimum >= 1000000) { return value / 1000000 == minimum / 1000000; }
+    return value == minimum;
+}
+fn graph_package(e: &mut Engine, g: &mut ProjectGraph, requested: string, depth: i64) -> i64 {
+    if (!e.good()) { return -1; }
+    if (depth > 64) { e.reject("project dependency graph exceeds 64 levels"); return -1; }
+    let path = project_manifest_path(requested);
+    let key = str_to_lower(path);
+    var i: i64 = 0;
+    while (i < g.packages.len) {
+        let prior = g.packages.get_ref(i);
+        if (same_path(prior.path, path)) {
+            if (g.states.get(str_to_lower(prior.path)) == "active") { e.reject("project dependency cycle: " + path); return -1; }
+            return i;
+        }
+        i = i + 1;
+    }
+    var m = parse_manifest(e, path);
+    if (!e.good()) { return -1; }
+    if (!m.values.contains("package.name")) { m.values.put("package.name", depth == 0 ? "naru-app" : ""); }
+    if (!m.values.contains("package.version")) { m.values.put("package.version", depth == 0 ? "0.0.0" : ""); }
+    let name = m.values.get("package.name"); let version = m.values.get("package.version");
+    if (name.len == 0 || semantic_version(version) < 0) { e.reject("rule package requires package.name and a major.minor.patch version: " + path); return -1; }
+    if (!package_name_valid(name)) { e.reject("invalid package name: " + name); return -1; }
+    if (g.identities.contains(name)) { e.reject("conflicting package identity '" + name + "': " + g.identities.get(name) + " and " + path); return -1; }
+    g.identities.put(str_dup(name), str_dup(path)); g.states.put(str_dup(key), "active");
+    let id = g.packages.len; g.packages.push(m.clone()); e.project_inputs.push(str_dup(path));
+    i = 0;
+    while (i < m.exports.len && e.good()) {
+        let module_name = m.exports.get(i);
+        let exported = naru_absolute_path(naru_join_path(naru_dirname(path), m.values.get("exports." + module_name)));
+        if (!exported.ends_with(".stx") || !fileExists(exported) || isDir(exported)) { e.reject("dialect export does not name an existing .stx file: " + exported); return -1; }
+        if (e.rule_catalog.contains(module_name) && !same_path(e.rule_catalog.get(module_name), exported)) { e.reject("conflicting dialect export '" + module_name + "'"); return -1; }
+        e.rule_catalog.put(module_name, str_dup(exported)); e.project_inputs.push(exported); i = i + 1;
+    }
+    i = 0;
+    while (i < m.dependencies.len && e.good()) {
+        let alias = m.dependencies.get(i); let prefix = "dependencies." + alias + ".";
+        if (!package_name_valid(alias)) { e.reject("invalid dependency alias: " + alias); return -1; }
+        if (!m.values.contains(prefix + "path")) { e.reject("dependency requires a local project path: " + alias + " in " + path); return -1; }
+        let child = graph_package(e, g, naru_join_path(naru_dirname(path), m.values.get(prefix + "path")), depth + 1);
+        if (!e.good() || child < 0) { return -1; }
+        let package = g.packages.get_ref(child);
+        if (m.values.contains(prefix + "package") && m.values.get(prefix + "package") != package.values.get("package.name")) { e.reject("dependency package name mismatch: " + alias); return -1; }
+        if (m.values.contains(prefix + "version") && !version_matches(package.values.get("package.version"), m.values.get(prefix + "version"))) { e.reject("dependency version mismatch: " + alias + " requires " + m.values.get(prefix + "version") + ", found " + package.values.get("package.version")); return -1; }
+        g.edges.push(PackageEdge { owner: id, alias: str_dup(alias), target: child }); i = i + 1;
+    }
+    g.states.put(key, "done"); g.order.push(id); return id;
+}
+fn project_reference(e: &mut Engine, g: &mut ProjectGraph, owner: i64, reference: string) -> string {
+    let m = g.packages.get_ref(owner);
+    if (reference.ends_with(".stx")) { return naru_absolute_path(naru_join_path(naru_dirname(m.path), reference)); }
+    var slash: i64 = -1; var i: i64 = 0;
+    while (i < reference.len && slash < 0) { if (str_char_at(reference, i) == 47) { slash = i; } i = i + 1; }
+    var target = owner; var exported = str_dup(reference);
+    if (slash >= 0) {
+        let alias = reference.substring(0, slash); exported = str_dup(reference.substring(slash + 1, reference.len)); target = -1; i = 0;
+        while (i < g.edges.len) { let edge = g.edges.get(i); if (edge.owner == owner && edge.alias == alias) { target = edge.target; } i = i + 1; }
+        if (target < 0) { e.reject("unknown project dependency in dialect reference: " + reference); return ""; }
+    }
+    let package = g.packages.get_ref(target);
+    if (!package.values.contains("exports." + exported)) { e.reject("unknown dialect export: " + reference + " in " + package.path); return ""; }
+    return naru_absolute_path(naru_join_path(naru_dirname(package.path), package.values.get("exports." + exported)));
+}
+public fn read_project(e: &mut Engine, path: string, rules: &mut Vec<string>, settings: &mut Dict<string, string>, g: &mut ProjectGraph) -> bool {
+    g.root = graph_package(e, g, path, 0);
+    if (!e.good()) { return false; }
+    let m = g.packages.get_ref(g.root);
+    e.project_inputs.push(naru_join_path(naru_dirname(m.path), "Naru.lock"));
+    let keys = naru_text_keys(&m.values); var i: i64 = 0;
+    while (i < keys.len) { let key = keys.get(i); if (!key.starts_with("kind:")) { settings.put(key, str_dup(m.values.get(key))); } i = i + 1; }
+    i = 0;
+    while (i < m.fields.len && e.good()) {
+        let field = m.fields.get(i);
+        if (field.key == "language.dialects" || field.key == "language.rules") { rules.push(project_reference(e, g, g.root, field.value)); }
+        i = i + 1;
+    }
+    return e.good();
+}
+public fn project_backend_options(g: &mut ProjectGraph, options: &mut Vec<string>) {
+    var i: i64 = 0;
+    while (i < g.order.len) {
+        let m = g.packages.get_ref(g.order.get(i)); var j: i64 = 0;
+        while (j < m.fields.len) {
+            let field = m.fields.get(j); var flag = ""; var path = true;
+            if (field.key == "link.objects") { flag = "--link-object"; }
+            if (field.key == "link.libraries") { flag = "--link-library"; path = field.value.contains("/") || field.value.contains("\\") || field.value.contains(":"); }
+            if (field.key == "link.library_paths") { flag = "--library-path"; }
+            if (field.key == "backend.irdl") { flag = "--irdl"; }
+            if (field.key == "backend.dialect_plugins") { flag = "--dialect-plugin"; }
+            if (field.key == "backend.pass_plugins") { flag = "--pass-plugin"; }
+            if (flag.len > 0) { options.push(flag); options.push(path ? naru_absolute_path(naru_join_path(naru_dirname(m.path), field.value)) : str_dup(field.value)); }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    if (g.root < 0) { return; }
+    let root = g.packages.get_ref(g.root);
+    let keys = naru_text_keys(&root.values); i = 0;
+    while (i < keys.len) {
+        let key = keys.get(i); let value = root.values.get(key);
+        if (key.starts_with("backend.") || key.starts_with("link.")) {
+            let short = naru_short_name(key);
+            if (short != "target" && root.values.get("kind:" + key) == "string") {
+                let flag = short == "pipeline" ? "--pass-pipeline" : "--" + str_replace(short, "_", "-");
+                options.push(flag);
+                options.push(short == "vc_tools_dir" || short == "windows_sdk_dir" ? naru_absolute_path(naru_join_path(naru_dirname(root.path), value)) : str_dup(value));
+            }
+        }
+        i = i + 1;
+    }
+}
+public fn project_hash(e: &mut Engine, path: string) -> string {
+    let pointer = naru_file_sha256(path.c_str(), path.len);
+    let hash = pointer == null ? "" : str_dup(from_cstr(pointer));
+    if (hash.len != 64) { e.reject("cannot fingerprint project input: " + path); }
+    return hash;
+}
+fn project_relative(path: string, directory: string) -> string {
+    let target = naru_absolute_path(path);
+    var base = naru_absolute_path(directory);
+    if (!base.ends_with("/")) { base = base + "/"; }
+    if (str_to_lower(target.substring(0, 2)) != str_to_lower(base.substring(0, 2))) { return target; }
+    let x = str_to_lower(target); let y = str_to_lower(base);
+    var i: i64 = 0; var shared: i64 = 0;
+    while (i < x.len && i < y.len && str_char_at(x, i) == str_char_at(y, i)) { if (str_char_at(y, i) == 47) { shared = i + 1; } i = i + 1; }
+    var out = ""; i = shared;
+    while (i < base.len) { if (str_char_at(base, i) == 47) { out = out + "../"; } i = i + 1; }
+    return out + target.substring(shared, target.len);
+}
+public fn project_lock_text(e: &mut Engine, g: &mut ProjectGraph) -> string {
+    if (g.root < 0) { return ""; }
+    let directory = naru_dirname(g.packages.get_ref(g.root).path);
+    var out = "{\n  \"format\": 1,\n  \"generator\": \"naru\",\n  \"packages\": ["; var i: i64 = 0;
+    while (i < g.packages.len && e.good()) {
+        let m = g.packages.get_ref(i);
+        out = out + (i > 0 ? "," : "") + "\n    {\"name\": " + json_quote(m.values.get("package.name"))
+            + ", \"version\": " + json_quote(m.values.get("package.version")) + ", \"manifest\": " + json_quote(project_relative(m.path, directory))
+            + ", \"sha256\": " + json_quote(project_hash(e, m.path)) + "}"; i = i + 1;
+    }
+    out = out + "\n  ],\n  \"dependencies\": ["; i = 0;
+    while (i < g.edges.len) { let edge = g.edges.get(i);
+        out = out + (i > 0 ? "," : "") + "\n    {\"owner\": " + naru_number(edge.owner) + ", \"alias\": " + json_quote(edge.alias) + ", \"target\": " + naru_number(edge.target) + "}"; i = i + 1;
+    }
+    out = out + "\n  ],\n  \"rules\": ["; i = 0;
+    var modules = Vec::<i64>.new();
+    while (i < e.modules.len) {
+        modules.push(i); var j = i;
+        while (j > 0 && project_less_name(e.modules.get(modules.get(j)).name, e.modules.get(modules.get(j - 1)).name)) {
+            let previous = modules.get(j - 1); modules.set(j - 1, modules.get(j)); modules.set(j, previous); j = j - 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < e.modules.len && e.good()) {
+        let module_info = e.modules.get(modules.get(i));
+        let path = e.rule_catalog.contains(module_info.name) ? e.rule_catalog.get(module_info.name) : module_info.path;
+        out = out + (i > 0 ? "," : "") + "\n    {\"module\": " + json_quote(module_info.name) + ", \"path\": " + json_quote(project_relative(path, directory))
+            + ", \"sha256\": " + json_quote(project_hash(e, path)) + "}"; i = i + 1;
+    }
+    return out + "\n  ]\n}\n";
+}
+fn project_less_name(first: string, second: string) -> bool {
+    var i: i64 = 0;
+    while (i < first.len && i < second.len) { let a = str_char_at(first, i); let b = str_char_at(second, i); if (a != b) { return a < b; } i = i + 1; }
+    return first.len < second.len;
+}
+fn project_same_lock(first: string, second: string) -> bool {
+    var a = tokenize(first, "Naru.lock"); var b = tokenize(second, "<resolved project>");
+    if (a.diagnostic.len > 0 || b.diagnostic.len > 0 || a.tokens.len != b.tokens.len) { return false; }
+    var i: i64 = 0;
+    while (i < a.tokens.len) { let x = a.tokens.get(i); let y = b.tokens.get(i); if (x.kind != y.kind || x.text != y.text) { return false; } i = i + 1; }
+    return true;
+}
+public fn project_lock(e: &mut Engine, g: &mut ProjectGraph, locked: bool) -> bool {
+    if (g.root < 0) { if (locked) { e.reject("--locked requires a project"); } return e.good(); }
+    let path = naru_join_path(naru_dirname(g.packages.get_ref(g.root).path), "Naru.lock");
+    let text = project_lock_text(e, g);
+    if (!e.good()) { return false; }
+    if (fileExists(path)) {
+        let existing = naru_read_text(e, path);
+        if (!e.good()) { return false; }
+        if (project_same_lock(existing, text)) { e.project_inputs.push(path); return true; }
+    }
+    if (locked) { e.reject("Naru.lock is missing or out of date; run naru resolve --project " + g.packages.get_ref(g.root).path); return false; }
+    if (naru_atomic_text(path.c_str(), path.len, text.c_str(), text.len) != 0) { e.reject("cannot atomically write lockfile: " + path); return false; }
+    e.project_inputs.push(path); return true;
+}
+public fn validate_frozen_project(e: &mut Engine, rules: &mut Vec<string>) -> bool {
+    var selected = Dict::<string, string>.new(); var pending = Vec::<string>.new(); var i: i64 = 0;
+    while (i < rules.len && e.good()) {
+        let path = rules.get(i); let hash = project_hash(e, path); var found = ""; var j: i64 = 0;
+        while (j < e.modules.len) { let m = e.modules.get(j); if (e.rule_hashes.contains(m.name) && e.rule_hashes.get(m.name) == hash) { found = m.name; } j = j + 1; }
+        if (found.len == 0) {
+            found = rule_file_module(e, path);
+            if (!e.good()) { return false; }
+            if (e.rule_hashes.contains(found)) { e.reject("project dialect differs from this frozen compiler: " + path); return false; }
+            if (!load_rule_file(e, path)) { return false; }
+        }
+        if (!selected.contains(found)) { selected.put(str_dup(found), path); pending.push(found); }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < pending.len && e.good()) {
+        let name = pending.get(i); let id = naru_module_index(e, name); let m = e.modules.get(id); var edge = e.node(m.imports).first;
+        while (edge >= 0) {
+            let value = e.edge(edge); let imported = e.node(value.value).text;
+            if (!selected.contains(imported)) {
+                let path = e.rule_catalog.contains(imported) ? e.rule_catalog.get(imported) : naru_import_rule_path(selected.get(name), name, imported);
+                if (e.rule_hashes.contains(imported)) {
+                    if (project_hash(e, path) != e.rule_hashes.get(imported)) { e.reject("project dependency differs from frozen dialect: " + imported); return false; }
+                } else if (!load_rule_file(e, path)) { return false; }
+                if (naru_module_index(e, imported) < 0) { e.reject("project dependency does not declare module: " + imported); return false; }
+                selected.put(str_dup(imported), path); pending.push(imported);
+            }
+            edge = value.next;
+        }
+        e.project_inputs.push(selected.get(name)); e.rule_catalog.put(str_dup(name), selected.get(name)); i = i + 1;
+    }
+    i = 0;
+    while (i < e.modules.len) {
+        let name = e.modules.get(i).name;
+        if (e.rule_hashes.contains(name) && !selected.contains(name)) { e.reject("project selects a different dialect group than this frozen compiler"); return false; }
+        i = i + 1;
+    }
+    return e.good();
+}

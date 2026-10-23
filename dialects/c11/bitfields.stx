@@ -1,0 +1,179 @@
+// C member policy over shared storage windows. BitType is a value category
+// descriptor, never a standalone C declarable object type.
+mod c11.bitfields;
+use c11.syntax;
+use c11.types;
+use c11.sema;
+use c11.declarators;
+use c11.objects;
+use c11.initializers;
+use c11.union_storage;
+use c11.layout;
+use c11.members;
+use base;
+use types;
+use storage;
+use layout;
+
+syntax c11.field_decl `$decl:c11.declarator` => $decl;
+syntax c11.field_decl `$decl:c11.declarator : $width:c11.expr` => BitDecl($decl,$width);
+syntax c11.field_decl `: $width:c11.expr` => BitDecl(c11.declarators.Named(""),$width);
+syntax c11.field_decls `$decl:c11.field_decl` => [$decl];
+syntax c11.field_decls `$decl:c11.field_decl, $rest:c11.field_decls` => list.prepend($decl,$rest);
+syntax c11.field[fallback] `$type:c11.specifier $decls:c11.field_decls;` => c11.syntax.fields($type,$decls);
+effect c11.syntax.field_step(c11.syntax.Fields($out,$base),BitDecl($decl,$source))
+    => bind(c11.declarators.Resolved($name,$type),c11.declarators.resolve($decl,$base),
+        bind(base.Typed($integer,base.Integer($width)),c11.sema.integer_constant_value($source,syntax.context()),
+            seq(c11.bitfields.field_constraint($name,$type,$width),c11.syntax.Fields(
+                list.prepend(c11.types.Field($name,BitType($type,$width)),$out),$base))));
+effect c11.bitfields.field_constraint($name,$type,$width)
+    => choose(and(c11.types.is_integer(c11.types.unqualified($type)),
+        and(not(lt($width,0)),not(lt(c11.bitfields.value_bits($type),$width)))),
+        choose(and(eq($width,0),not(eq($name,""))),fail("named C bit-field cannot have zero width"),1),
+        fail("C bit-field requires an integer type and a width within its representation"));
+effect c11.bitfields.value_bits(c11.types.Qualified($type,$c,$v,$r)) => c11.bitfields.value_bits($type);
+effect c11.bitfields.value_bits(c11.types.CBool()) => 1;
+effect[fallback] c11.bitfields.value_bits($type) => mul(c11.types.bytes($type),8);
+effect c11.objects.normalize_field(c11.objects.Normalized($out,$kind,$index,$count),c11.types.Field($name,BitType($type,$width)))
+    => seq(c11.bitfields.field_constraint($name,$type,$width),c11.objects.Normalized(
+        list.prepend(c11.types.Field($name,BitType($type,$width)),$out),$kind,add($index,1),$count));
+effect c11.objects.anonymous_visible(BitType($type,$width)) => [];
+effect c11.initializers.anonymous_candidate(BitType($type,$width),$wanted,$index) => [];
+effect c11.objects.member_paths("",BitType($type,$width),$wanted,$offset) when not(eq($wanted,"")) => [];
+effect c11.objects.aggregate_constraints($kind,$fields) when c11.bitfields.has_bits($fields)
+    => choose(lt(0,size(c11.objects.visible_members($fields))),1,fail("C aggregate requires at least one named member"));
+effect c11.bitfields.has_bits($fields) => list.fold("c11.bitfields.has_bit",$fields,0);
+effect c11.bitfields.has_bit($seen,c11.types.Field($name,BitType($base,$width))) => 1;
+effect[fallback] c11.bitfields.has_bit($seen,$field) => $seen;
+
+effect types.repr(BitType($type,$width)) => types.repr($type);
+effect c11.types.storage(BitType($type,$width)) => c11.types.storage(c11.types.unqualified($type));
+effect c11.types.unqualified(BitType($type,$width)) => BitType(c11.types.unqualified($type),$width);
+effect c11.types.qualifiers(BitType($type,$width)) => c11.types.qualifiers($type);
+effect c11.types.bytes(BitType($type,$width)) => c11.types.bytes($type);
+effect c11.types.alignment(BitType($type,$width)) => c11.types.alignment($type);
+effect c11.types.sizeof(BitType($type,$width)) => fail("sizeof cannot be applied to a C bit-field");
+effect c11.types.is_integer(BitType($type,$width)) => 1;
+effect c11.types.is_arithmetic(BitType($type,$width)) => 1;
+effect c11.types.promotion(BitType($type,$width))
+    => choose(lt($width,32),c11.types.integer("int"),c11.types.promotion(c11.types.unqualified($type)));
+effect c11.types.field_layout(c11.types.Field($name,BitType($type,0))) => [0,1];
+effect c11.types.field_layout(c11.types.Field($name,BitType($type,$width))) when lt(0,$width)
+    => [c11.types.bytes($type),c11.types.alignment($type)];
+effect c11.sema.writable_type(BitType($type,$width)) => c11.sema.writable_type($type);
+effect base.opcode($operation,BitType($type,$width)) => base.opcode($operation,$type);
+effect base.predicate($operation,BitType($type,$width)) => base.predicate($operation,$type);
+effect c11.sema.conversion($value,BitType(c11.types.CBool(),1))
+    => bind(base.Typed($type,$converted),c11.sema.convert($value,c11.types.CBool()),base.Typed(BitType($type,1),$converted));
+effect c11.sema.constant_convert($value,BitType($type,$width))
+    => bind(base.Typed($base,$converted),c11.sema.constant_convert($value,c11.types.unqualified($type)),base.Typed(BitType($base,$width),$converted));
+
+// Windows x64/MS allocation units: adjacent equal-size types share a unit
+// only while they fit. Zero-width fields close a preceding bit-field unit;
+// an initial zero-width field does not change the enclosing alignment.
+effect c11.types.record_layout_policy($fields) when c11.bitfields.has_bits($fields)
+    => c11.bitfields.record_layout($fields,0);
+effect c11.bitfields.record_layout($fields,$cap)
+    => bind(BitLayout($end,$alignment,$offset,$unit,$used,$offsets,$previous,$limit),
+        list.fold("c11.bitfields.layout_field",$fields,BitLayout(0,1,0,0,0,[],0,$cap)),
+            layout.Object(layout.round_up($end,$alignment),$alignment,list.reverse($offsets)));
+effect c11.bitfields.layout_field(BitLayout($end,$alignment,$offset,$unit,$used,$offsets,$previous,$cap),c11.types.Field($name,BitType($type,0)))
+    => bind($member_align,c11.types.member_alignment($type,$cap),bind($next,choose($previous,layout.round_up($end,$member_align),$end),
+        BitLayout($next,choose($previous,c11.bitfields.maximum($alignment,$member_align),$alignment),0,0,0,
+            list.prepend(BitOffset($next,0),$offsets),0,$cap)));
+effect c11.bitfields.layout_field(BitLayout($end,$alignment,$offset,$unit,$used,$offsets,$previous,$cap),c11.types.Field($name,BitType($type,$width))) when lt(0,$width)
+    => bind($bytes,c11.types.bytes($type),bind($fits,and($previous,and(eq($unit,$bytes),not(lt(mul($bytes,8),add($used,$width))))),
+        bind($member_align,c11.types.member_alignment($type,$cap),bind($at,choose($fits,$offset,layout.round_up($end,$member_align)),
+            bind($shift,choose($fits,$used,0),BitLayout(choose($fits,$end,add($at,$bytes)),
+                c11.bitfields.maximum($alignment,$member_align),$at,$bytes,add($shift,$width),
+                    list.prepend(BitOffset($at,$shift),$offsets),1,$cap))))));
+effect[fallback] c11.bitfields.layout_field(BitLayout($end,$alignment,$offset,$unit,$used,$offsets,$previous,$cap),c11.types.Field($name,$type))
+    => bind($member_align,c11.types.member_alignment($type,$cap),bind($at,layout.round_up($end,$member_align),BitLayout(add($at,c11.types.bytes($type)),
+        c11.bitfields.maximum($alignment,$member_align),0,0,0,list.prepend($at,$offsets),0,$cap)));
+effect c11.bitfields.maximum($a,$b) => choose(lt($a,$b),$b,$a);
+// Microsoft unions allocate bitfield units but do not acquire their alignment.
+// A zero-width unit contributes size only after a nonzero-width bitfield.
+effect c11.types.union_layout_policy($fields) when c11.bitfields.has_bits($fields) => c11.bitfields.union_layout($fields,0);
+effect c11.bitfields.union_layout($fields,$cap) => bind(UnionLayout($size,$alignment,$previous,$offsets,$limit),
+    list.fold("c11.bitfields.union_field",$fields,UnionLayout(0,1,0,[],$cap)),
+        layout.Object(layout.round_up($size,$alignment),$alignment,list.reverse($offsets)));
+effect c11.bitfields.union_field(UnionLayout($size,$alignment,$previous,$offsets,$cap),c11.types.Field($name,BitType($type,0)))
+    => UnionLayout(choose($previous,c11.bitfields.maximum($size,c11.types.bytes($type)),$size),$alignment,0,list.prepend(0,$offsets),$cap);
+effect c11.bitfields.union_field(UnionLayout($size,$alignment,$previous,$offsets,$cap),c11.types.Field($name,BitType($type,$width))) when lt(0,$width)
+    => UnionLayout(c11.bitfields.maximum($size,c11.types.bytes($type)),$alignment,1,list.prepend(0,$offsets),$cap);
+effect[fallback] c11.bitfields.union_field(UnionLayout($size,$alignment,$previous,$offsets,$cap),c11.types.Field($name,$type))
+    => UnionLayout(c11.bitfields.maximum($size,c11.types.bytes($type)),c11.bitfields.maximum($alignment,c11.types.member_alignment($type,$cap)),0,list.prepend(0,$offsets),$cap);
+effect c11.types.record_repr($name,$fields) when c11.bitfields.has_bits($fields)
+    => storage.repr(c11.members.physical_shape($name,$fields));
+effect c11.bitfields.physical_unit($alignment) => choose(lt(4,$alignment),8,choose(lt(2,$alignment),4,choose(lt(1,$alignment),2,1)));
+effect c11.union_storage.record_shape($name,$fields) when c11.bitfields.has_bits($fields)
+    => c11.members.physical_shape($name,$fields);
+effect c11.members.field_segment(BitOffset($offset,$shift),BitType($base,0)) => [];
+effect c11.members.field_segment(BitOffset($offset,$shift),BitType($base,$width)) when lt(0,$width)
+    => choose(eq($shift,0),[[$offset,c11.union_storage.shape(c11.types.unqualified($base))]],[]);
+effect c11.objects.offset_add($base,BitOffset($offset,$shift)) => BitOffset(add($base,$offset),$shift);
+effect c11.layout.offset_allowed(BitType($type,$width)) => fail("offsetof cannot select a C bit-field");
+effect c11.layout.offset_allowed(c11.types.Qualified(BitType($type,$width),$c,$v,$r)) => fail("offsetof cannot select a C bit-field");
+
+effect c11.objects.field_reference_at($reference,BitOffset($offset,$shift),BitType($base,$width))
+    => BitReference(c11.types.qualify(BitType($base,$width),c11.types.qualifiers(arg($reference,0))),$reference,$offset,$shift,$base,$width);
+effect c11.objects.field_reference_at($reference,$offset,BitType($base,$width)) when eq(term.kind($offset),2)
+    => c11.objects.field_reference_at($reference,BitOffset($offset,0),BitType($base,$width));
+effect c11.sema.reference_location(BitReference($type,$reference,$offset,$shift,$base,$width),$env)
+    => BitLocation($type,base.lower(base.Typed(c11.types.Pointer($base),c11.objects.ByteAddress($reference,$offset)),$env),$shift,$base,$width);
+effect c11.sema.address_allowed(BitReference($type,$reference,$offset,$shift,$base,$width)) => fail("cannot take the address of a C bit-field");
+effect c11.sema.unqualified_reference(BitReference($type,$reference,$offset,$shift,$base,$width))
+    => BitReference(c11.types.unqualified($type),$reference,$offset,$shift,$base,$width);
+effect c11.sema.load_location(BitLocation($type,$pointer,$shift,$base,$width))
+    => c11.bitfields.extract_bits(mlir.op("llvm.load",[$pointer],[types.repr($base)],c11.sema.access_attrs($type),[]),$base,$shift,$width);
+effect c11.sema.store_location(BitLocation($type,$pointer,$shift,$base,$width),$value)
+    => bind($old,mlir.op("llvm.load",[$pointer],[types.repr($base)],c11.sema.access_attrs($type),[]),
+        bind($next,c11.bitfields.insert_bits($old,$value,$base,$shift,$width),
+            seq(mlir.op("llvm.store",[$next,$pointer],[],c11.sema.access_attrs($type),[]),c11.bitfields.extract_bits($next,$base,$shift,$width))));
+effect c11.bitfields.extract_bits($unit,$type,$shift,$width)
+    => bind($bits,mul(c11.types.bytes($type),8),bind($narrow,storage.resize(storage.shift("llvm.lshr",$unit,$shift,$bits),$bits,$width),
+        choose(eq($width,$bits),$narrow,mlir.op(choose(c11.bitfields.signed_type(c11.types.unqualified($type)),"llvm.sext","llvm.zext"),
+            [$narrow],[types.repr($type)],[],[]))));
+effect c11.bitfields.signed_type(c11.types.IntType($rank,$bits,0)) => 1;
+effect c11.bitfields.signed_type(c11.types.PlainChar()) => 1;
+effect[fallback] c11.bitfields.signed_type($type) => 0;
+effect c11.bitfields.insert_bits($old,$value,$type,$shift,$width)
+    => bind($bits,mul(c11.types.bytes($type),8),bind($mask,int.shl(sub(int.shl(1,$width),1),$shift),
+        mlir.op("llvm.or",[mlir.op("llvm.and",[$old,storage.integer(int.xor($mask,-1),$bits)],[types.repr($type)],[],[]),
+            storage.shift("llvm.shl",storage.resize(storage.resize($value,$bits,$width),$width,$bits),$shift,$bits)],
+                [types.repr($type)],[],[])));
+
+// Initializer indices remain source-member indices, including unnamed gaps.
+effect c11.initializers.first_child(c11.types.Record($name,$fields)) when c11.bitfields.has_bits($fields) => c11.bitfields.next_named($fields,0);
+effect c11.initializers.next_child(c11.types.Record($name,$fields),$index) when c11.bitfields.has_bits($fields) => c11.bitfields.next_named($fields,add($index,1));
+effect c11.initializers.first_child(c11.types.Union($name,$fields)) when c11.bitfields.has_bits($fields) => c11.bitfields.next_named($fields,0);
+effect c11.initializers.next_child(c11.types.Union($name,$fields),$index) when c11.bitfields.has_bits($fields) => c11.initializers.EndCursor();
+effect c11.bitfields.next_named($fields,$start)
+    => bind(NamedCursor($items,$index,$found),rule.iterate("c11.bitfields.named_step",NamedCursor($fields,$start,c11.initializers.EndCursor()),1000000),$found);
+effect c11.bitfields.named_step(NamedCursor($fields,$index,$found)) when not(lt($index,size($fields))) => [0,NamedCursor($fields,$index,$found)];
+effect c11.bitfields.named_step(NamedCursor($fields,$index,$found)) when lt($index,size($fields))
+    => choose(c11.bitfields.skipped(arg($fields,$index)),[1,NamedCursor($fields,add($index,1),$found)],
+        [0,NamedCursor($fields,$index,choose(c11.initializers.flexible_type(c11.types.field_type(arg($fields,$index))),c11.initializers.EndCursor(),[$index]))]);
+effect c11.bitfields.skipped(c11.types.Field("",BitType($base,$width))) => 1;
+effect[fallback] c11.bitfields.skipped($field) => 0;
+effect c11.initializers.extract_child($parent,c11.types.Record($name,$fields),$index) when c11.bitfields.has_bits($fields)
+    => c11.bitfields.extract_member($parent,c11.types.Record($name,$fields),arg(arg(c11.types.named_aggregate_layout("struct",$name,$fields),2),$index),c11.types.field_type(arg($fields,$index)));
+effect c11.initializers.insert_child($parent,c11.types.Record($name,$fields),$index,$child) when c11.bitfields.has_bits($fields)
+    => c11.bitfields.insert_member($parent,c11.types.Record($name,$fields),arg(arg(c11.types.named_aggregate_layout("struct",$name,$fields),2),$index),c11.types.field_type(arg($fields,$index)),$child);
+effect c11.initializers.union_extract($parent,c11.types.Union($name,$fields),$index) when c11.bitfields.has_bits($fields)
+    => c11.bitfields.extract_member($parent,c11.types.Union($name,$fields),0,c11.types.field_type(arg($fields,$index)));
+effect c11.initializers.union_insert($parent,c11.types.Union($name,$fields),$index,$child) when c11.bitfields.has_bits($fields)
+    => c11.bitfields.insert_member($parent,c11.types.Union($name,$fields),0,c11.types.field_type(arg($fields,$index)),$child);
+effect c11.bitfields.extract_member($parent,$record,BitOffset($offset,$shift),BitType($base,$width))
+    => c11.bitfields.extract_bits(storage.project($parent,c11.union_storage.shape($record),mul($offset,8),c11.union_storage.shape($base)),$base,$shift,$width);
+effect c11.bitfields.extract_member($parent,$record,$offset,BitType($base,$width)) when eq(term.kind($offset),2)
+    => c11.bitfields.extract_member($parent,$record,BitOffset($offset,0),BitType($base,$width));
+effect[fallback] c11.bitfields.extract_member($parent,$record,$offset,$type)
+    => storage.project($parent,c11.union_storage.shape($record),mul($offset,8),c11.union_storage.shape($type));
+effect c11.bitfields.insert_member($parent,$record,BitOffset($offset,$shift),BitType($base,$width),$child)
+    => bind($shape,c11.union_storage.shape($base),bind($old,storage.project($parent,c11.union_storage.shape($record),mul($offset,8),$shape),
+        storage.overlay($parent,c11.union_storage.shape($record),mul($offset,8),c11.bitfields.insert_bits($old,$child,$base,$shift,$width),$shape)));
+effect c11.bitfields.insert_member($parent,$record,$offset,BitType($base,$width),$child) when eq(term.kind($offset),2)
+    => c11.bitfields.insert_member($parent,$record,BitOffset($offset,0),BitType($base,$width),$child);
+effect[fallback] c11.bitfields.insert_member($parent,$record,$offset,$type,$child)
+    => storage.overlay($parent,c11.union_storage.shape($record),mul($offset,8),$child,c11.union_storage.shape($type));

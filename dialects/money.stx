@@ -1,0 +1,20 @@
+// An unknown source type extends the existing checker and lowering relations.
+// This file needs no C++ dialect or modifications to the compiler executable.
+mod money;
+use base;
+use types;
+use numbers;
+syntax typename `cents` => Cents();
+effect types.repr(Cents()) => "i64";
+effect base.constant($raw, Cents()) => base.Typed(Cents(), base.Integer(numbers.integer($raw, Signed(64))));
+effect base.opcode("add", Cents()) => "arith.addi";
+effect base.opcode("sub", Cents()) => "arith.subi";
+effect base.bitop("and", Cents()) => "arith.andi";
+effect base.bitop("or", Cents()) => "arith.ori";
+effect base.bitop("xor", Cents()) => "arith.xori";
+effect base.predicate("eq", Cents()) => ["arith.cmpi", 0];
+effect base.predicate("lt", Cents()) => ["arith.cmpi", 2];
+effect base.predicate("le", Cents()) => ["arith.cmpi", 3];
+effect base.predicate("gt", Cents()) => ["arith.cmpi", 4];
+effect base.predicate("ge", Cents()) => ["arith.cmpi", 5];
+effect base.predicate("ne", Cents()) => ["arith.cmpi", 1];

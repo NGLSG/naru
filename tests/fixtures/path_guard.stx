@@ -1,0 +1,6 @@
+mod path_guard;
+
+// Path spelling and loaded-module metadata are pure; no file is opened.
+effect check() when and(eq(source.directory("a/b"),"a"),
+    and(eq(source.path("C:/naru","folder/../file"),"C:/naru/file"),
+        text.ends(source.rule_path("path_guard"),"/path_guard.stx"))) => 42;

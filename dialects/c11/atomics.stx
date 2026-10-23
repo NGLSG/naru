@@ -1,0 +1,337 @@
+// Atomic policy is a language rule layer. No C keyword, type or memory-order
+// case is embedded in Naru core. The x64 profile uses native atomic bit images
+// for 1/2/4/8-byte objects and a shared compiler support lock for larger ones.
+mod c11.atomics;
+use c11.syntax;
+use c11.specifiers;
+use c11.declarators;
+use c11.types;
+use c11.sema;
+use c11.objects;
+use c11.names;
+use c11.initializers;
+use c11.constants;
+use c11.union_storage;
+use c11.pp;
+use c11.header_features;
+use base;
+use types;
+use control;
+use storage;
+use tree;
+use memory_paths;
+
+syntax c11.atom_type `_Atomic($type:c11.type)` => c11.atomics.atomic_specifier($type);
+syntax c11.qualifier `_Atomic` => AtomicQualifiers(0,0,0);
+effect c11.atomics.atomic_specifier($type) => seq(c11.atomics.specifier_target($type),Atomic($type));
+effect c11.atomics.specifier_target(Atomic($type)) => fail("C atomic type specifier cannot name an atomic type");
+effect c11.atomics.specifier_target(c11.types.Qualified($type,$c,$v,$r)) => fail("C atomic type specifier cannot name a qualified type");
+effect[fallback] c11.atomics.specifier_target($type) => c11.atomics.atomic_target($type);
+effect c11.atomics.atomic_target(control.Void()) => fail("C atomic type requires an object type");
+effect c11.atomics.atomic_target(c11.types.Array($count,$element)) => fail("C atomic type cannot be an array or function");
+effect c11.atomics.atomic_target(c11.types.IncompleteArray($element)) => fail("C atomic type cannot be an array or function");
+effect c11.atomics.atomic_target(c11.types.FlexibleArray($element)) => fail("C atomic type cannot be an array or function");
+effect c11.atomics.atomic_target(c11.types.FunctionType($result,$params,$variadic,$prototype)) => fail("C atomic type cannot be an array or function");
+effect c11.atomics.atomic_target(c11.types.Qualified($type,$c,$v,$r)) => c11.atomics.atomic_target($type);
+effect c11.atomics.atomic_target(c11.types.AlignedType($type,$alignment)) => c11.atomics.atomic_target($type);
+effect[fallback] c11.atomics.atomic_target($type) => 1;
+// Repeated qualifiers are idempotent; nesting the atomic type specifier is not.
+effect c11.atomics.atomic_qualified(Atomic($type)) => Atomic($type);
+effect c11.atomics.atomic_qualified(c11.types.Qualified($type,$c,$v,$r)) => c11.types.qualify(c11.atomics.atomic_qualified($type),[$c,$v,$r]);
+effect[fallback] c11.atomics.atomic_qualified($type) => seq(c11.atomics.atomic_target($type),Atomic($type));
+effect c11.specifiers.merge(AtomicQualifiers($ac,$av,$ar),AtomicQualifiers($bc,$bv,$br)) => AtomicQualifiers(or($ac,$bc),or($av,$bv),or($ar,$br));
+effect c11.specifiers.merge(AtomicQualifiers($ac,$av,$ar),c11.specifiers.Qualifier($bc,$bv,$br)) => AtomicQualifiers(or($ac,$bc),or($av,$bv),or($ar,$br));
+effect c11.specifiers.merge(c11.specifiers.Qualifier($ac,$av,$ar),AtomicQualifiers($bc,$bv,$br)) => AtomicQualifiers(or($ac,$bc),or($av,$bv),or($ar,$br));
+effect c11.specifiers.part(c11.specifiers.State($words,$named,$q,$storage,$flags,$align),AtomicQualifiers($c,$v,$r))
+    => c11.specifiers.State($words,$named,c11.specifiers.merge($q,AtomicQualifiers($c,$v,$r)),$storage,$flags,$align);
+effect c11.specifiers.state_type(c11.specifiers.State($words,$named,AtomicQualifiers($c,$v,$r),$storage,$flags,$align))
+    => c11.specifiers.qualify(choose(eq($named,c11.specifiers.Missing()),c11.syntax.builtin_type(list.reverse($words)),$named),AtomicQualifiers($c,$v,$r));
+effect c11.specifiers.qualify($type,AtomicQualifiers($c,$v,$r))
+    => seq(choose($r,c11.specifiers.restrict_target(c11.sema.value_type($type)),1),c11.types.qualify(c11.atomics.atomic_qualified($type),[$c,$v,$r]));
+effect c11.specifiers.restrict_target(Atomic($type)) => c11.specifiers.restrict_target($type);
+effect c11.specifiers.pointer($inner,AtomicQualifiers($c,$v,$r)) => AtomicPointerDecl($inner,$c,$v,$r);
+effect c11.declarators.resolve(AtomicPointerDecl($inner,$c,$v,$r),$type)
+    => c11.declarators.resolve($inner,c11.types.qualify(Atomic(c11.types.Pointer($type)),[$c,$v,$r]));
+effect c11.declarators.validate_type(Atomic($type)) => seq(c11.atomics.atomic_target($type),c11.declarators.validate_type($type));
+
+effect types.repr(Atomic($type)) => types.repr($type);
+effect c11.types.bytes(Atomic($type)) => c11.types.bytes($type);
+effect c11.types.alignment(Atomic($type)) => bind($size,c11.types.bytes($type),bind($natural,c11.types.alignment($type),
+    choose(and(c11.atomics.native_size($size),lt($natural,$size)),$size,$natural)));
+effect c11.types.compatible_shape(Atomic($a),Atomic($b)) => c11.types.compatible($a,$b);
+effect c11.types.composite_shape(Atomic($a),Atomic($b)) => Atomic(c11.types.composite($a,$b));
+effect c11.sema.value_type(Atomic($type)) => c11.sema.value_type($type);
+effect c11.sema.value_type(c11.types.Qualified($type,$c,$v,$r)) => c11.sema.value_type($type);
+effect c11.sema.value_type(c11.types.AlignedType($type,$alignment)) => c11.sema.value_type($type);
+effect c11.sema.complete_type(Atomic($type),$env) => Atomic(c11.sema.complete_type($type,$env));
+effect c11.objects.declaration_type(Atomic($type),$tags) => Atomic(c11.objects.declaration_type($type,$tags));
+effect c11.objects.pointer_element(Atomic($type),$tags,$active) => Atomic(c11.objects.pointer_element($type,$tags,$active));
+effect c11.sema.zero(Atomic($type)) => c11.sema.zero($type);
+effect c11.sema.writable_type(Atomic($type)) => c11.sema.writable_type($type);
+effect c11.objects.has_flexible(Atomic($type)) => c11.objects.has_flexible($type);
+effect c11.sema.constant_convert($value,Atomic($type)) => c11.sema.constant_convert($value,c11.sema.value_type($type));
+// Preserve source ICE/address-constant obligations before converting an atomic
+// pointer initializer to its non-atomic stored value type.
+effect c11.sema.constant_initializer($source,Atomic(c11.types.Pointer($element)),$env)
+    => c11.constants.pointer_initializer(c11.constants.scalar_source($source),c11.types.Pointer($element),$env);
+effect c11.sema.constant_value(c11.syntax.Cast(Atomic($type),$source),$env)
+    => c11.sema.constant_value(c11.syntax.Cast(c11.sema.value_type($type),$source),$env);
+effect c11.union_storage.shape(Atomic($type)) => c11.union_storage.shape($type);
+effect base.function_continuation(Atomic($type)) => base.function_continuation($type);
+effect c11.atomics.atomic_type(Atomic($type)) => 1;
+effect c11.atomics.atomic_type(c11.types.Qualified($type,$c,$v,$r)) => c11.atomics.atomic_type($type);
+effect c11.atomics.atomic_type(c11.types.AlignedType($type,$alignment)) => c11.atomics.atomic_type($type);
+effect[fallback] c11.atomics.atomic_type($type) => 0;
+effect c11.atomics.native_size($size) => or(or(eq($size,1),eq($size,2)),or(eq($size,4),eq($size,8)));
+effect c11.atomics.image_type($type) => storage.integer_type(mul(c11.types.bytes($type),8));
+effect c11.atomics.image_shape($type) => storage.Scalar(c11.atomics.image_type($type),mul(c11.types.bytes($type),8),mul(c11.types.bytes($type),8),"integer");
+effect c11.atomics.encode($value,$type) => storage.reinterpret($value,c11.union_storage.shape($type),c11.atomics.image_shape($type));
+effect c11.atomics.decode($bits,$type) => storage.reinterpret($bits,c11.atomics.image_shape($type),c11.union_storage.shape($type));
+
+effect c11.sema.reference_location($reference,$env) when c11.atomics.atomic_type(arg($reference,0))
+    => AtomicLocation(arg($reference,0),c11.sema.value_type(arg($reference,0)),c11.sema.reference_pointer($reference,$env));
+effect c11.sema.load_location(AtomicLocation($object,$type,$pointer)) => c11.atomics.load($object,$type,$pointer,5);
+effect c11.sema.store_location(AtomicLocation($object,$type,$pointer),$value) => seq(c11.atomics.store($object,$type,$pointer,$value,5),$value);
+effect c11.sema.compound_location(AtomicLocation($object,$type,$pointer),$operation,$checked_type,$right,$env)
+    => bind($operand,base.Typed(arg($right,0),c11.sema.Existing(base.lower($right,$env))),
+        c11.atomics.update($object,$type,$pointer,$operation,$operand,$env,5,1));
+effect c11.sema.increment_location(AtomicLocation($object,$type,$pointer),$checked_type,$delta,$prefix,$env)
+    => c11.atomics.update($object,$type,$pointer,"add",base.Typed(c11.types.integer("int"),base.Integer($delta)),$env,5,$prefix);
+effect c11.atomics.atomic_attrs($object,$ordering) => list.concat(c11.sema.memory_attrs($object),
+    [Attr("ordering",c11.atomics.llvm_order($ordering),"i64"),Attr("alignment",c11.types.bytes($object),"i64")]);
+effect c11.atomics.llvm_order(0) => 2;
+effect c11.atomics.llvm_order(1) => 4;
+effect c11.atomics.llvm_order(2) => 4;
+effect c11.atomics.llvm_order(3) => 5;
+effect c11.atomics.llvm_order(4) => 6;
+effect c11.atomics.llvm_order(5) => 7;
+// Consume uses acquire, a permitted stronger implementation.
+// Every operation on an address selects the same native/locked protocol.
+// The native branch proves only its operand-size alignment, never a stronger
+// declarator annotation. One-byte objects (including atomic_flag) need no test.
+effect c11.atomics.access($type,$pointer,$results,$native,$native_args,$locked,$locked_args)
+    => bind($size,c11.types.bytes($type),choose(c11.atomics.native_size($size),
+        choose(eq($size,1),apply($native,$native_args),memory_paths.select(memory_paths.aligned($pointer,$size,64),
+            $results,$native,$native_args,$locked,$locked_args)),apply($locked,$locked_args)));
+effect c11.atomics.load($object,$type,$pointer,$order)
+    => c11.atomics.access($type,$pointer,[types.repr($type)],"c11.atomics.native_load",[$object,$type,$pointer,$order],
+        "c11.atomics.locked_load",[$object,$type,$pointer]);
+effect c11.atomics.native_load($object,$type,$pointer,$order)
+    => c11.atomics.decode(mlir.op("llvm.load",[$pointer],[c11.atomics.image_type($type)],c11.atomics.atomic_attrs($object,$order),[]),$type);
+effect c11.atomics.locked_load($object,$type,$pointer)
+    => seq(c11.atomics.lock(),bind($value,mlir.op("llvm.load",[$pointer],[types.repr($type)],c11.sema.access_attrs($object),[]),seq(c11.atomics.unlock(),$value)));
+effect c11.atomics.store($object,$type,$pointer,$value,$order)
+    => c11.atomics.access($type,$pointer,[],"c11.atomics.native_store",[$object,$type,$pointer,$value,$order],
+        "c11.atomics.locked_store",[$object,$type,$pointer,$value]);
+effect c11.atomics.native_store($object,$type,$pointer,$value,$order)
+    => mlir.op("llvm.store",[c11.atomics.encode($value,$type),$pointer],[],c11.atomics.atomic_attrs($object,$order),[]);
+effect c11.atomics.locked_store($object,$type,$pointer,$value)
+    => seq(c11.atomics.lock(),seq(mlir.op("llvm.store",[$value,$pointer],[],c11.sema.access_attrs($object),[]),c11.atomics.unlock()));
+effect c11.atomics.exchange($object,$type,$pointer,$value,$order)
+    => c11.atomics.access($type,$pointer,[types.repr($type)],"c11.atomics.native_exchange",[$object,$type,$pointer,$value,$order],
+        "c11.atomics.locked_exchange",[$object,$type,$pointer,$value]);
+effect c11.atomics.native_exchange($object,$type,$pointer,$value,$order)
+    => c11.atomics.decode(mlir.op("llvm.atomicrmw",[$pointer,c11.atomics.encode($value,$type)],[c11.atomics.image_type($type)],list.prepend(Attr("bin_op",0,"i64"),c11.atomics.atomic_attrs($object,$order)),[]),$type);
+effect c11.atomics.locked_exchange($object,$type,$pointer,$value)
+    => seq(c11.atomics.lock(),bind($old,mlir.op("llvm.load",[$pointer],[types.repr($type)],c11.sema.access_attrs($object),[]),
+        seq(mlir.op("llvm.store",[$value,$pointer],[],c11.sema.access_attrs($object),[]),seq(c11.atomics.unlock(),$old))));
+effect c11.atomics.cmpxchg($object,$type,$pointer,$expected,$desired,$weak,$success,$failure)
+    => mlir.op("llvm.cmpxchg",[$pointer,$expected,$desired],[concat("!llvm.struct<(",concat(c11.atomics.image_type($type),", i1)>"))],
+        list.concat(c11.sema.memory_attrs($object),list.concat([Attr("success_ordering",c11.atomics.llvm_order($success),"i64"),
+            Attr("failure_ordering",c11.atomics.llvm_order($failure),"i64"),Attr("alignment",c11.types.bytes($object),"i64")],choose($weak,[RawAttr("weak","unit")],[]))),[]);
+effect c11.atomics.part($pair,$index,$repr) => mlir.op("llvm.extractvalue",[$pair],[$repr],[storage.position($index)],[]);
+// CAS retries reuse the already evaluated source RHS and lvalue address. The
+// loop contains only the operation on a new observed value and the CAS itself.
+effect c11.atomics.update($object,$type,$pointer,$operation,$right,$env,$order,$return_new)
+    => c11.atomics.access($type,$pointer,[types.repr($type)],"c11.atomics.native_update",[$object,$type,$pointer,$operation,$right,$env,$order,$return_new],
+        "c11.atomics.locked_update",[$object,$type,$pointer,$operation,$right,$env,$return_new]);
+effect c11.atomics.native_update($object,$type,$pointer,$operation,$right,$env,$order,$return_new)
+    => bind($initial,mlir.op("llvm.load",[$pointer],[c11.atomics.image_type($type)],c11.atomics.atomic_attrs($object,0),[]),
+            bind($environment,c11.atomics.begin_update($type,$right,$env),
+                c11.atomics.update_loop($object,$type,$pointer,$operation,$right,$env,$order,$return_new,$initial,
+                    mlir.block([c11.atomics.image_type($type)]),mlir.block([types.repr($type),types.repr($type),c11.atomics.image_type($type)]),$environment)));
+effect[fallback] c11.atomics.begin_update($type,$right,$env) => NoUpdateEnvironment();
+effect[fallback] c11.atomics.discard_update($environment) => 1;
+effect[fallback] c11.atomics.commit_update($environment) => 1;
+// Arithmetic scalars can exceed a native atomic image (for example double
+// complex). The same support lock used by their reads/stores makes the whole
+// update indivisible, with no discarded arithmetic retry or duplicated RHS.
+effect c11.atomics.locked_update($object,$type,$pointer,$operation,$right,$env,$return_new)
+    => seq(c11.atomics.lock(),bind($old,mlir.op("llvm.load",[$pointer],[types.repr($type)],c11.sema.access_attrs($object),[]),
+        bind($next,base.lower(c11.sema.convert(c11.sema.compound_value($operation,base.Typed($type,c11.sema.Existing($old)),$right),$type),$env),
+            seq(mlir.op("llvm.store",[$next,$pointer],[],c11.sema.access_attrs($object),[]),
+                seq(c11.atomics.unlock(),choose($return_new,$next,$old))))));
+effect c11.atomics.update_loop($object,$type,$pointer,$operation,$right,$env,$order,$return_new,$initial,$before,$after,$environment)
+    => seq(mlir.in_block($before,bind($old,c11.atomics.decode(mlir.block_arg($before,0),$type),
+        bind($next,base.lower(c11.sema.convert(c11.sema.compound_value($operation,base.Typed($type,c11.sema.Existing($old)),$right),$type),$env),
+            bind($pair,c11.atomics.cmpxchg($object,$type,$pointer,mlir.block_arg($before,0),c11.atomics.encode($next,$type),0,$order,0),
+                mlir.op("scf.condition",[mlir.op("llvm.xor",[c11.atomics.part($pair,1,"i1"),storage.integer(1,1)],["i1"],[],[]),
+                    $old,$next,c11.atomics.part($pair,0,c11.atomics.image_type($type))],[],[],[]))))),
+        seq(mlir.in_block($after,seq(c11.atomics.discard_update($environment),mlir.op("scf.yield",[mlir.block_arg($after,2)],[],[],[]))),
+            bind($values,mlir.op("scf.while",[$initial],[types.repr($type),types.repr($type),c11.atomics.image_type($type)],[],
+                [mlir.region_blocks([$before]),mlir.region_blocks([$after])]),seq(c11.atomics.commit_update($environment),arg($values,choose($return_new,1,0))))));
+
+// Large object operations use one COMDAT-selected lock shared by the Naru
+// translation units in the linked image. Calls and source evaluation happen
+// before entering this lock. Foreign compiler atomic helper ABIs require a
+// matching target policy; this lock is not an ABI for foreign __atomic calls.
+effect c11.atomics.runtime_name() => ".naru.c11.atomic.lock";
+effect c11.sema.runtime_provider($items) => c11.sema.RuntimeProvider("atomics",[RuntimeSupport()]);
+effect base.lower_function(RuntimeSupport()) => seq(c11.sema.comdat(c11.atomics.runtime_name()),
+    c11.sema.global_attrs(c11.atomics.runtime_name(),c11.types.integer("int"),base.Typed(c11.types.integer("int"),base.Integer(0)),"linkonce_odr",
+        [c11.sema.comdat_attr(c11.atomics.runtime_name())]));
+effect c11.atomics.lock() => bind($before,mlir.block([]),bind($after,mlir.block([]),
+    seq(mlir.in_block($before,bind($prior,mlir.op("llvm.atomicrmw",[c11.sema.address_global(c11.atomics.runtime_name()),storage.integer(1,32)],["i32"],
+        [Attr("bin_op",0,"i64"),Attr("ordering",7,"i64"),Attr("alignment",4,"i64")],[]),
+        mlir.op("scf.condition",[mlir.op("llvm.icmp",[$prior,storage.integer(0,32)],["i1"],[Attr("predicate",1,"i64")],[])],[],[],[]))),
+        seq(mlir.in_block($after,mlir.op("scf.yield",[],[],[],[])),mlir.op("scf.while",[],[],[],[mlir.region_blocks([$before]),mlir.region_blocks([$after])])))));
+effect c11.atomics.unlock() => mlir.op("llvm.store",[storage.integer(0,32),c11.sema.address_global(c11.atomics.runtime_name())],[],
+    [Attr("ordering",7,"i64"),Attr("alignment",4,"i64")],[]);
+
+// Compiler-builtins used by real Clang <stdatomic.h>. These are reserved
+// implementation names; ordinary user functions retain lexical lookup.
+effect c11.atomics.builtin($name) => text.starts($name,"__c11_atomic_");
+effect c11.header_features.builtin($name) when text.contains(" __c11_atomic_init __c11_atomic_load __c11_atomic_store __c11_atomic_exchange __c11_atomic_compare_exchange_strong __c11_atomic_compare_exchange_weak __c11_atomic_fetch_add __c11_atomic_fetch_sub __c11_atomic_fetch_and __c11_atomic_fetch_or __c11_atomic_fetch_xor __c11_atomic_thread_fence __c11_atomic_signal_fence __c11_atomic_is_lock_free ",concat(" ",concat($name," "))) => 1;
+effect c11.sema.named_call($name,$arguments,$env,$expected) when c11.atomics.builtin($name)
+    => c11.sema.contextual(c11.atomics.check_builtin($name,$arguments,$env),$expected);
+effect c11.sema.named_call_at($frame,$name,$arguments,$env,$expected) when c11.atomics.builtin($name)
+    => c11.sema.contextual(c11.atomics.check_builtin($name,$arguments,$env),$expected);
+effect c11.atomics.pointer($source,$env,$write) => c11.atomics.pointer_checked(base.check($source,$env,base.Any()),$env,$write);
+effect c11.atomics.pointer_checked(base.Typed(c11.types.Pointer($object),$pointer),$env,$write)
+    => bind($complete,c11.sema.complete_type($object,$env),seq(choose(c11.atomics.atomic_type($complete),1,fail("C atomic operation requires a pointer to an atomic object")),
+        seq(choose($write,c11.sema.writable_type($complete),1),seq(c11.types.bytes($complete),
+            ObjectPointer($complete,c11.sema.value_type($complete),base.Typed(c11.types.Pointer($object),$pointer))))));
+effect[fallback] c11.atomics.pointer_checked($value,$env,$write) => fail("C atomic operation requires a pointer to an atomic object");
+effect c11.atomics.desired($source,$env,$type) => c11.sema.convert_expression($source,$env,$type);
+effect c11.atomics.expected_pointer($source,$env,$type) => c11.atomics.expected_checked(base.check($source,$env,base.Any()),$env,$type);
+effect c11.atomics.expected_checked(base.Typed(c11.types.Pointer($object),$pointer),$env,$type)
+    => bind($complete,c11.sema.complete_type($object,$env),seq(choose(and(not(c11.atomics.atomic_type($complete)),c11.types.compatible(c11.types.unqualified($complete),$type)),1,
+        fail("C atomic expected pointer requires the corresponding non-atomic type")),
+        seq(choose(arg(c11.types.qualifiers($complete),1),fail("C atomic expected pointer cannot discard volatile qualification"),1),
+            seq(c11.sema.writable_type($complete),base.Typed(c11.types.Pointer($object),$pointer)))));
+effect[fallback] c11.atomics.expected_checked($value,$env,$type) => fail("C atomic expected argument must be a pointer");
+effect c11.atomics.check_builtin("__c11_atomic_load",[$object,$order],$env) => bind(ObjectPointer($o,$t,$p),c11.atomics.pointer($object,$env,0),base.Typed($t,AtomicLoad($o,$t,$p,c11.atomics.order($order,$env,"load"))));
+effect c11.atomics.check_builtin("__c11_atomic_store",[$object,$value,$order],$env) => bind(ObjectPointer($o,$t,$p),c11.atomics.pointer($object,$env,1),base.Typed(control.Void(),AtomicStore($o,$t,$p,c11.atomics.desired($value,$env,$t),c11.atomics.order($order,$env,"store"))));
+effect c11.atomics.check_builtin("__c11_atomic_init",[$object,$value],$env) => bind(ObjectPointer($o,$t,$p),c11.atomics.pointer($object,$env,1),base.Typed(control.Void(),AtomicInit($o,$t,$p,c11.atomics.desired($value,$env,$t))));
+effect c11.atomics.check_builtin("__c11_atomic_exchange",[$object,$value,$order],$env) => bind(ObjectPointer($o,$t,$p),c11.atomics.pointer($object,$env,1),base.Typed($t,AtomicExchange($o,$t,$p,c11.atomics.desired($value,$env,$t),c11.atomics.order($order,$env,"rmw"))));
+effect c11.atomics.check_builtin($name,[$object,$expected,$desired,$success,$failure],$env)
+    when or(eq($name,"__c11_atomic_compare_exchange_weak"),eq($name,"__c11_atomic_compare_exchange_strong"))
+    => bind(ObjectPointer($o,$t,$p),c11.atomics.pointer($object,$env,1),bind($s,c11.atomics.order($success,$env,"rmw"),bind($f,c11.atomics.order($failure,$env,"load"),
+        seq(c11.atomics.compare_orders($s,$f),base.Typed(c11.types.CBool(),AtomicCompare($o,$t,$p,c11.atomics.expected_pointer($expected,$env,$t),c11.atomics.desired($desired,$env,$t),
+            eq($name,"__c11_atomic_compare_exchange_weak"),$s,$f))))));
+effect c11.atomics.check_builtin($name,[$object,$operand,$order],$env) when text.starts($name,"__c11_atomic_fetch_")
+    => bind(ObjectPointer($o,$t,$p),c11.atomics.pointer($object,$env,1),bind($operation,c11.atomics.fetch_operation($name),
+        seq(c11.atomics.fetch_type($operation,$t,$env),base.Typed($t,AtomicFetch($o,$t,$p,$operation,c11.atomics.fetch_operand($operand,$env,$t),c11.atomics.order($order,$env,"rmw"))))));
+effect c11.atomics.fetch_operation("__c11_atomic_fetch_add") => "add";
+effect c11.atomics.fetch_operation("__c11_atomic_fetch_sub") => "sub";
+effect c11.atomics.fetch_operation("__c11_atomic_fetch_and") => "and";
+effect c11.atomics.fetch_operation("__c11_atomic_fetch_or") => "or";
+effect c11.atomics.fetch_operation("__c11_atomic_fetch_xor") => "xor";
+effect[fallback] c11.atomics.fetch_operation($name) => fail("unknown C atomic fetch builtin");
+effect c11.atomics.fetch_type($operation,c11.types.Pointer($element),$env) => choose(or(eq($operation,"add"),eq($operation,"sub")),
+    seq(c11.sema.arithmetic_type(c11.types.Pointer($element),$env),1),fail("C atomic pointer fetch operation requires add or sub"));
+effect[fallback] c11.atomics.fetch_type($operation,$type,$env) => choose(c11.types.is_integer($type),1,fail("C11 atomic fetch operation requires an integer or object pointer"));
+effect c11.atomics.fetch_operand($source,$env,c11.types.Pointer($element)) => c11.sema.convert_expression($source,$env,c11.types.IntType(5,64,0));
+effect[fallback] c11.atomics.fetch_operand($source,$env,$type) => c11.atomics.desired($source,$env,$type);
+effect c11.atomics.check_builtin($name,[$order],$env) when or(eq($name,"__c11_atomic_thread_fence"),eq($name,"__c11_atomic_signal_fence"))
+    => base.Typed(control.Void(),AtomicFence(eq($name,"__c11_atomic_signal_fence"),c11.atomics.order($order,$env,"fence")));
+effect c11.atomics.check_builtin("__c11_atomic_is_lock_free",[$size],$env) => base.Typed(c11.types.CBool(),LockFree(c11.sema.convert_expression($size,$env,c11.types.size_type())));
+effect[fallback] c11.atomics.check_builtin($name,$arguments,$env) => fail(concat("unknown C atomic builtin or incorrect argument count: ",$name));
+
+// memory_order is a runtime argument, not an integer-constant requirement.
+// Known invalid orders are diagnosed; unknown orders dispatch once at runtime.
+effect c11.atomics.order($source,$env,$kind) => bind($checked,base.check($source,$env,base.Any()),
+    seq(choose(c11.types.is_integer(arg($checked,0)),1,fail("C atomic memory order requires an integer")),
+        choose(c11.sema.integer_constant_expression($source,$env),bind(base.Typed($t,base.Integer($value)),c11.sema.integer_constant_value($source,$env),
+            seq(c11.atomics.order_allowed($kind,$value),ConstantOrder($value))),DynamicOrder(c11.sema.convert($checked,c11.types.integer("int"))))));
+effect c11.atomics.order_allowed($kind,$value) => choose(c11.atomics.valid_order($kind,$value),1,fail("invalid C atomic memory order for this operation"));
+effect c11.atomics.valid_order("load",$n) => or(or(eq($n,0),eq($n,1)),or(eq($n,2),eq($n,5)));
+effect c11.atomics.valid_order("store",$n) => or(eq($n,0),or(eq($n,3),eq($n,5)));
+effect c11.atomics.valid_order("rmw",$n) => and(not(lt($n,0)),lt($n,6));
+effect c11.atomics.valid_order("fence",$n) => c11.atomics.valid_order("rmw",$n);
+effect c11.atomics.valid_order(FailureOrder($success),$n) => c11.atomics.failure_allowed($success,$n);
+effect c11.atomics.failure_allowed($s,$f) => and(c11.atomics.valid_order("load",$f),or(eq($f,0),
+    or(and(eq($f,1),or(or(eq($s,1),eq($s,2)),or(eq($s,4),eq($s,5)))),
+        or(and(eq($f,2),or(eq($s,2),or(eq($s,4),eq($s,5)))),and(eq($f,5),eq($s,5))))));
+effect c11.atomics.compare_orders(ConstantOrder($s),ConstantOrder($f)) => choose(c11.atomics.failure_allowed($s,$f),1,fail("C atomic compare exchange failure order is stronger than its success order"));
+effect[fallback] c11.atomics.compare_orders($success,$failure) => 1;
+effect c11.atomics.lower_order(ConstantOrder($n),$env) => ConstantOrder($n);
+effect c11.atomics.lower_order(DynamicOrder($value),$env) => RuntimeOrder(base.lower($value,$env));
+effect c11.atomics.dispatch($kind,ConstantOrder($n),$results,$relation,$arguments)
+    => seq(c11.atomics.order_allowed($kind,$n),apply($relation,list.concat($arguments,[$n])));
+effect c11.atomics.dispatch($kind,RuntimeOrder($value),$results,$relation,$arguments)
+    => c11.atomics.dispatch_cases($kind,$value,$results,$relation,$arguments,0);
+effect c11.atomics.dispatch_cases($kind,$value,$results,$relation,$arguments,6)
+    => seq(mlir.op("llvm.intr.trap",[],[],[],[]),c11.atomics.undefined_result($results));
+effect c11.atomics.dispatch_cases($kind,$value,$results,$relation,$arguments,$n) when lt($n,6)
+    => choose(c11.atomics.valid_order($kind,$n),mlir.op("scf.if",[mlir.op("llvm.icmp",[$value,storage.integer($n,32)],["i1"],[Attr("predicate",0,"i64")],[])],$results,[],[
+        mlir.region(c11.atomics.yield_result(apply($relation,list.concat($arguments,[$n])),$results)),
+        mlir.region(c11.atomics.yield_result(c11.atomics.dispatch_cases($kind,$value,$results,$relation,$arguments,add($n,1)),$results))]),
+        c11.atomics.dispatch_cases($kind,$value,$results,$relation,$arguments,add($n,1)));
+effect c11.atomics.undefined_result([]) => 0;
+effect c11.atomics.undefined_result([$repr]) => mlir.op("llvm.mlir.undef",[],[$repr],[],[]);
+effect c11.atomics.yield_result($value,[]) => mlir.op("scf.yield",[],[],[],[]);
+effect c11.atomics.yield_result($value,[$repr]) => mlir.op("scf.yield",[$value],[],[],[]);
+
+effect base.lower(base.Typed($t,AtomicLoad($o,$type,$pointer,$order)),$env)
+    => bind($p,base.lower($pointer,$env),c11.atomics.dispatch("load",c11.atomics.lower_order($order,$env),[types.repr($t)],"c11.atomics.load",[$o,$type,$p]));
+effect base.lower(base.Typed(control.Void(),AtomicStore($o,$type,$pointer,$value,$order)),$env)
+    => bind($p,base.lower($pointer,$env),bind($v,base.lower($value,$env),c11.atomics.dispatch("store",c11.atomics.lower_order($order,$env),[],"c11.atomics.store",[$o,$type,$p,$v])));
+effect base.lower(base.Typed(control.Void(),AtomicInit($o,$type,$pointer,$value)),$env)
+    => bind($p,base.lower($pointer,$env),mlir.op("llvm.store",[base.lower($value,$env),$p],[],c11.sema.access_attrs($o),[]));
+effect base.lower(base.Typed($t,AtomicExchange($o,$type,$pointer,$value,$order)),$env)
+    => bind($p,base.lower($pointer,$env),bind($v,base.lower($value,$env),c11.atomics.dispatch("rmw",c11.atomics.lower_order($order,$env),[types.repr($t)],"c11.atomics.exchange",[$o,$type,$p,$v])));
+effect base.lower(base.Typed($t,AtomicFetch($o,$type,$pointer,$operation,$operand,$order)),$env)
+    => bind($p,base.lower($pointer,$env),bind($right,base.Typed(arg($operand,0),c11.sema.Existing(base.lower($operand,$env))),
+        c11.atomics.dispatch("rmw",c11.atomics.lower_order($order,$env),[types.repr($t)],"c11.atomics.fetch",[$o,$type,$p,$operation,$right,$env])));
+effect c11.atomics.fetch($o,$type,$p,$operation,$right,$env,$order) => c11.atomics.update($o,$type,$p,$operation,$right,$env,$order,0);
+effect base.lower(base.Typed(c11.types.CBool(),AtomicCompare($o,$type,$pointer,$expected,$desired,$weak,$success,$failure)),$env)
+    => bind($p,base.lower($pointer,$env),bind($e,base.lower($expected,$env),bind($d,base.lower($desired,$env),
+        c11.atomics.dispatch("rmw",c11.atomics.lower_order($success,$env),["i8"],"c11.atomics.compare_success",[$o,$type,$p,$e,$d,$weak,c11.atomics.lower_order($failure,$env)]))));
+effect c11.atomics.compare_success($o,$type,$p,$e,$d,$weak,$failure,$success)
+    => c11.atomics.dispatch(FailureOrder($success),$failure,["i8"],"c11.atomics.compare",[$o,$type,$p,$e,$d,$weak,$success]);
+effect c11.atomics.compare($o,$type,$p,$e,$d,$weak,$success,$failure)
+    => c11.atomics.access($type,$p,["i8"],"c11.atomics.native_compare",[$o,$type,$p,$e,$d,$weak,$success,$failure],
+        "c11.atomics.locked_compare",[$o,$type,$p,$e,$d]);
+effect c11.atomics.native_compare($o,$type,$p,$e,$d,$weak,$success,$failure)
+    => bind($expected,mlir.op("llvm.load",[$e],[c11.atomics.image_type($type)],[Attr("alignment",1,"i64")],[]),bind($pair,c11.atomics.cmpxchg($o,$type,$p,$expected,c11.atomics.encode($d,$type),$weak,$success,$failure),
+        bind($ok,c11.atomics.part($pair,1,"i1"),seq(mlir.op("scf.if",[$ok],[],[],[
+            mlir.region(mlir.op("scf.yield",[],[],[],[])),
+            mlir.region(seq(mlir.op("llvm.store",[c11.atomics.part($pair,0,c11.atomics.image_type($type)),$e],[],[Attr("alignment",1,"i64")],[]),mlir.op("scf.yield",[],[],[],[])))]),
+            mlir.op("llvm.zext",[$ok],["i8"],[],[])))));
+effect c11.atomics.locked_compare($o,$type,$p,$e,$d) => seq(c11.atomics.lock(),bind($ok,c11.atomics.bytes_equal($p,$e,c11.types.bytes($type),c11.sema.access_attrs($o)),
+    seq(mlir.op("scf.if",[$ok],[],[],[
+        mlir.region(seq(mlir.op("llvm.store",[$d,$p],[],c11.sema.access_attrs($o),[]),mlir.op("scf.yield",[],[],[],[]))),
+        mlir.region(seq(c11.atomics.copy_bytes($p,$e,c11.types.bytes($type),c11.sema.access_attrs($o)),mlir.op("scf.yield",[],[],[],[])))]),
+        seq(c11.atomics.unlock(),mlir.op("llvm.zext",[$ok],["i8"],[],[])))));
+effect c11.atomics.byte_pointer($pointer,$index) => mlir.op("llvm.getelementptr",[$pointer,$index],["!llvm.ptr"],
+    [RawAttr("elem_type","i8"),RawAttr("rawConstantIndices","array<i32: -2147483648>")],[]);
+effect c11.atomics.index($number) => mlir.op("arith.constant",[],["index"],[Attr("value",$number,"index")],[]);
+effect c11.atomics.bytes_equal($left,$right,$size,$attrs) => bind($block,mlir.block(["index","i1"]),
+    seq(mlir.in_block($block,bind($i,mlir.op("arith.index_cast",[mlir.block_arg($block,0)],["i64"],[],[]),
+        mlir.op("scf.yield",[mlir.op("llvm.and",[mlir.block_arg($block,1),mlir.op("llvm.icmp",[
+            mlir.op("llvm.load",[c11.atomics.byte_pointer($left,$i)],["i8"],$attrs,[]),mlir.op("llvm.load",[c11.atomics.byte_pointer($right,$i)],["i8"],[],[])],["i1"],[Attr("predicate",0,"i64")],[])],["i1"],[],[])],[],[],[]))),
+        mlir.op("scf.for",[c11.atomics.index(0),c11.atomics.index($size),c11.atomics.index(1),storage.integer(1,1)],["i1"],[],[mlir.region_blocks([$block])])));
+effect c11.atomics.copy_bytes($from,$to,$size,$attrs) => bind($block,mlir.block(["index"]),
+    seq(mlir.in_block($block,bind($i,mlir.op("arith.index_cast",[mlir.block_arg($block,0)],["i64"],[],[]),
+        seq(mlir.op("llvm.store",[mlir.op("llvm.load",[c11.atomics.byte_pointer($from,$i)],["i8"],$attrs,[]),c11.atomics.byte_pointer($to,$i)],[],[],[]),mlir.op("scf.yield",[],[],[],[])))),
+        mlir.op("scf.for",[c11.atomics.index(0),c11.atomics.index($size),c11.atomics.index(1)],[],[],[mlir.region_blocks([$block])])));
+effect base.lower(base.Typed(control.Void(),AtomicFence($signal,$order)),$env)
+    => c11.atomics.dispatch("fence",c11.atomics.lower_order($order,$env),[],"c11.atomics.fence",[$signal]);
+effect c11.atomics.fence($signal,0) => 0;
+effect c11.atomics.fence($signal,$order) when lt(0,$order) => mlir.op("llvm.fence",[],[],
+    list.concat([Attr("ordering",c11.atomics.llvm_order($order),"i64")],choose($signal,[Attr("syncscope","singlethread")],[])),[]);
+effect base.lower(base.Typed(c11.types.CBool(),LockFree($size)),$env) => bind($n,base.lower($size,$env),
+    mlir.op("llvm.zext",[mlir.op("llvm.or",[
+        mlir.op("llvm.or",[c11.atomics.size_equals($n,1),c11.atomics.size_equals($n,2)],["i1"],[],[]),
+        mlir.op("llvm.or",[c11.atomics.size_equals($n,4),c11.atomics.size_equals($n,8)],["i1"],[],[])],["i1"],[],[])],["i8"],[],[]));
+effect c11.atomics.size_equals($value,$number) => mlir.op("llvm.icmp",[$value,storage.integer($number,64)],["i1"],[Attr("predicate",0,"i64")],[]);
+
+// Predefinitions are compiler facts for the real resource header. Header
+// discovery remains the shared system-toolchain policy, with no local shim.
+effect c11.pp.capability_provider() => c11.pp.MacroProvider("atomics","c11.atomics.predefine");
+effect c11.atomics.predefine($macros) => list.fold("c11.pp.predefine",[
+    ["__ATOMIC_RELAXED","0"],["__ATOMIC_CONSUME","1"],["__ATOMIC_ACQUIRE","2"],["__ATOMIC_RELEASE","3"],["__ATOMIC_ACQ_REL","4"],["__ATOMIC_SEQ_CST","5"],
+    ["__CLANG_ATOMIC_BOOL_LOCK_FREE","2"],["__CLANG_ATOMIC_CHAR_LOCK_FREE","2"],["__CLANG_ATOMIC_CHAR16_T_LOCK_FREE","2"],["__CLANG_ATOMIC_CHAR32_T_LOCK_FREE","2"],
+    ["__CLANG_ATOMIC_WCHAR_T_LOCK_FREE","2"],["__CLANG_ATOMIC_SHORT_LOCK_FREE","2"],["__CLANG_ATOMIC_INT_LOCK_FREE","2"],["__CLANG_ATOMIC_LONG_LOCK_FREE","2"],
+    ["__CLANG_ATOMIC_LLONG_LOCK_FREE","2"],["__CLANG_ATOMIC_POINTER_LOCK_FREE","2"]],$macros);

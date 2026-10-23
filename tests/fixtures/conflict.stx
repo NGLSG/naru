@@ -1,0 +1,2 @@
+mod conflicting_integer;
+syntax expr `$n:int` => DifferentInteger($n);

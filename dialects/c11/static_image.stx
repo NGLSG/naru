@@ -1,0 +1,120 @@
+// Static objects may have a different physical LLVM type from their C value
+// representation. Opaque addresses, source offsets, size and alignment remain
+// unchanged; a union's selected initializer retains complete pointer fields.
+mod c11.static_image;
+use c11.types;
+use c11.sema;
+use c11.objects;
+use c11.initializers;
+use c11.union_storage;
+use c11.bitfields;
+use base;
+use storage;
+use layout;
+
+effect c11.static_image.needs($type) => c11.static_image.contains(c11.sema.value_type($type));
+effect c11.static_image.contains(c11.types.Union($name,$fields)) => 1;
+effect c11.static_image.contains(c11.types.Record($name,$fields)) => list.fold("c11.static_image.field_needs",$fields,0);
+effect c11.static_image.contains(c11.types.Array($count,$element)) => c11.static_image.needs($element);
+effect[fallback] c11.static_image.contains($type) => 0;
+effect c11.static_image.field_needs($found,c11.types.Field($name,$type)) => or($found,c11.static_image.needs($type));
+effect c11.sema.global_storage($type,$value) when c11.static_image.needs($type)
+    => bind(c11.static_image.Object($descriptor,$image,$children,$active),c11.static_image.value($value),
+        seq(choose(eq(storage.width(storage.image_shape($image)),mul(c11.types.bytes($type),8)),1,
+            fail("C static storage image size differs from its declared object")),
+            c11.sema.GlobalStorage(storage.repr(storage.image_shape($image)),base.Typed($descriptor,c11.static_image.Prepared($image)))));
+effect base.lower(base.Typed($type,c11.static_image.Prepared($image)),$env) => storage.image_lower($image,$env);
+effect storage.image_value(c11.static_image.Leaf($value),$env) => base.lower($value,$env);
+
+// Object(type, image, source-indexed children, active union member) is a plan:
+// no mlir.op executes until global initializer region construction.
+effect c11.static_image.zero($type) => bind($value,c11.sema.value_type($type),
+    c11.static_image.Object($value,storage.image_zero(c11.union_storage.shape($value)),env.empty(),0));
+effect c11.static_image.value(base.Typed($type,c11.initializers.InitializedTree($node)))
+    => c11.static_image.node($node,c11.static_image.Absent());
+effect c11.static_image.value(base.Typed($type,c11.objects.ZeroAggregate())) => c11.static_image.zero($type);
+effect c11.static_image.value(base.Typed($type,c11.objects.Packed($values)))
+    => bind(c11.static_image.Values($index,$children),list.fold("c11.static_image.packed_child",$values,c11.static_image.Values(0,env.empty())),
+        c11.static_image.node(c11.initializers.InitNode(c11.sema.value_type($type),c11.initializers.AbsentValue(),$children,0),c11.static_image.Absent()));
+effect c11.static_image.packed_child(c11.static_image.Values($index,$children),$value)
+    => c11.static_image.Values(add($index,1),env.put($children,$index,
+        c11.initializers.InitNode(arg($value,0),$value,env.empty(),c11.initializers.whole_active($value))));
+effect[fallback] c11.static_image.value($value) => bind($type,c11.sema.value_type(arg($value,0)),
+    c11.static_image.Object($type,storage.Image(c11.union_storage.shape($type),storage.ValueImage(c11.static_image.Leaf($value))),env.empty(),c11.initializers.UnknownActive()));
+effect c11.static_image.node(c11.initializers.InitNode($type,$base,$children,$active),$inherited)
+    => bind($initial,choose(eq($base,c11.initializers.AbsentValue()),
+        choose(eq($inherited,c11.static_image.Absent()),c11.static_image.zero($type),$inherited),c11.static_image.value($base)),
+            choose(eq(size(env.entries($children)),0),$initial,c11.static_image.children($initial,$children,$active)));
+effect c11.static_image.resolve($object,$index,$overrides) => bind($initial,c11.static_image.child($object,$index),
+    choose(env.contains($overrides,$index),c11.static_image.node(env.get($overrides,$index),$initial),$initial));
+effect c11.static_image.child(c11.static_image.Object($type,$image,$children,$active),$index)
+    => choose(env.contains($children,$index),env.get($children,$index),
+        c11.static_image.project_child(c11.initializers.child_type($type,$index),$image,c11.static_image.offset($type,$index)));
+effect c11.static_image.offset(c11.types.Array($count,$element),$index) => mul($index,c11.types.bytes($element));
+effect c11.static_image.offset(c11.types.Record($name,$fields),$index) => arg(arg(c11.types.named_aggregate_layout("struct",$name,$fields),2),$index);
+effect c11.static_image.offset(c11.types.Union($name,$fields),$index) => 0;
+effect[fallback] c11.static_image.project_child($type,$image,$offset)
+    => bind($value,c11.sema.value_type($type),c11.static_image.Object($value,
+        storage.image_project($image,mul($offset,8),c11.union_storage.shape($value)),env.empty(),c11.initializers.UnknownActive()));
+effect c11.static_image.project_child(c11.bitfields.BitType($base,$width),$image,c11.bitfields.BitOffset($offset,$shift))
+    => bind($type,c11.bitfields.BitType($base,$width),bind($unit,storage.image_project($image,mul($offset,8),c11.union_storage.shape(c11.types.unqualified($base))),
+        c11.static_image.Object($type,storage.Image(c11.union_storage.shape($type),c11.static_image.BitRead($unit,$base,$shift,$width)),env.empty(),0)));
+effect storage.image_emit(c11.static_image.BitRead($unit,$base,$shift,$width),$shape,$env)
+    => c11.bitfields.extract_bits(storage.image_lower($unit,$env),$base,$shift,$width);
+effect storage.image_emit(c11.static_image.BitWrite($unit,$value,$base,$shift,$width),$shape,$env)
+    => c11.bitfields.insert_bits(storage.image_lower($unit,$env),storage.image_lower($value,$env),$base,$shift,$width);
+effect c11.static_image.union_member_image(c11.bitfields.BitType($base,$width),$child)
+    => bind($shape,c11.union_storage.shape(c11.types.unqualified($base)),
+        storage.Image($shape,c11.static_image.BitWrite(storage.image_zero($shape),arg($child,1),$base,0,$width)));
+effect[fallback] c11.static_image.union_member_image($type,$child) => arg($child,1);
+
+effect c11.static_image.children(c11.static_image.Object(c11.types.Union($name,$fields),$image,$children,$prior),$overrides,$active)
+    => bind($type,c11.types.Union($name,$fields),bind($index,choose(eq($active,c11.initializers.UnknownActive()),$prior,$active),
+        bind($initial,choose(and(not(eq($prior,c11.initializers.UnknownActive())),not(eq($index,$prior))),
+            c11.static_image.zero(c11.initializers.child_type($type,$index)),
+            c11.static_image.child(c11.static_image.Object($type,$image,$children,$prior),$index)),
+        bind($child,choose(env.contains($overrides,$index),c11.static_image.node(env.get($overrides,$index),$initial),$initial),
+            c11.static_image.Object($type,storage.image_record(c11.types.bytes($type),
+                [[0,c11.static_image.union_member_image(c11.initializers.child_type($type,$index),$child)]]),env.put(env.empty(),$index,$child),$index)))));
+effect c11.static_image.children(c11.static_image.Object(c11.types.Array($count,$element),$image,$children,$active),$overrides,$next)
+    => bind($type,c11.types.Array($count,$element),bind(c11.static_image.ArrayPlan($index,$limit,$source,$updates,$parts,$slots),
+        rule.iterate("c11.static_image.array_step",c11.static_image.ArrayPlan(0,$count,c11.static_image.Object($type,$image,$children,$active),$overrides,[],env.empty()),1000000),
+            c11.static_image.Object($type,storage.image_record(c11.types.bytes($type),list.reverse($parts)),$slots,0)));
+effect c11.static_image.array_step(c11.static_image.ArrayPlan($index,$count,$object,$overrides,$parts,$slots)) when eq($index,$count)
+    => [0,c11.static_image.ArrayPlan($index,$count,$object,$overrides,$parts,$slots)];
+effect c11.static_image.array_step(c11.static_image.ArrayPlan($index,$count,$object,$overrides,$parts,$slots)) when lt($index,$count)
+    => bind($child,c11.static_image.resolve($object,$index,$overrides),
+        [1,c11.static_image.ArrayPlan(add($index,1),$count,$object,$overrides,
+            list.prepend([c11.static_image.offset(arg($object,0),$index),arg($child,1)],$parts),env.put($slots,$index,$child))]);
+
+effect c11.static_image.children(c11.static_image.Object(c11.types.Record($name,$fields),$image,$children,$active),$overrides,$next)
+    => bind($type,c11.types.Record($name,$fields),bind(c11.static_image.RecordPlan($index,$offsets,$parts,$slots,$source,$updates,$unit),
+        c11.static_image.flush_unit(list.fold("c11.static_image.record_field",$fields,
+            c11.static_image.RecordPlan(0,list.cursor(arg(c11.types.named_aggregate_layout("struct",$name,$fields),2)),[],env.empty(),
+                c11.static_image.Object($type,$image,$children,$active),$overrides,c11.static_image.NoUnit()))),
+            c11.static_image.Object($type,storage.image_record(c11.types.bytes($type),list.reverse($parts)),$slots,0)));
+effect c11.static_image.flush_unit(c11.static_image.RecordPlan($index,$offsets,$parts,$slots,$object,$overrides,c11.static_image.Unit($offset,$image)))
+    => c11.static_image.RecordPlan($index,$offsets,list.prepend([$offset,$image],$parts),$slots,$object,$overrides,c11.static_image.NoUnit());
+effect c11.static_image.flush_unit(c11.static_image.RecordPlan($index,$offsets,$parts,$slots,$object,$overrides,c11.static_image.NoUnit()))
+    => c11.static_image.RecordPlan($index,$offsets,$parts,$slots,$object,$overrides,c11.static_image.NoUnit());
+effect c11.static_image.record_field($state,c11.types.Field($name,c11.bitfields.BitType($base,0)))
+    => bind(c11.static_image.RecordPlan($index,$offsets,$parts,$slots,$object,$overrides,$unit),c11.static_image.flush_unit($state),
+        c11.static_image.RecordPlan(add($index,1),list.cursor.tail($offsets),$parts,$slots,$object,$overrides,$unit));
+effect c11.static_image.record_field($state,c11.types.Field($name,c11.bitfields.BitType($base,$width))) when lt(0,$width)
+    => bind(c11.static_image.RecordPlan($index,$offsets,$parts,$slots,$object,$overrides,$unit),$state,
+        bind(c11.bitfields.BitOffset($offset,$shift),list.cursor.head($offsets),
+        bind($prepared,choose(eq($shift,0),c11.static_image.start_unit($state,$offset,$base),$state),
+        bind(c11.static_image.RecordPlan($i,$positions,$segments,$members,$source,$updates,c11.static_image.Unit($at,$old)),$prepared,
+        bind($child,c11.static_image.resolve($object,$index,$overrides),
+            c11.static_image.RecordPlan(add($index,1),list.cursor.tail($offsets),$segments,env.put($members,$index,$child),$object,$overrides,
+                c11.static_image.Unit($at,storage.Image(storage.image_shape($old),c11.static_image.BitWrite($old,arg($child,1),$base,$shift,$width)))))))));
+effect c11.static_image.start_unit($state,$offset,$base)
+    => bind(c11.static_image.RecordPlan($index,$offsets,$parts,$slots,$object,$overrides,$unit),c11.static_image.flush_unit($state),
+        c11.static_image.RecordPlan($index,$offsets,$parts,$slots,$object,$overrides,
+            c11.static_image.Unit($offset,storage.image_project(arg($object,1),mul($offset,8),c11.union_storage.shape(c11.types.unqualified($base))))));
+effect[fallback] c11.static_image.record_field($state,c11.types.Field($name,$type))
+    => bind(c11.static_image.RecordPlan($index,$offsets,$parts,$slots,$object,$overrides,$unit),c11.static_image.flush_unit($state),
+        choose(eq(c11.types.bytes($type),0),c11.static_image.RecordPlan(add($index,1),list.cursor.tail($offsets),$parts,$slots,$object,$overrides,$unit),
+            bind($child,c11.static_image.resolve($object,$index,$overrides),
+                c11.static_image.RecordPlan(add($index,1),list.cursor.tail($offsets),list.prepend([list.cursor.head($offsets),arg($child,1)],$parts),
+                    env.put($slots,$index,$child),$object,$overrides,$unit))));

@@ -1,0 +1,2 @@
+mod a_different_name;
+fn wrong() -> i32 { return 0; }

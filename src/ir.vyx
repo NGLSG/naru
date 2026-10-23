@@ -1,0 +1,202 @@
+module naru;
+use std.string;
+
+public fn ir_list(e: &mut Engine, id: i64) -> bool {
+    if (id >= 0 && e.node(id).kind == 5) { return true; }
+    e.reject("MLIR builder requires a list"); return false;
+}
+
+public fn make_ir_op(e: &mut Engine, rt: &mut Runtime, call: i64) -> i64 {
+    if (e.node(call).count != 5 && e.node(call).count != 6) {
+        e.reject("mlir.op expects 5 arguments and an optional successor list"); return -1;
+    }
+    let n = e.node(call); let name = e.node(e.child(call, 0));
+    if (name.kind != 1 || !name.text.contains(".")) { e.reject("MLIR operation requires a qualified string name"); return -1; }
+    var i: i64 = 1;
+    while (i < 5) { if (!ir_list(e, e.child(call, i))) { return -1; } i = i + 1; }
+    let operands = e.child(call, 1); let types = e.child(call, 2); let regions = e.child(call, 4);
+    i = 0;
+    while (i < e.node(operands).count) {
+        if (e.node(e.child(operands, i)).kind != 7) { e.reject("MLIR operand must be an SSA value"); return -1; }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < e.node(types).count) {
+        if (e.node(e.child(types, i)).kind != 1) { e.reject("MLIR result type must be a string"); return -1; }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < e.node(regions).count) {
+        if (e.node(e.child(regions, i)).kind != 8) { e.reject("MLIR region must be built with mlir.region"); return -1; }
+        i = i + 1;
+    }
+    let successors = e.node(call).count == 6 ? e.child(call, 5) : -1;
+    if (successors >= 0) {
+        if (!ir_list(e, successors)) { return -1; }
+        i = 0;
+        while (i < e.node(successors).count) {
+            if (e.node(e.child(successors, i)).kind != 9) { e.reject("MLIR successor must be a block"); return -1; }
+            i = i + 1;
+        }
+    }
+    let op = e.add_node(6, name.text, n.file, n.line, n.column);
+    i = 1;
+    while (i < 5) { e.add_child(op, e.child(call, i)); i = i + 1; }
+    let results = e.add_node(5, "", n.file, n.line, n.column);
+    i = 0;
+    while (i < e.node(types).count) {
+        let value = e.add_node(7, "%v" + naru_number(rt.value_counter), n.file, n.line, n.column);
+        rt.value_counter = rt.value_counter + 1;
+        e.add_child(value, e.child(types, i));
+        e.add_child(results, value); i = i + 1;
+    }
+    e.add_child(op, results);
+    if (successors >= 0) { e.add_child(op, successors); }
+    e.add_child(rt.active_region, op);
+    if (e.node(results).count == 1) { return e.child(results, 0); }
+    return results;
+}
+
+public fn make_ir_block(e: &mut Engine, rt: &mut Runtime, call: i64) -> i64 {
+    if (!expect_arity(e, call, 1)) { return -1; }
+    let types = e.child(call, 0);
+    if (!ir_list(e, types)) { return -1; }
+    let n = e.node(call);
+    let block = e.add_node(9, "block", n.file, n.line, n.column);
+    let arguments = e.add_node(5, "", n.file, n.line, n.column);
+    let operations = e.add_node(5, "", n.file, n.line, n.column);
+    var i: i64 = 0;
+    while (i < e.node(types).count) {
+        let type_id = e.child(types, i);
+        if (e.node(type_id).kind != 1) { e.reject("MLIR block argument type must be a string"); return -1; }
+        let value = e.add_node(7, "%v" + naru_number(rt.value_counter), n.file, n.line, n.column);
+        rt.value_counter = rt.value_counter + 1;
+        e.add_child(value, type_id); e.add_child(arguments, value);
+        i = i + 1;
+    }
+    e.add_child(block, arguments); e.add_child(block, operations);
+    return block;
+}
+
+public fn make_ir_block_argument(e: &mut Engine, call: i64) -> i64 {
+    if (!expect_arity(e, call, 2)) { return -1; }
+    let block = e.child(call, 0);
+    if (e.node(block).kind != 9) { e.reject("mlir.block_arg requires a block"); return -1; }
+    let index = scalar_int(e, e.child(call, 1));
+    if (!e.good()) { return -1; }
+    let value = e.child(e.child(block, 0), index);
+    if (value < 0) { e.reject("MLIR block argument index out of range"); }
+    return value;
+}
+
+public fn make_ir_region_blocks(e: &mut Engine, call: i64) -> i64 {
+    if (!expect_arity(e, call, 1)) { return -1; }
+    let blocks = e.child(call, 0);
+    if (!ir_list(e, blocks)) { return -1; }
+    let n = e.node(call);
+    // Preserve explicit zero-block regions (external functions, initialized
+    // globals). A compatibility operation-list region has different semantics.
+    let region = e.add_node(8, "blocks", n.file, n.line, n.column);
+    var i: i64 = 0;
+    while (i < e.node(blocks).count) {
+        let block = e.child(blocks, i);
+        if (e.node(block).kind != 9) { e.reject("MLIR region blocks must be block values"); return -1; }
+        e.add_child(region, block); i = i + 1;
+    }
+    return region;
+}
+
+public fn mlir_quote(text: string) -> string {
+    var out = "\""; var i: i64 = 0;
+    while (i < text.len) {
+        let c = str_char_at(text, i);
+        if (c == 34) { out = out + "\\22"; }
+        else if (c == 92) { out = out + "\\5C"; }
+        else if (c == 10) { out = out + "\\0A"; }
+        else if (c == 13) { out = out + "\\0D"; }
+        else if (c == 9) { out = out + "\\09"; }
+        else { out = out + text.substring(i, i + 1); }
+        i = i + 1;
+    }
+    return out + "\"";
+}
+
+public fn ir_attributes(e: &mut Engine, list: i64) -> string {
+    var out = ""; var i: i64 = 0;
+    while (i < e.node(list).count && e.good()) {
+        let id = e.child(list, i); let attr = e.node(id);
+        let raw = attr.text == "RawAttr" || attr.text.ends_with(".RawAttr");
+        if (attr.kind != 0 || (attr.text != "Attr" && !attr.text.ends_with(".Attr") && !raw)
+            || attr.count < 2 || attr.count > 3 || (raw && attr.count != 2)) {
+            e.reject("MLIR attributes require Attr(name, value[, type]) or RawAttr(name, text)"); return "";
+        }
+        let key = e.node(e.child(id, 0)); let value = e.node(e.child(id, 1));
+        if (key.kind != 1 || (raw && value.kind != 1)) { e.reject("invalid MLIR attribute name/value"); return ""; }
+        if (i > 0) { out = out + ", "; }
+        out = out + mlir_quote(key.text) + " = ";
+        if (raw) { out = out + value.text; }
+        else if (value.kind == 1) { out = out + mlir_quote(value.text); }
+        else if (value.kind == 2) { out = out + value.text; }
+        else { e.reject("unsupported MLIR attribute value"); return ""; }
+        if (attr.count == 3) {
+            let attr_type = e.node(e.child(id, 2));
+            if (attr_type.kind != 1) { e.reject("MLIR attribute type must be a string"); return ""; }
+            out = out + " : " + attr_type.text;
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+public fn ir_serialize_region(e: &mut Engine, region: i64, indent: string) -> string {
+    var out = ""; var edge = e.node(region).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edge(edge); let id = item.value; let op = e.node(id);
+        let operands = e.child(id, 0); let types = e.child(id, 1);
+        let attrs = e.child(id, 2); let regions = e.child(id, 3); let results = e.child(id, 4);
+        out = out + indent;
+        var i: i64 = 0;
+        while (i < e.node(results).count) {
+            if (i > 0) { out = out + ", "; }
+            out = out + e.node(e.child(results, i)).text; i = i + 1;
+        }
+        if (e.node(results).count > 0) { out = out + " = "; }
+        out = out + mlir_quote(op.text) + "(";
+        i = 0;
+        while (i < e.node(operands).count) {
+            if (i > 0) { out = out + ", "; }
+            out = out + e.node(e.child(operands, i)).text; i = i + 1;
+        }
+        out = out + ")";
+        if (e.node(regions).count > 0) {
+            out = out + " (";
+            i = 0;
+            while (i < e.node(regions).count) {
+                if (i > 0) { out = out + ", "; }
+                out = out + "{\n" + ir_serialize_region(e, e.child(regions, i), indent + "  ") + indent + "}";
+                i = i + 1;
+            }
+            out = out + ")";
+        }
+        if (e.node(attrs).count > 0) { out = out + " {" + ir_attributes(e, attrs) + "}"; }
+        out = out + " : ("; i = 0;
+        while (i < e.node(operands).count) {
+            if (i > 0) { out = out + ", "; }
+            out = out + e.node(e.child(e.child(operands, i), 0)).text; i = i + 1;
+        }
+        out = out + ") -> ";
+        if (e.node(types).count != 1) { out = out + "("; }
+        i = 0;
+        while (i < e.node(types).count) {
+            if (i > 0) { out = out + ", "; }
+            out = out + e.node(e.child(types, i)).text; i = i + 1;
+        }
+        if (e.node(types).count != 1) { out = out + ")"; }
+        out = out + "\n"; edge = item.next;
+    }
+    return out;
+}
+
+public fn serialize_mlir(e: &mut Engine, rt: &mut Runtime) -> string {
+    return "module {\n" + ir_serialize_region(e, rt.active_region, "  ") + "}\n";
+}

@@ -1,0 +1,244 @@
+// Stackless pull generators. Syntax, source types, yields and completion are
+// library rules; upstream MLIR async.coro.* supplies frame and suspension IR.
+mod coro;
+use base;
+use types;
+use control;
+use tree;
+use allocation;
+use defer;
+use affine;
+use records;
+use tasks;
+use generics;
+use functions;
+use arrays;
+use closures;
+use streams;
+use externc;
+
+syntax typename `generator < $element:typename >` => coro.Generator($element);
+effect externc.c_abi_type(coro.Generator($element)) => coro.Generator($element);
+syntax item `coro fn $name:ident() -> $element:typename $body:block`
+    => coro.Coroutine($name, [], $element, $body);
+syntax item `coro fn $name:ident($params:parameters) -> $element:typename $body:block`
+    => coro.Coroutine($name, $params, $element, $body);
+syntax item `coro fn $name:ident<$variables:type_parameters>($params:parameters) -> $element:typename $body:block`
+    => generics.Template($name,$variables,$params,coro.Generator($element),coro.GenericBody($body),[]);
+syntax item `coro fn $name:ident<$variables:type_parameters>() -> $element:typename $body:block`
+    => generics.Template($name,$variables,[],coro.Generator($element),coro.GenericBody($body),[]);
+effect generics.specialize_item($name,$params,coro.Generator($element),coro.GenericBody($body)) => coro.Coroutine($name,$params,$element,$body);
+syntax statement `yield $value:expr;` => coro.YieldStatement($value);
+syntax statement `yield;` => coro.YieldStatement(coro.Unit());
+syntax expr `resume($generator:expr)` => coro.Resume($generator);
+syntax expr `current($generator:expr)` => coro.Current($generator);
+syntax expr `destroy($generator:expr)` => coro.Destroy($generator);
+effect base.continue(coro.YieldStatement($value),$next) => coro.Yield($value,$next);
+effect base.check(coro.Unit(),$env,$expected) => base.expect(base.Typed(control.Void(),coro.Unit()),$expected);
+effect base.lower(base.Typed(control.Void(),coro.Unit()),$env) => coro.status_value(0);
+effect control.append(coro.Yield($value,$next),$suffix) => coro.Yield($value,control.append($next,$suffix));
+effect control.range_continues(coro.Yield($value,$next),$increment) => coro.Yield($value,control.range_continues($next,$increment));
+
+// Payload policies are open. Index/void/borrowed values need an explicit
+// storage or lifetime policy rather than an accidental representation cast.
+effect coro.payload(types.Signed($width)) => types.repr(types.Signed($width));
+effect coro.payload(types.Unsigned($width)) => types.repr(types.Unsigned($width));
+effect coro.payload(types.Real($format)) => types.repr(types.Real($format));
+effect coro.payload(types.Bool()) => "i1";
+effect coro.payload(control.Void()) => "i8";
+effect coro.payload(records.Record($name,$fields)) => types.repr(records.Record($name,$fields));
+effect coro.payload(records.Product($members)) => types.repr(records.Product($members));
+effect coro.payload(arrays.Array($count,$element)) => types.repr(arrays.Array($count,$element));
+effect coro.payload(closures.Closure($name,$params,$result,$captures)) => types.repr(closures.Closure($name,$params,$result,$captures));
+effect coro.payload(coro.Generator($element)) => "!llvm.ptr";
+effect coro.payload(externc.CPtr()) => "!llvm.ptr";
+effect coro.payload(externc.CPtr($element)) => "!llvm.ptr";
+effect coro.payload(externc.CChar()) => "i8";
+effect[fallback] coro.payload($type) => fail("coroutine yield type needs a payload storage policy");
+effect types.repr(coro.Generator($element)) => "!llvm.ptr";
+effect types.repr(coro.DataPointer()) => "!llvm.ptr";
+effect base.storage_alloc(coro.Generator($element)) => mlir.op("llvm.alloca",[coro.integer(1)],["!llvm.ptr"],[coro.RawAttr("elem_type","!llvm.ptr")],[]);
+effect base.storage_load(coro.Generator($element),$slot) => coro.load($slot,"!llvm.ptr");
+effect base.storage_store(base.Typed(coro.Generator($element),$value),$slot,$env)
+    => coro.store(base.lower(base.Typed(coro.Generator($element),$value),$env),$slot);
+effect base.declare(coro.Coroutine($name,$params,$element,$body),$rest,$env)
+    => seq(coro.payload($element),base.declaration($name,coro.CoroutineSignature(list.map("base.param_type",$params),$element),$rest,$env));
+effect base.signature_result(coro.CoroutineSignature($params,$element)) => coro.Generator($element);
+effect base.signature_params(coro.CoroutineSignature($params,$element)) => $params;
+effect functions.callable(coro.CoroutineSignature($params,$element)) => functions.Callable($params,coro.Generator($element));
+effect functions.capture_target($name,coro.CoroutineSignature($params,$element)) => [functions.Callable($params,coro.Generator($element)),functions.Reference($name)];
+effect base.call_checked($name,$arguments,coro.CoroutineSignature($params,$element),$env,$expected)
+    => base.expect(base.Typed(coro.Generator($element),coro.Start($name,base.check_arguments($arguments,$params,$env))),$expected);
+effect base.prepare(coro.Coroutine($name,$params,$element,$body),$env)
+    => bind([$bound,$scope],base.bind_params($params,$env,env.empty()),
+        seq(list.map("coro.parameter_safe",$params),bind($data,symbol("coro.data"),coro.CheckedCoroutine($name,$bound,$element,$data,
+            base.check_body(tree.rewrite($body,"coro.finish_node",[]),env.put($scope,coro.YieldTypeKey(),$element),control.Void())))));
+effect coro.finish_node(control.ReturnVoid(),$context) => coro.Finish();
+effect coro.finish_node(base.Return($value),$context) => coro.InvalidReturn($value);
+effect[fallback] coro.finish_node($node,$context) => $node;
+effect base.check_body(coro.Finish(),$env,$result) => coro.Finish();
+effect base.check_body(coro.InvalidReturn($value),$env,$result) => fail("coroutine completion cannot return a value; use yield");
+effect base.check_body(coro.Yield($value,$next),$env,$result)
+    => choose(env.contains($env,coro.YieldTypeKey()),
+        coro.Yield(base.check($value,$env,env.get($env,coro.YieldTypeKey())),base.check_body($next,$env,$result)),
+        fail("yield outside a coroutine"));
+effect base.hint(coro.Resume($generator),$env) => types.Bool();
+effect base.hint(coro.Current($generator),$env) => coro.element(base.hint($generator,$env));
+effect base.hint(coro.Destroy($generator),$env) => control.Void();
+effect coro.element(coro.Generator($element)) => $element;
+effect[fallback] coro.element($type) => fail("coroutine operation requires a generator");
+effect base.check(coro.Resume($generator),$env,$expected)
+    => bind($checked,base.check($generator,$env,base.Any()),seq(coro.resume_element(arg($checked,0)),
+        base.expect(base.Typed(types.Bool(),coro.ResumeValue($checked)),$expected)));
+effect base.check(coro.Current($generator),$env,$expected)
+    => coro.check_current(base.check($generator,$env,base.Any()),$expected);
+effect coro.check_current(base.Typed(coro.Generator($element),$value),$expected)
+    => base.expect(base.Typed($element,coro.CurrentValue(base.Typed(coro.Generator($element),$value))),$expected);
+effect[fallback] coro.check_current($value,$expected) => fail("current requires a generator");
+effect coro.resume_element(coro.Generator($element)) => $element;
+effect[fallback] coro.resume_element($type) => fail("resume requires a generator");
+effect base.check(coro.Destroy($generator),$env,$expected)
+    => bind($checked,base.check($generator,$env,base.Any()),seq(coro.destroy_element(arg($checked,0)),
+        base.expect(base.Typed(control.Void(),coro.DestroyValue($checked)),$expected)));
+effect[fallback] coro.destroy_element($type) => coro.element($type);
+
+effect coro.emit_program($items) => base.emit_program($items);
+effect base.emit_runtime($checked) when coro.needs_runtime($checked) => seq(coro.runtime(),coro.runtime_extra($checked));
+effect[fallback] coro.runtime_extra($items) => [];
+// A module can consume handles supplied by another module without defining a
+// coroutine itself. Checked source types still require the runtime declarations.
+effect coro.needs_runtime($items) => tree.fold($items,"coro.runtime_needed",0);
+effect coro.runtime_needed($found,coro.CheckedCoroutine($name,$params,$element,$data,$body)) => 1;
+effect coro.runtime_needed($found,coro.Generator($element)) => 1;
+effect[fallback] coro.runtime_needed($found,$node) => $found;
+effect coro.runtime() => seq(coro.external("malloc","!llvm.func<ptr (i64)>"),
+    seq(coro.external("free","!llvm.func<void (ptr)>"),seq(coro.external("abort","!llvm.func<void ()>"),
+    seq(coro.external("_aligned_malloc","!llvm.func<ptr (i64, i64)>"),coro.external("_aligned_free","!llvm.func<void (ptr)>")))));
+effect coro.external($name,$type) => mlir.op("llvm.func",[],[],[coro.Attr("sym_name",$name),coro.RawAttr("function_type",$type)],[mlir.region_blocks([])]);
+effect coro.native_call($name,$args,$results) => mlir.op("llvm.call",$args,$results,
+    [coro.RawAttr("callee",concat("@",$name)),coro.RawAttr("op_bundle_sizes","array<i32>"),
+     coro.RawAttr("operandSegmentSizes",concat("array<i32: ",concat(text(size($args)),", 0>")))],[]);
+effect coro.integer($value) => base.lower(base.Typed(types.Signed(64),base.Integer($value)),env.empty());
+effect coro.status_value($value) => base.lower(base.Typed(types.Unsigned(8),base.Integer($value)),env.empty());
+effect coro.data_type($element) => concat("!llvm.struct<(ptr, i8, ",concat(coro.payload($element),", i64)>"));
+effect coro.address($data,$element,$field) => mlir.op("llvm.getelementptr",[$data],["!llvm.ptr"],
+    [coro.RawAttr("elem_type",coro.data_type($element)),coro.RawAttr("rawConstantIndices",concat("array<i32: 0, ",concat(text($field),">")))],[]);
+effect coro.store($value,$pointer) => mlir.op("llvm.store",[$value,$pointer],[],[],[]);
+effect coro.load($pointer,$type) => mlir.op("llvm.load",[$pointer],[$type],[],[]);
+effect coro.set_status($data,$element,$value) => coro.store(coro.status_value($value),coro.address($data,$element,1));
+effect coro.get_status($data,$element) => coro.load(coro.address($data,$element,1),"i8");
+effect coro.equals($value,$integer) => mlir.op("arith.cmpi",[$value,coro.status_value($integer)],["i1"],[coro.Attr("predicate",0,"i64")],[]);
+effect coro.pointer($handle) => mlir.op("builtin.unrealized_conversion_cast",[$handle],["!llvm.ptr"],[],[]);
+effect coro.require($condition) => mlir.op("scf.if",[$condition],[],[],[
+    mlir.region(mlir.op("scf.yield",[],[],[],[])),
+    mlir.region(seq(coro.native_call("abort",[],[]),mlir.op("scf.yield",[],[],[],[])))]);
+effect coro.nonnull($pointer) => mlir.op("llvm.icmp",[$pointer,mlir.op("llvm.mlir.zero",[],["!llvm.ptr"],[],[])],["i1"],
+    [coro.RawAttr("predicate","1 : i64")],[]);
+
+effect base.lower(base.Typed(coro.Generator($element),coro.Start($name,$arguments)),$env)
+    => coro.start_data($name,$arguments,$element,$env);
+effect coro.start_data($name,$arguments,$element,$env) => bind($size,mlir.op("llvm.ptrtoint",[mlir.op("llvm.getelementptr",[mlir.op("llvm.mlir.zero",[],["!llvm.ptr"],[],[])],["!llvm.ptr"],
+        [coro.RawAttr("elem_type",coro.data_type($element)),coro.RawAttr("rawConstantIndices","array<i32: 1>")],[])],["i64"],[],[]),
+        bind($data,coro.native_call("malloc",[$size],["!llvm.ptr"]),seq(coro.require(coro.nonnull($data)),seq(coro.set_status($data,$element,0),
+            bind($handle,mlir.op("func.call",list.concat(base.lower_arguments($arguments,$env),[$data]),["!async.coro.handle"],
+                [coro.RawAttr("callee",concat("@",coro.body_symbol($name)))],[]),seq(coro.store(coro.pointer($handle),coro.address($data,$element,0)),$data))))));
+effect base.lower(base.Typed(types.Bool(),coro.ResumeValue(base.Typed(coro.Generator($element),$value))),$env)
+    => bind($data,base.lower(base.Typed(coro.Generator($element),$value),$env),
+        mlir.op("scf.if",[coro.equals(coro.get_status($data,$element),2)],["i1"],[],[
+            mlir.region(mlir.op("scf.yield",[base.lower(base.Typed(types.Bool(),base.Integer(0)),$env)],[],[],[])),
+            mlir.region(seq(coro.set_status($data,$element,0),seq(mlir.op("llvm.intr.coro.resume",[coro.load(coro.address($data,$element,0),"!llvm.ptr")],[],[],[]),
+                mlir.op("scf.yield",[coro.equals(coro.get_status($data,$element),1)],[],[],[]))))]));
+effect base.lower(base.Typed($element,coro.CurrentValue(base.Typed(coro.Generator($element),$value))),$env)
+    => bind($data,base.lower(base.Typed(coro.Generator($element),$value),$env),seq(coro.require(coro.equals(coro.get_status($data,$element),1)),
+        coro.load(coro.address($data,$element,2),coro.payload($element))));
+effect base.lower(base.Typed(control.Void(),coro.DestroyValue(base.Typed(coro.Generator($element),$value))),$env)
+    => bind($data,base.lower(base.Typed(coro.Generator($element),$value),$env),seq(
+        mlir.op("llvm.intr.coro.destroy",[coro.load(coro.address($data,$element,0),"!llvm.ptr")],[],[],[]),coro.native_call("free",[$data],[])));
+
+effect base.prepare_storage(coro.Yield($value,$next),$entry,$env) => base.prepare_storage($next,$entry,$env);
+effect base.prepare_storage(coro.Finish(),$entry,$env) => $env;
+effect base.flow_terminal(coro.Yield($value,$next)) => base.flow_terminal($next);
+effect base.flow_terminal(coro.Finish()) => 1;
+effect allocation.children(coro.CheckedCoroutine($name,$params,$element,$data,$body)) => [];
+effect base.lower_function(coro.CheckedCoroutine($name,$params,$element,$data,$body))
+    => seq(mlir.op("func.func",[],[],[coro.Attr("sym_name",coro.body_symbol($name)),coro.Attr("sym_visibility","private"),coro.RawAttr("llvm.passthrough","[\"presplitcoroutine\"]"),
+        coro.RawAttr("function_type",concat("(",concat(types.join(list.concat(list.map("base.bound_type",$params),["!llvm.ptr"])),") -> !async.coro.handle")))],
+        [coro.region(list.concat($params,[base.BoundParam(coro.DataPointer(),$data)]),$body,$element,$data)]),
+        coro.wrapper($name,$params,coro.Generator($element),coro.Start($name,list.map("coro.bound_read",$params))));
+effect coro.body_symbol($name) => concat("_naru_coro_body_",$name);
+effect coro.bound_read(base.BoundParam($type,$identity)) => base.Typed($type,base.Read($identity));
+effect coro.wrapper($name,$params,$result,$start) => mlir.op("func.func",[],[],[coro.Attr("sym_name",$name),
+    coro.RawAttr("function_type",concat("(",concat(types.join(list.map("base.bound_type",$params)),") -> !llvm.ptr")))],
+    [bind($entry,mlir.block(list.map("base.bound_type",$params)),seq(mlir.in_block($entry,
+        mlir.op("func.return",[base.lower(base.Typed($result,$start),base.bind_ssa($params,$entry,0,env.empty()))],[],[],[])),mlir.region_blocks([$entry])))]);
+effect coro.region($params,$body,$element,$data) => bind($entry,mlir.block(list.map("base.bound_type",$params)),
+    bind($env,allocation.plan_frame($body,$entry,base.prepare_storage($body,$entry,base.bind_ssa($params,$entry,0,env.empty()))),
+        coro.frame_region($body,$element,env.get($env,$data),$entry,$env,mlir.block([]),mlir.block([]),mlir.block([]),mlir.block([]))));
+effect coro.frame_region($body,$element,$data,$entry,$env,$start,$suspended,$cleanup,$finished) =>
+    bind($id,mlir.with_block($entry,mlir.op("async.coro.id",[],["!async.coro.id"],[],[])),
+    bind($handle,mlir.with_block($entry,mlir.op("async.coro.begin",[$id],["!async.coro.handle"],[],[])),
+    bind($scope,env.put(env.put(env.put(env.put(env.put($env,coro.HandleKey(),$handle),coro.SuspendKey(),$suspended),coro.CleanupKey(),$cleanup),
+        coro.DataKey(),$data),coro.ElementKey(),$element),
+        coro.body_region($body,$element,$data,$entry,$start,$suspended,$cleanup,$finished,$id,$handle,$scope))));
+effect coro.body_region($body,$element,$data,$entry,$start,$suspended,$cleanup,$finished,$id,$handle,$scope) =>
+    seq(mlir.in_block($entry,seq(coro.require(coro.nonnull(coro.pointer($handle))),coro.suspend($scope,$start))),
+    seq(mlir.in_block($cleanup,seq(mlir.op("async.coro.free",[$id,$handle],[],[],[]),base.jump($suspended))),
+    seq(mlir.in_block($suspended,seq(mlir.op("async.coro.end",[$handle],[],[],[]),mlir.op("func.return",[$handle],[],[],[]))),
+    seq(mlir.in_block($finished,seq(coro.set_status(env.get($scope,coro.DataKey()),$element,2),coro.suspend($scope,$finished))),
+        mlir.region_blocks(list.concat([$entry],list.concat(base.lower_flow($body,$scope,$start,$finished),[$finished,$cleanup,$suspended])))))));
+effect coro.suspend($env,$resume) => mlir.op("async.coro.suspend",[
+    mlir.op("async.coro.save",[env.get($env,coro.HandleKey())],["!async.coro.state"],[],[])],[],[],[],
+    [env.get($env,coro.SuspendKey()),$resume,env.get($env,coro.CleanupKey())]);
+effect base.lower_flow(coro.Yield($value,$next),$env,$block,$continuation) => bind($resume,mlir.block([]),
+    seq(mlir.in_block($block,seq(coro.store(base.lower($value,$env),coro.address(env.get($env,coro.DataKey()),env.get($env,coro.ElementKey()),2)),
+        seq(coro.set_status(env.get($env,coro.DataKey()),env.get($env,coro.ElementKey()),1),coro.suspend($env,$resume)))),
+        list.prepend($block,base.lower_flow($next,$env,$resume,$continuation))));
+effect base.lower_flow(coro.Finish(),$env,$block,$continuation)
+    => seq(mlir.in_block($block,seq(coro.set_status(env.get($env,coro.DataKey()),env.get($env,coro.ElementKey()),2),
+        coro.suspend($env,env.get($env,coro.SuspendKey())))),[$block]);
+
+// The existing defer expansion owns capture and normal-exit semantics. At a
+// suspension it also records that lexical cleanup stack for LLVM's destroy edge.
+effect defer.function(coro.Coroutine($name,$params,$element,$body),$environment)
+    => coro.Coroutine($name,$params,$element,defer.expand(tree.rewrite($body,"coro.finish_node",[]),defer.Context([],[],defer.NoLoop()),defer.defer_scope($params,$environment),control.Void()));
+effect defer.expand(coro.Finish(),defer.Context($returns,$scope,$loop),$environment,$result) => defer.cleanup_calls($returns,coro.Finish());
+effect defer.expand(coro.InvalidReturn($value),$context,$environment,$result) => fail("coroutine completion cannot return a value; use yield");
+effect affine.body(coro.Finish(),$state) => [coro.Finish(),$state];
+effect defer.expand(coro.Yield($value,$next),defer.Context($returns,$scope,$loop),$environment,$result)
+    => coro.CleanupYield($value,defer.cleanup_calls($returns,base.End()),defer.expand($next,defer.Context($returns,$scope,$loop),$environment,$result));
+effect base.check_body(coro.CleanupYield($value,$cleanup,$next),$env,$result)
+    => choose(env.contains($env,coro.YieldTypeKey()),coro.CleanupYield(base.check($value,$env,env.get($env,coro.YieldTypeKey())),
+        base.check_body($cleanup,$env,control.Void()),base.check_body($next,$env,$result)),fail("yield outside a coroutine"));
+effect base.prepare_storage(coro.CleanupYield($value,$cleanup,$next),$entry,$env) => base.prepare_storage($next,$entry,$env);
+effect base.flow_terminal(coro.CleanupYield($value,$cleanup,$next)) => base.flow_terminal($next);
+effect base.lower_flow(coro.CleanupYield($value,$cleanup,$next),$env,$block,$continuation)
+    => bind($resume,mlir.block([]),bind([$cancel,$blocks],coro.cleanup_edge($cleanup,$env),
+        seq(mlir.in_block($block,seq(coro.store(base.lower($value,$env),coro.address(env.get($env,coro.DataKey()),env.get($env,coro.ElementKey()),2)),
+            seq(coro.set_status(env.get($env,coro.DataKey()),env.get($env,coro.ElementKey()),1),coro.suspend(env.put($env,coro.CleanupKey(),$cancel),$resume)))),
+            list.concat([$block],list.concat($blocks,base.lower_flow($next,$env,$resume,$continuation))))));
+effect coro.cleanup_edge($cleanup,$env) => bind($cancel,mlir.block([]),
+    [$cancel,base.lower_flow($cleanup,$env,$cancel,env.get($env,coro.CleanupKey()))]);
+effect affine.function(coro.Coroutine($name,$params,$element,$body),$environment)
+    => bind($state,affine.parameters($params,affine.State($environment,env.empty(),env.empty(),env.empty(),[])),
+        bind([$rewritten,$last],affine.body($body,$state),coro.Coroutine($name,$params,$element,affine.parameter_storage($params,$rewritten))));
+effect affine.body(coro.CleanupYield($value,$cleanup,$next),$state)
+    => bind([$checked,$after],affine.expression($value,$state),seq(coro.suspend_safe($after),
+        bind([$cancel,$ignored],affine.body($cleanup,$after),bind([$tail,$last],affine.body($next,$after),[coro.CleanupYield($checked,$cancel,$tail),$last]))));
+effect coro.suspend_safe(affine.State($scope,$owners,$life,$loans,$names))
+    => seq(list.map("coro.loan_safe",env.entries($loans)),1);
+effect coro.loan_safe([$name,affine.Loan($identity,$kind,0)]) => 1;
+effect coro.loan_safe([$name,affine.Loan($identity,$kind,1)]) => fail("live borrow across coroutine suspension requires a lifetime contract");
+effect coro.parameter_safe(base.Param($name,affine.Borrowed($type,$kind))) => fail("borrowed coroutine parameter requires a frame lifetime contract");
+effect[fallback] coro.parameter_safe($parameter) => 1;
+effect closures.lift_item(coro.Coroutine($name,$params,$element,$body),$env,$lifted)
+    => bind([$rewritten,$next],closures.lift_body($body,closures.param_scope($params,$env),$lifted),[coro.Coroutine($name,$params,$element,$rewritten),$next]);
+effect closures.lift_body(coro.Yield($value,$next),$env,$lifted)
+    => bind([$checked,$more],closures.lift_expr($value,$env,$lifted),bind([$tail,$last],closures.lift_body($next,$env,$more),[coro.Yield($checked,$tail),$last]));
+effect defer.expand(defer.Deferred(coro.Destroy($value),$next),$context,$env,$result)
+    => bind($type,base.hint($value,$env),bind($name,text(symbol("defer.handle")),
+        base.Let($name,$type,$value,defer.expand($next,defer.push(coro.Destroy(defer.captured_argument($name,$type)),$context),
+            env.put($env,$name,base.preparation_slot($type,symbol($name))),$result))));
+effect coro.destroy_element(affine.Owned(coro.Generator($element))) => $element;
+effect base.lower(base.Typed(control.Void(),coro.DestroyValue(base.Typed(affine.Owned(coro.Generator($element)),$value))),$env)
+    => base.lower(base.Typed(control.Void(),coro.DestroyValue(base.Typed(coro.Generator($element),coro.OwnerView(base.Typed(affine.Owned(coro.Generator($element)),$value))))),$env);
+effect base.lower(base.Typed(coro.Generator($element),coro.OwnerView($value)),$env) => base.lower($value,$env);

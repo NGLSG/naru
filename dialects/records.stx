@@ -1,0 +1,129 @@
+mod records;
+use base;
+use types;
+use pipeline;
+use tree;
+
+syntax typename[fallback] `$name:ident` => Named($name);
+syntax typename `pair<$a:typename, $b:typename>` => Product([$a, $b]);
+syntax item `struct $name:ident { $fields:record_fields }` => Definition($name, $fields);
+syntax item `type $name:ident = $descriptor:typename;` => Alias($name, $descriptor);
+syntax record_fields `$name:ident : $descriptor:typename;` => [Field($name, $descriptor)];
+syntax record_fields `$name:ident : $descriptor:typename; $rest:record_fields` => list.prepend(Field($name, $descriptor), $rest);
+syntax record_values `$name:ident : $value:expr` => [Value($name, $value)];
+syntax record_values `$name:ident : $value:expr, $rest:record_values` => list.prepend(Value($name, $value), $rest);
+syntax expr `$name:ident { $fields:record_values }` => Construct($name, $fields);
+syntax expr `pair($a:expr, $b:expr)` => Pair($a, $b);
+syntax expr[90,left] `$value:expr . $field:ident` => Get($value, $field);
+syntax statement `$name:ident . $field:ident = $value:expr;` => AssignField($name, $field, $value);
+effect base.continue(AssignField($name, $field, $value), $next)
+    => base.Set($name, Update(base.Name($name), $field, $value), $next);
+
+effect pipeline.steps() => pipeline.Step("records", ["generics"], "records.prepare");
+effect prepare($items) => bind([$values, $definitions], definitions($items, [], env.empty()),
+    seq(validate_definitions($definitions,$definitions),tree.rewrite($values, "records.resolve_node", $definitions)));
+effect validate_definitions($remaining,$all) => seq(list.fold("records.validate_definition",env.entries($remaining),$all),1);
+effect validate_definition($all,[$name,$definition]) => seq(resolve_name($name,$all,env.empty()),$all);
+effect definitions([], $values, $definitions) => [$values, $definitions];
+effect definitions($items, $values, $definitions) when lt(0, size($items))
+    => define(list.head($items), list.tail($items), $values, $definitions);
+effect define(Definition($name, $fields), $rest, $values, $definitions)
+    => add_definition($name, Definition($name, $fields), $rest, $values, $definitions);
+effect define(Alias($name, $descriptor), $rest, $values, $definitions)
+    => add_definition($name, Alias($name, $descriptor), $rest, $values, $definitions);
+effect[fallback] define($item, $rest, $values, $definitions)
+    => definitions($rest, list.concat($values, [$item]), $definitions);
+effect add_definition($name, $value, $rest, $values, $definitions) => choose(env.contains($definitions, $name),
+    fail(concat("duplicate type: ", $name)), definitions($rest, $values, env.put($definitions, $name, $value)));
+effect resolve_node(Named($name), $definitions) => resolve_name($name, $definitions, env.empty());
+effect resolve_node(Construct($name, $fields), $definitions)
+    => Construction(resolve_name($name, $definitions, env.empty()), $fields);
+effect[fallback] resolve_node($value, $definitions) => $value;
+effect resolve_name($name, $definitions, $seen) => choose(env.contains($seen, $name),
+    fail(concat("recursive value type: ", $name)),
+    resolve_definition(env.get($definitions, $name), $definitions, env.put($seen, $name, 1)));
+effect resolve_definition(Definition($name, $fields), $definitions, $seen)
+    => seq(unique_fields($fields,env.empty()), Record($name, resolve_fields($fields, $definitions, $seen)));
+effect unique_fields([],$seen) => 1;
+effect unique_fields($fields,$seen) when lt(0,size($fields)) => bind(Field($name,$type),list.head($fields),
+    choose(env.contains($seen,$name),fail(concat("duplicate type field: ",$name)),unique_fields(list.tail($fields),env.put($seen,$name,1))));
+effect resolve_definition(Alias($name, $descriptor), $definitions, $seen)
+    => tree.rewrite($descriptor, "records.resolve_nested", [$definitions, $seen]);
+effect resolve_fields([], $definitions, $seen) => [];
+effect resolve_fields($fields, $definitions, $seen) when lt(0, size($fields))
+    => bind(Field($name, $descriptor), list.head($fields),
+        bind($resolved, tree.rewrite($descriptor, "records.resolve_nested", [$definitions, $seen]),
+            seq(storable($resolved), list.prepend(Field($name, $resolved), resolve_fields(list.tail($fields), $definitions, $seen)))));
+effect[fallback] storable($descriptor) => 1;
+effect resolve_nested(Named($name), [$definitions, $seen]) => resolve_name($name, $definitions, $seen);
+effect[fallback] resolve_nested($value, $context) => $value;
+
+effect member_type(Field($name, $descriptor)) => $descriptor;
+effect types.repr(Record($name, $fields)) => types.repr(Product(list.map("records.member_type", $fields)));
+effect types.repr(Product($members)) => seq(list.map("records.storable", $members),
+    concat("!llvm.struct<(", concat(types.join(list.map("types.repr", $members)), ")>")));
+effect base.hint(Construction($descriptor, $fields), $environment) => $descriptor;
+effect base.hint(Pair($a, $b), $environment) => base.Any();
+effect base.hint(Get($value, $field), $environment) => arg(field(base.hint($value, $environment), $field), 1);
+effect base.hint(Update($value, $field, $new), $environment) => base.hint($value, $environment);
+effect base.check(Construction($descriptor, $values), $environment, $expected)
+    => construct_checked($descriptor, value_map($values, env.empty()), size($values), $environment, $expected);
+effect value_map([], $values) => $values;
+effect value_map($fields, $values) when lt(0, size($fields)) => value_entry(list.head($fields), list.tail($fields), $values);
+effect value_entry(Value($name, $value), $rest, $values) => choose(env.contains($values, $name),
+    fail(concat("duplicate initializer field: ", $name)), value_map($rest, env.put($values, $name, $value)));
+effect construct_checked(Record($name, $fields), $values, $count, $environment, $expected)
+    => choose(eq(size($fields), $count),
+        base.expect(base.Typed(Record($name, $fields), Packed(check_fields($fields, $values, $environment))), $expected),
+        fail("record initializer field count mismatch"));
+effect check_fields([], $values, $environment) => [];
+effect check_fields($fields, $values, $environment) when lt(0, size($fields))
+    => bind(Field($name, $descriptor), list.head($fields),
+        list.prepend(base.check(env.get($values, $name), $environment, $descriptor), check_fields(list.tail($fields), $values, $environment)));
+effect base.check(Pair($a, $b), $environment, $expected)
+    => check_pair($a, $b, $environment, base.wanted($expected, Product([base.Any(), base.Any()])));
+effect check_pair($a, $b, $environment, Product([$at, $bt]))
+    => bind(base.Typed($actual_a, $av), base.check($a, $environment, $at),
+        bind(base.Typed($actual_b, $bv), base.check($b, $environment, $bt),
+            base.Typed(Product([$actual_a, $actual_b]), Packed([base.Typed($actual_a, $av), base.Typed($actual_b, $bv)]))));
+effect base.check(Get($value, $name), $environment, $expected)
+    => bind(base.Typed($descriptor, $checked), base.check($value, $environment, base.Any()),
+        bind([$index, $member], field($descriptor, $name),
+            base.expect(base.Typed($member, Project(base.Typed($descriptor, $checked), $index)), $expected)));
+effect base.check(Update($value, $name, $new), $environment, $expected)
+    => bind(base.Typed($descriptor, $checked), base.check($value, $environment, $expected),
+        bind([$index, $member], field($descriptor, $name),
+            base.Typed($descriptor, Updated(base.Typed($descriptor, $checked), $index, base.check($new, $environment, $member)))));
+effect field(Record($name, $fields), $wanted) => find_field($fields, $wanted, 0);
+effect field(Product([$a, $b]), "first") => [0, $a];
+effect field(Product([$a, $b]), "second") => [1, $b];
+effect find_field([], $wanted, $index) => fail(concat("unknown record field: ", $wanted));
+effect find_field($fields, $wanted, $index) when lt(0, size($fields))
+    => find_field_head(list.head($fields), list.tail($fields), $wanted, $index);
+effect find_field_head(Field($wanted, $descriptor), $rest, $wanted, $index) => [$index, $descriptor];
+effect[fallback] find_field_head($head, $rest, $wanted, $index) => find_field($rest, $wanted, add($index, 1));
+
+effect base.lower(base.Typed($descriptor, Packed($values)), $environment)
+    => pack($values, 0, mlir.op("llvm.mlir.undef", [], [types.repr($descriptor)], [], []), $descriptor, $environment);
+effect pack([], $index, $value, $descriptor, $environment) => $value;
+effect pack($values, $index, $value, $descriptor, $environment) when lt(0, size($values))
+    => pack(list.tail($values), add($index, 1), insert($value, base.lower(list.head($values), $environment), $descriptor, $index), $descriptor, $environment);
+effect insert($value, $member, $descriptor, $index)
+    => mlir.op("llvm.insertvalue", [$value, $member], [types.repr($descriptor)], [position($index)], []);
+effect position($index) => RawAttr("position", concat("array<i64: ", concat(text($index), ">")));
+effect base.lower(base.Typed($descriptor, Project($value, $index)), $environment)
+    => mlir.op("llvm.extractvalue", [base.lower($value, $environment)], [types.repr($descriptor)], [position($index)], []);
+effect base.lower(base.Typed($descriptor, Updated($value, $index, $new)), $environment)
+    => insert(base.lower($value, $environment), base.lower($new, $environment), $descriptor, $index);
+effect aggregate(Record($name, $fields)) => 1;
+effect aggregate(Product($members)) => 1;
+effect[fallback] aggregate($descriptor) => 0;
+effect base.storage_type($descriptor) when aggregate($descriptor) => "!llvm.ptr";
+effect base.storage_alloc($descriptor) when aggregate($descriptor) => allocate($descriptor);
+effect allocate($descriptor) => mlir.op("llvm.alloca", [mlir.op("arith.constant", [], ["i64"], [Attr("value", 1, "i64")], [])],
+    ["!llvm.ptr"], [RawAttr("elem_type", types.repr($descriptor))], []);
+effect base.storage_load($descriptor, $slot) when aggregate($descriptor) => load($descriptor, $slot);
+effect load($descriptor, $slot) => mlir.op("llvm.load", [$slot], [types.repr($descriptor)], [], []);
+effect base.storage_store(base.Typed($descriptor, $value), $slot, $environment) when aggregate($descriptor)
+    => store(base.Typed($descriptor, $value), $slot, $environment);
+effect store($value, $slot, $environment) => mlir.op("llvm.store", [base.lower($value, $environment), $slot], [], [], []);

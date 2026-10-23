@@ -1,0 +1,26 @@
+mod rule_contract;
+effect guarded($n) when lt($n, 0) => Negative($n);
+effect guarded($n) when not(lt($n, 0)) => Nonnegative($n);
+effect[fallback] defaulted($value) => Default($value);
+effect defaulted(1) => Specialized();
+effect reversed(1) => Specialized();
+effect[fallback] reversed($value) => Default($value);
+effect[fallback] ambiguous_default($value) => A();
+effect[fallback] ambiguous_default($value) => B();
+effect overlap($n) when lt($n, 10) => Small();
+effect overlap($n) when lt(0, $n) => Positive();
+effect unsafe_guard($n) when mlir.op("arith.constant", [], ["i32"], [Attr("value", 1, "i32")], []) => $n;
+effect impure_guard($n) when eq(symbol("x"), symbol("x")) => $n;
+effect square($n) => mul($n, $n);
+effect no_effect($n) when eq(term.kind($n), 2) => $n;
+effect scoped($x) => bind($x, add($x, 1), bind(Pair($a, $b), Pair($x, 3), mul($a, $b)));
+effect polymorphic() => bind($a, logic.fresh(), bind($b, logic.fresh(),
+    bind([1, $scope, $_], logic.unify(Function([$a, Container($b)], $a), Function([Integer(64), Container(Owned(Buffer()))], Integer(64)), env.empty()),
+        logic.resolve(Function([$a, Container($b)], $a), $scope))));
+effect occurs() => bind($a, logic.fresh(), bind([$ok, $scope, $reason], logic.unify($a, Box($a), env.empty()), [$ok, $reason]));
+effect rollback() => bind($a, logic.fresh(), bind($initial, env.empty(),
+    bind([$ok, $scope, $_], logic.unify([$a, 1], [42, 2], $initial), [$ok, env.contains($scope, $a), eq($scope, $initial)])));
+effect immutable() => bind($empty, env.empty(), bind($first, env.put($empty, "name", 7),
+    bind($second, env.put($first, "name", 8), [env.contains($empty, "name"), env.get($first, "name"), env.get($second, "name")])));
+effect hygiene() => bind($a, symbol("local"), bind($b, symbol("local"),
+    bind($scope, env.put(env.put(env.empty(), $a, 1), $b, 2), [eq($a, $b), env.get($scope, $a), env.get($scope, $b)])));

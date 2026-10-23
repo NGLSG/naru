@@ -1,0 +1,427 @@
+{
+  "format": 1,
+  "standard": "C11 preprocessing replacement, pragma operators and individually identified target pragmas",
+  "target": "windows-x86_64-llp64",
+  "full_conformance_claimed": false,
+  "scope": "Deferred source-only inputs; DR 017 question 23's explicitly undefined rescan example is excluded from normative oracle agreement.",
+  "cases": [
+    {
+      "id": "pragma-standard-expression-removal",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.9",
+      "source": "#define PRAGMA(x) _Pragma(#x)\nint main(void){return 20 PRAGMA(STDC FP_CONTRACT OFF) + 22;}"
+    },
+    {
+      "id": "pragma-wide-operand",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.9",
+      "source": "_Pragma(L\"STDC FENV_ACCESS ON\")\nint main(void){return 42;}"
+    },
+    {
+      "id": "pragma-expanded-string-operand",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.9;6.10.3",
+      "source": "#define MODE \"STDC FENV_ACCESS ON\"\n#define EXEC(x) _Pragma(x)\nEXEC(MODE)\nint main(void){return 42;}"
+    },
+    {
+      "id": "pragma-once-retains-file-state",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.9;target once pragma",
+      "source": "#include \"once.h\"\n#include \"once.h\"\nint main(void){return answer;}",
+      "files": {
+        "once.h": "_Pragma(\"once\")\nint answer=42;"
+      }
+    },
+    {
+      "id": "pragma-once-in-final-header-chunk",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.9;target once pragma",
+      "source": "#include \"once.h\"\n#include \"once.h\"\nint main(void){return answer;}",
+      "files": {
+        "once.h": "int answer=42;\n_Pragma(\"once\")"
+      }
+    },
+    {
+      "id": "pragma-once-through-argument",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.9;6.10.3;target once pragma",
+      "source": "#include \"once.h\"\n#include \"once.h\"\nint main(void){return answer;}",
+      "files": {
+        "once.h": "#define PASS(x) x\nPASS(_Pragma(\"once\"))\nint answer=42;"
+      }
+    },
+    {
+      "id": "pragma-linker-alias",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.9;target linker pragma",
+      "source": "_Pragma(\"comment(linker, \\\"/alternatename:naru_alias=naru_fallback\\\")\")\nextern int naru_alias;int naru_fallback=42;int main(void){return naru_alias;}",
+      "llvm_ir_contains": [
+        "llvm.linker.options",
+        "/alternatename:naru_alias=naru_fallback"
+      ]
+    },
+    {
+      "id": "pragma-linker-stringification",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.2;6.10.9",
+      "source": "#define PRAGMA(x) _Pragma(#x)\nPRAGMA(comment(linker, \"/alternatename:naru_alias=naru_fallback\"))\nextern int naru_alias;int naru_fallback=42;int main(void){return naru_alias;}"
+    },
+    {
+      "id": "pragma-msvc-token-form",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "target __pragma interface",
+      "source": "__pragma(comment(linker,\"/alternatename:naru_alias=naru_fallback\"))\nextern int naru_alias;int naru_fallback=42;int main(void){return naru_alias;}"
+    },
+    {
+      "id": "pragma-msvc-macro-arguments",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "target __pragma interface",
+      "source": "#define A \"/alternatename:naru_alias=naru_fallback\"\n#define PRAGMA(x) __pragma(x)\nPRAGMA(comment(linker,A))\nextern int naru_alias;int naru_fallback=42;int main(void){return naru_alias;}"
+    },
+    {
+      "id": "pragma-unknown-is-ignored",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.6;6.10.9",
+      "source": "_Pragma(\"naru_unrecognized_annotation arbitrary_tokens\")\nint main(void){return 42;}",
+      "reference_flags": [
+        "-Wno-unknown-pragmas"
+      ]
+    },
+    {
+      "id": "pragma-not-executed-in-disabled-group",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.1;6.10.9",
+      "source": "#if 0\n_Pragma(\"STDC FENV_ACCESS BAD\")\n#endif\nint main(void){return 42;}"
+    },
+    {
+      "id": "pragma-not-prescanned-for-stringification",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.2;6.10.9",
+      "source": "#define STR(x) #x\nconst char*s=STR(_Pragma(\"STDC FENV_ACCESS BAD\"));int main(void){return s[0]=='_'&&s[1]=='P'?42:1;}"
+    },
+    {
+      "id": "pragma-not-prescanned-for-unused-parameter",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.1;6.10.9",
+      "source": "#define IGNORE(x) 42\nint main(void){return IGNORE(_Pragma(\"STDC FENV_ACCESS BAD\"));}"
+    },
+    {
+      "id": "pragma-pack-default-both-spellings",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "target pack pragma",
+      "source": "_Pragma(\"pack(push,8)\")\nstruct S{char a;double b;};\n__pragma(pack(pop))\nint main(void){return sizeof(struct S)==16?42:1;}"
+    },
+    {
+      "id": "pragma-invalid-missing-parenthesis",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.9",
+      "source": "_Pragma \"STDC FENV_ACCESS ON\"\nint main(void){return 0;}",
+      "reject": "pragma operator requires parentheses"
+    },
+    {
+      "id": "pragma-invalid-number-operand",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.9",
+      "source": "_Pragma(42)\nint main(void){return 0;}",
+      "reject": "_Pragma requires one string literal operand"
+    },
+    {
+      "id": "pragma-invalid-adjacent-literals",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.9",
+      "source": "_Pragma(\"STDC \" \"FENV_ACCESS ON\")\nint main(void){return 0;}",
+      "reject": "_Pragma requires one string literal operand"
+    },
+    {
+      "id": "pragma-invalid-empty-operand",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.9",
+      "source": "_Pragma()\nint main(void){return 0;}",
+      "reject": "_Pragma requires one string literal operand"
+    },
+    {
+      "id": "pragma-invalid-fenv-mode",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.6;7.6.1",
+      "source": "_Pragma(\"STDC FENV_ACCESS BAD\")\nint main(void){return 0;}",
+      "reject": "STDC pragma requires ON, OFF or DEFAULT",
+      "reference_reject_required": false,
+      "reference_note": "The implementation diagnoses its recognized STDC pragma modes; independent Clang may issue a warning instead of rejecting this implementation-defined pragma input."
+    },
+    {
+      "id": "macro-argument-suppression-through-identity",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.4",
+      "source": "int recurse(int n){return n+1;}\n#define recurse(x) recurse((x)+1)\n#define ID(x) x\nint main(void){return ID(recurse(40));}"
+    },
+    {
+      "id": "macro-suppression-through-two-wrappers",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.4",
+      "source": "int recurse(int n){return n+1;}\n#define recurse(x) recurse((x)+1)\n#define ID(x) x\n#define WRAP(x) ID(x)\nint main(void){return WRAP(recurse(40));}"
+    },
+    {
+      "id": "macro-mutual-object-recursion",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.4",
+      "source": "#define a b\n#define b a\nint a=42;int main(void){return a;}"
+    },
+    {
+      "id": "macro-nested-same-function-prescan",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.1;6.10.3.4",
+      "source": "#define INC(x) ((x)+1)\nint main(void){return INC(INC(40));}"
+    },
+    {
+      "id": "macro-empty-body-and-zero-arguments",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3",
+      "source": "#define EMPTY\n#define ZERO() 42\nint main(void){EMPTY return ZERO();}"
+    },
+    {
+      "id": "macro-object-paste-runtime",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.3",
+      "source": "#define answer an ## swer\nint answer=42;int main(void){return answer;}"
+    },
+    {
+      "id": "macro-generated-paste-not-operator",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.3;WG14 DR 017 question 22",
+      "source": "#define hash_hash # ## #\n#define mkstr(a) #a\n#define between(a) mkstr(a)\n#define join(c,d) between(c hash_hash d)\nconst char*s=join(x,y);int main(void){return s[0]=='x'&&s[1]==' '&&s[2]=='#'&&s[3]=='#'&&s[4]==' '&&s[5]=='y'&&s[6]==0?42:1;}"
+    },
+    {
+      "id": "macro-paste-placemarkers",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.3",
+      "source": "#define CAT(a,b) a##b\nint answer=42;int main(void){return CAT(,answer)+CAT(answer,)-42;}"
+    },
+    {
+      "id": "macro-paste-both-empty",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.3",
+      "source": "#define CAT(a,b) a##b\nint main(void){return CAT(,)42;}"
+    },
+    {
+      "id": "macro-raw-and-expanded-parameter",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.1;6.10.3.2",
+      "source": "#define A 42\n#define BOTH(x) int n=x;const char*s=#x\nint main(void){BOTH(A);return n==42&&s[0]=='A'&&s[1]==0?42:1;}"
+    },
+    {
+      "id": "macro-argument-cache-multiple-uses",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.1",
+      "source": "#define A 21\n#define TWICE(x) ((x)+(x))\nint main(void){return TWICE(A);}"
+    },
+    {
+      "id": "macro-stringify-expanded-spacing",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.2",
+      "source": "#define A 42\n#define STR_(x) #x\n#define STR(x) STR_(x)\nconst char*s=STR(1+A);int main(void){return s[0]=='1'&&s[1]=='+'&&s[2]=='4'&&s[3]=='2'&&s[4]==0?42:1;}"
+    },
+    {
+      "id": "macro-stringify-formal-spacing",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.2",
+      "source": "#define A(x) before x after\n#define STR_(x) #x\n#define STR(x) STR_(x)\nconst char*s=STR(A(token));int main(void){return s[6]==' '&&s[7]=='t'&&s[12]==' '&&s[13]=='a'?42:1;}"
+    },
+    {
+      "id": "macro-function-alias-rescan",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.4",
+      "source": "#define OP(x) ((x)+22)\n#define ALIAS OP\nint main(void){return ALIAS(20);}"
+    },
+    {
+      "id": "macro-pasted-function-alias",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.3;6.10.3.4",
+      "source": "#define CAT(a,b) a##b\n#define ANSWER(x) ((x)+22)\nint main(void){return CAT(ANS,WER)(20);}"
+    },
+    {
+      "id": "macro-token-created-open-not-invocation",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3;WG14 DR 017 question 21",
+      "source": "int f(int n){return n+1;}\n#define OPEN (\n#define f(x) (x)\nint main(void){return f OPEN 41);}"
+    },
+    {
+      "id": "macro-variadic-forward",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3",
+      "source": "#define SUM(a,b) ((a)+(b))\n#define FORWARD(f,...) f(__VA_ARGS__)\nint main(void){return FORWARD(SUM,20,22);}"
+    },
+    {
+      "id": "macro-variadic-empty-explicit",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3",
+      "source": "#define F(a,...) ((a) __VA_ARGS__)\nint main(void){return F(42,);}"
+    },
+    {
+      "id": "macro-stringify-empty-argument",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.2",
+      "source": "#define STR(x) #x\nint main(void){const char*s=STR();return s[0]==0?42:1;}"
+    },
+    {
+      "id": "macro-definition-invalid-unused-sharp",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.2",
+      "source": "#define UNUSED(x) #not_parameter\nint main(void){return 0;}",
+      "reject": "stringification requires a macro parameter"
+    },
+    {
+      "id": "macro-definition-invalid-unused-paste-left",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.3",
+      "source": "#define UNUSED(x) ##x\nint main(void){return 0;}",
+      "reject": "token paste cannot begin or end a macro replacement list"
+    },
+    {
+      "id": "macro-definition-invalid-unused-paste-right",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.3",
+      "source": "#define UNUSED x##\nint main(void){return 0;}",
+      "reject": "token paste cannot begin or end a macro replacement list"
+    },
+    {
+      "id": "macro-definition-invalid-va-args",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3p5",
+      "source": "#define UNUSED(x) __VA_ARGS__\nint main(void){return 0;}",
+      "reject": "__VA_ARGS__ requires a variadic macro replacement list"
+    },
+    {
+      "id": "macro-defined-nonidentifier-diagnostic",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.1",
+      "source": "#if defined(42)\n#endif\nint main(void){return 0;}",
+      "reject": "defined requires an identifier"
+    },
+    {
+      "id": "macro-undef-nonidentifier-diagnostic",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.5",
+      "source": "#undef 42\nint main(void){return 0;}",
+      "reject": "undef requires an identifier"
+    },
+    {
+      "id": "macro-object-paste-invalid-result",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.3.3",
+      "source": "#define INVALID x ## +\nint main(void){return INVALID;}",
+      "reject": "token paste does not form one preprocessing token"
+    },
+    {
+      "id": "line-leading-zero-is-decimal",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.4",
+      "source": "#line 042\nint main(void){return __LINE__==42?42:1;}"
+    },
+    {
+      "id": "line-macro-operands",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.4",
+      "source": "#define ROW 200\n#define FILE_NAME \"archive.c\"\n#line ROW FILE_NAME\nint main(void){const char*s=__FILE__;return __LINE__==200&&s[0]=='a'?42:1;}"
+    },
+    {
+      "id": "line-include-restore",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.4",
+      "source": "#line 300 \"caller.c\"\n#include \"mapping.h\"\nint main(void){const char*s=__FILE__;return __LINE__==301&&s[0]=='c'&&inside==42?42:1;}",
+      "files": {
+        "mapping.h": "#line 42 \"included.c\"\nenum{inside=__LINE__};"
+      }
+    },
+    {
+      "id": "line-suffixed-number-diagnostic",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.4",
+      "source": "#line 42U\nint main(void){return 0;}",
+      "reject": "line requires a decimal digit sequence"
+    },
+    {
+      "id": "line-hex-number-diagnostic",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.4",
+      "source": "#line 0x2a\nint main(void){return 0;}",
+      "reject": "line requires a decimal digit sequence"
+    },
+    {
+      "id": "line-unquoted-filename-diagnostic",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.4",
+      "source": "#line 42 archive\nint main(void){return 0;}",
+      "reject": "line filename requires an ordinary string literal"
+    },
+    {
+      "id": "line-zero-diagnostic",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.4",
+      "source": "#line 0\nint main(void){return 0;}",
+      "reject": "line number outside C11",
+      "reference_reject_required": false,
+      "reference_note": "C11 requires line numbers 1..2147483647; Clang may accept zero as an extension."
+    },
+    {
+      "id": "ifdef-nonidentifier-diagnostic",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.4",
+      "source": "#ifdef 42\n#endif\nint main(void){return 0;}",
+      "reject": "ifdef/ifndef requires one identifier"
+    }
+  ]
+}

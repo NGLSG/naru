@@ -1,0 +1,289 @@
+mod c11.syntax;
+use c11.types;
+use base;
+use control;
+use c11.names;
+use c11.specifiers;
+
+// These categories are ordinary grammar names. Loading conflicting rules
+// diagnoses the same syntax ambiguity as any other Naru dialect.
+// Type words form a multiset: ordering is syntax, validity and meaning are
+// ordinary rules. This avoids enumerating every spelling permutation.
+syntax c11.builtin_word `void` => "void";
+syntax c11.builtin_word `_Bool` => "_Bool";
+syntax c11.builtin_word `char` => "char";
+syntax c11.builtin_word `short` => "short";
+syntax c11.builtin_word `int` => "int";
+syntax c11.builtin_word `long` => "long";
+syntax c11.builtin_word `float` => "float";
+syntax c11.builtin_word `double` => "double";
+syntax c11.builtin_word `signed` => "signed";
+syntax c11.builtin_word `unsigned` => "unsigned";
+// C wchar_t is an ordinary header typedef, not a language builtin. Target
+// resource headers obtain its underlying spelling from __WCHAR_TYPE__.
+syntax c11.builtin_words `$word:c11.builtin_word` => [$word];
+syntax c11.builtin_words `$word:c11.builtin_word $rest:c11.builtin_words` => list.prepend($word,$rest);
+
+effect specifier_count($counts,$word) => choose(env.contains($counts,$word),env.get($counts,$word),0);
+effect specifier_step($counts,$word) => choose(text.contains(" void _Bool char short int long float double signed unsigned ",concat(" ",concat($word," "))),
+    bind($count,add(specifier_count($counts,$word),1),
+        choose(lt(choose(eq($word,"long"),2,1),$count),fail("duplicate C type specifier"),env.put($counts,$word,$count))),fail("unknown C builtin type specifier"));
+effect builtin_type($words) => c11.syntax.builtin_words_type($words);
+effect[fallback] c11.syntax.builtin_words_type($words) => c11.syntax.builtin_real_type($words);
+effect c11.syntax.builtin_real_type($words) => bind($counts,list.fold("c11.syntax.specifier_step",$words,env.empty()),
+    builtin_facts(BuiltinFacts(specifier_count($counts,"void"),specifier_count($counts,"_Bool"),specifier_count($counts,"char"),
+        specifier_count($counts,"short"),specifier_count($counts,"int"),specifier_count($counts,"long"),specifier_count($counts,"float"),
+        specifier_count($counts,"double"),specifier_count($counts,"signed"),specifier_count($counts,"unsigned"))));
+effect builtin_facts(BuiltinFacts($void,$bool,$char,$short,$int,$long,$float,$double,$signed,$unsigned))
+    => seq(validate_builtin(BuiltinFacts($void,$bool,$char,$short,$int,$long,$float,$double,$signed,$unsigned)),
+        choose($void,control.Void(),choose($bool,c11.types.CBool(),choose($float,c11.types.floating("float"),
+            choose($double,c11.types.floating(choose($long,"long double","double")),
+                c11.types.integer(choose($char,choose($unsigned,"unsigned char",choose($signed,"signed char","char")),
+                    choose($short,choose($unsigned,"unsigned short","short"),
+                        choose(eq($long,2),choose($unsigned,"unsigned long long","long long"),
+                            choose($long,choose($unsigned,"unsigned long","long"),choose($unsigned,"unsigned int","int")))))))))));
+effect validate_builtin(BuiltinFacts($void,$bool,$char,$short,$int,$long,$float,$double,$signed,$unsigned))
+    => choose(or(lt(1,add($signed,$unsigned)),lt(1,add(add(add($void,$bool),add($char,$short)),add($float,$double)))),
+        fail("incompatible C type specifiers"),
+        choose(lt(0,add(add($void,$bool),add($float,$double))),
+            choose(or(lt(0,add($int,add($signed,$unsigned))),choose($double,lt(1,$long),lt(0,$long))),fail("incompatible C type specifiers"),1),
+            choose(or(and($char,lt(0,add($int,$long))),and($short,lt(0,$long))),fail("incompatible C type specifiers"),1)));
+
+syntax c11.atom_type `$name:ident` when c11.syntax.typedef_visible(syntax.context(),$name)
+    => env.get(syntax.context(),$name);
+effect c11.syntax.typedef_visible($context,$name)
+    => choose(env.contains($context,$name),c11.syntax.typedef_binding(env.get($context,$name)),0);
+effect c11.syntax.typedef_binding(c11.syntax.OrdinaryName()) => 0;
+effect[fallback] c11.syntax.typedef_binding($type) => 1;
+use c11.declarators;
+syntax c11.type `$type:c11.specifier` => $type;
+syntax c11.type `$base:c11.specifier $decl:c11.abstract_decl` => c11.declarators.type_name($decl,$base);
+syntax c11.atom_type `struct $name:ident` => c11.types.RecordName($name);
+syntax c11.atom_type `struct { $fields:c11.fields }` => c11.types.Record(symbol("anonymous_record"),$fields);
+syntax c11.atom_type `struct $name:ident { $fields:c11.fields }` => c11.syntax.RecordSpecifier($name,$fields,symbol("tag_definition"));
+syntax c11.atom_type `union $name:ident` => c11.types.UnionName($name);
+syntax c11.atom_type `union { $fields:c11.fields }` => c11.types.Union(symbol("anonymous_union"),$fields);
+syntax c11.atom_type `union $name:ident { $fields:c11.fields }` => c11.syntax.UnionSpecifier($name,$fields,symbol("tag_definition"));
+effect c11.syntax.storage_spec(c11.syntax.Specifiers($type,"none",$inline),$storage) => c11.syntax.Specifiers($type,$storage,$inline);
+effect[fallback] c11.syntax.storage_spec($spec,$storage) => fail("multiple C storage classes in declaration");
+effect c11.syntax.inline_spec(c11.syntax.Specifiers($type,$storage,$inline)) => c11.syntax.Specifiers($type,$storage,c11.specifiers.add_inline($inline,1));
+
+syntax c11.initializer `$value:c11.expr` => c11.syntax.initializer_leaf($value);
+effect[fallback] c11.syntax.initializer_leaf($value) => $value;
+// Aggregate elements are initializers themselves, so nested braces compose
+// recursively (`{ 1, { 2, 3 } }`) instead of being limited to expressions.
+// The c11.initializers module owns the recursive value category and the
+// type-directed initialization policy.
+syntax c11.initializer `{ $values:c11.initializer_values }` => c11.syntax.make_initializer($values);
+syntax c11.initializer `{ $values:c11.initializer_values, }` => c11.syntax.make_initializer($values);
+// Extension modules may add guarded constructors (for example designated
+// initializers) without making the core syntax depend on them.  The default
+// keeps ordinary brace lists valid when no extension is loaded.
+effect[fallback] c11.syntax.make_initializer($values) => c11.syntax.Initializer($values);
+// Extension-owned expression forms can use this constructor without making
+// the core syntax depend on their module.  The unreachable declaration keeps
+// the term in the c11.syntax export set for independently loaded extensions.
+effect c11.syntax.compound_literal($type,$initializer,$identity) when eq(0,1)
+    => c11.syntax.CompoundLiteral($type,$initializer,$identity);
+effect c11.syntax.forward_tag($name,$kind) when eq(0,1)
+    => c11.syntax.ForwardTag($name,$kind);
+syntax c11.init_decl `$decl:c11.declarator` => c11.syntax.Initialized($decl,c11.syntax.Uninitialized());
+syntax c11.init_decl `$decl:c11.declarator = $value:c11.initializer` => c11.syntax.Initialized($decl,$value);
+syntax c11.init_decls `$decl:c11.init_decl` => [$decl];
+syntax c11.init_decls `$decl:c11.init_decl, $rest:c11.init_decls` => list.prepend($decl,$rest);
+syntax c11.decls `$decl:c11.declarator` => [$decl];
+syntax c11.decls `$decl:c11.declarator, $rest:c11.decls` => list.prepend($decl,$rest);
+syntax c11.item `$spec:c11.specifiers $decls:c11.init_decls;` => c11.syntax.declaration($spec,$decls);
+syntax c11.item `$spec:c11.specifiers $decl:c11.declarator $body:c11.block` => c11.syntax.definition($spec,$decl,$body);
+syntax c11.item `_Static_assert($condition:c11.expr, $message:string);` => c11.syntax.StaticAssert($condition,$message);
+syntax c11.item `struct $name:ident { $fields:c11.fields };` => c11.syntax.RecordDeclaration($name,$fields,symbol("tag_definition"));
+syntax c11.item `struct $name:ident;` => c11.syntax.ForwardTag($name,"struct");
+syntax c11.item `union $name:ident;` => c11.syntax.ForwardTag($name,"union");
+syntax c11.item `union $name:ident { $fields:c11.fields };` => c11.syntax.UnionDeclaration($name,$fields,symbol("tag_definition"));
+syntax c11.field[fallback] `$type:c11.specifier $decls:c11.decls;` => c11.syntax.fields($type,$decls);
+syntax c11.field[fallback] `$type:c11.specifier;` => c11.syntax.anonymous_field($type);
+syntax c11.fields `$head:c11.field` => $head;
+syntax c11.fields `$head:c11.field $tail:c11.fields` => list.concat($head,$tail);
+
+effect c11.syntax.record_base(c11.syntax.RecordSpecifier($name,$fields,$origin)) => c11.types.RecordName($name);
+effect c11.syntax.record_base(c11.syntax.UnionSpecifier($name,$fields,$origin)) => c11.types.UnionName($name);
+effect[fallback] c11.syntax.record_base($type) => $type;
+effect c11.syntax.record_items(c11.syntax.RecordSpecifier($name,$fields,$origin)) => [c11.syntax.RecordDeclaration($name,$fields,$origin)];
+effect c11.syntax.record_items(c11.syntax.UnionSpecifier($name,$fields,$origin)) => [c11.syntax.UnionDeclaration($name,$fields,$origin)];
+effect[fallback] c11.syntax.record_items($type) => [];
+// Fold retains the shared specifier once; individual declarators receive it
+// independently, so `int *a, b` cannot turn b into a pointer.
+effect c11.syntax.declaration(c11.syntax.Specifiers($type,$storage,$inline),$decls) => seq(c11.specifiers.validate_decls($decls,$type,$storage,$inline),seq(c11.syntax.file_storage($storage),bind(c11.syntax.Declarations($out,$base,$class),
+    list.fold("c11.syntax.declaration_step",$decls,c11.syntax.Declarations([],c11.syntax.record_base($type),$storage)),
+    c11.syntax.DeclarationGroup(list.concat(c11.syntax.record_items($type),c11.syntax.function_declarations(list.reverse($out),$inline,$storage))))));
+effect c11.syntax.function_declarations([],$flags,$storage) => [];
+effect c11.syntax.function_declarations($items,$flags,$storage) when lt(0,size($items))
+    => list.prepend(c11.syntax.function_declaration(list.head($items),$flags,$storage),c11.syntax.function_declarations(list.tail($items),$flags,$storage));
+effect[fallback] c11.syntax.function_declaration($item,$flags,$storage) => $item;
+effect[fallback] c11.syntax.file_storage($storage) => 1;
+effect c11.syntax.declaration_step(c11.syntax.Declarations($out,$base,$storage),c11.syntax.Initialized($decl,$value))
+    => bind(c11.declarators.Resolved($name,$type),c11.declarators.resolve($decl,$base),
+        c11.syntax.Declarations(list.prepend(c11.syntax.make_declaration($name,$type,$value,$storage),$out),$base,$storage));
+effect c11.syntax.make_declaration($name,$type,c11.syntax.Uninitialized(),"typedef") => c11.syntax.Typedef($name,$type);
+effect c11.syntax.make_declaration($name,$type,$value,"typedef") when not(eq($value,c11.syntax.Uninitialized())) => fail("C typedef cannot have an initializer");
+effect c11.syntax.make_declaration($name,c11.types.FunctionType($result,$params,$variadic,$prototype),c11.syntax.Uninitialized(),$storage) when not(eq($storage,"typedef"))
+    => seq(choose(eq($prototype,2),fail("C identifier-list declaration requires a function definition"),1),
+        c11.syntax.with_storage(choose($prototype,c11.syntax.Prototype($name,$params,$result,$variadic),c11.syntax.UnspecifiedPrototype($name,$result)),$storage));
+effect[fallback] c11.syntax.make_declaration($name,$type,c11.syntax.Uninitialized(),"extern") => c11.syntax.ExternalGlobal($name,$type);
+effect[fallback] c11.syntax.make_declaration($name,$type,$value,$storage) when and(not(eq($storage,"typedef")),not(and(eq($storage,"extern"),eq($value,c11.syntax.Uninitialized()))))
+    => c11.syntax.with_storage(c11.syntax.Global($name,c11.syntax.initialized_type($type,$value),choose(eq($value,c11.syntax.Uninitialized()),Zero($type),$value)),$storage);
+effect[fallback] c11.syntax.initialized_type($type,$value) => $type;
+effect c11.syntax.with_storage($item,"static") => c11.syntax.Internal($item);
+effect[fallback] c11.syntax.with_storage($item,$storage) => $item;
+effect c11.syntax.definition(c11.syntax.Specifiers($base,$storage,$inline),$decl,$body) => seq(c11.syntax.file_storage($storage),bind(c11.declarators.Resolved($name,$type),
+    c11.declarators.resolve($decl,c11.syntax.record_base($base)),seq(c11.specifiers.validate_named_declaration($name,$type,$storage,$inline),c11.syntax.inline_definition(c11.syntax.define_function($name,$type,$body,$storage),$inline,$storage))));
+effect c11.syntax.inline_definition($item,$inline,$storage) => c11.syntax.function_declaration($item,$inline,$storage);
+effect c11.syntax.inline_object($item) => InlineObject($item);
+effect c11.syntax.no_inline($item) => NoInline($item);
+effect c11.syntax.define_function($name,c11.types.FunctionType($result,$params,0,1),$body,$storage) when not(eq($storage,"typedef"))
+    => c11.syntax.with_storage(c11.syntax.Function($name,$params,$result,$body),$storage);
+effect c11.syntax.define_function($name,c11.types.FunctionType($result,$params,0,$prototype),$body,$storage) when and(not(eq($storage,"typedef")),not(eq($prototype,1)))
+    => c11.syntax.with_storage(c11.syntax.OldFunction($name,$params,$result,$body),$storage);
+effect c11.syntax.define_function($name,c11.types.FunctionType($result,$params,1,$prototype),$body,$storage) when not(eq($storage,"typedef"))
+    => c11.syntax.with_storage(c11.syntax.VariadicFunction($name,$params,$result,$body),$storage);
+effect[fallback] c11.syntax.define_function($name,$type,$body,$storage) => fail("C definition requires a function declarator");
+// Keep nested tag definitions in field descriptors for the tag collection pass.
+effect c11.syntax.fields($base,$decls) => bind(c11.syntax.Fields($out,$type),list.fold("c11.syntax.field_step",$decls,c11.syntax.Fields([],$base)),list.reverse($out));
+effect c11.syntax.anonymous_field(c11.types.Record($name,$fields)) => [c11.types.Field("",c11.types.Record($name,$fields))];
+effect c11.syntax.anonymous_field(c11.types.Union($name,$fields)) => [c11.types.Field("",c11.types.Union($name,$fields))];
+effect[fallback] c11.syntax.anonymous_field($type) => fail("an unnamed C member requires an anonymous struct or union");
+effect[fallback] c11.syntax.field_step(c11.syntax.Fields($out,$base),$decl) => bind(c11.declarators.Resolved($name,$type),c11.declarators.resolve($decl,$base),
+    seq(c11.declarators.validate_type($type),c11.syntax.Fields(list.prepend(c11.types.Field($name,$type),$out),$base)));
+effect c11.syntax.identity($value) => $value;
+effect c11.syntax.commit($context,c11.syntax.DeclarationGroup($items)) => bind(c11.syntax.Committed($next,$chunks),list.fold("c11.syntax.commit_step",$items,c11.syntax.Committed($context,[])),
+    [$next,list.flatten(list.reverse($chunks))]);
+effect c11.syntax.commit_step(c11.syntax.Committed($context,$chunks),$item) => bind([$next,$items],c11.syntax.commit($context,$item),c11.syntax.Committed($next,list.prepend($items,$chunks)));
+effect c11.syntax.commit($context,c11.syntax.Typedef($name,$type))
+    => c11.syntax.commit_typedef($context,$name,c11.syntax.typedef_type($name,$type,$context));
+effect[fallback] c11.syntax.typedef_type($name,$type,$context) => $type;
+effect c11.syntax.commit_typedef($context,$name,$type) => choose(env.contains($context,$name),
+    choose(eq(env.get($context,$name),$type),[$context,[TypeDefinition($type)]],fail(concat("incompatible C typedef redeclaration: ",$name))),
+    [env.put(c11.names.ordinary(c11.names.ensure($context),$name,TypeDefinition($type)),$name,$type),[TypeDefinition($type)]]);
+effect[fallback] c11.syntax.commit($context,$item) => [$context,[c11.syntax.target_declaration($item,$context)]];
+effect[fallback] c11.syntax.target_declaration($item,$context) => $item;
+effect c11.syntax.target_declaration(c11.syntax.Internal($item),$context) => c11.syntax.Internal(c11.syntax.target_declaration($item,$context));
+effect c11.syntax.target_declaration(c11.syntax.HeaderInline($item),$context) => c11.syntax.HeaderInline(c11.syntax.target_declaration($item,$context));
+
+syntax c11.block `{ }` => base.End();
+syntax c11.block `{ $items:c11.statements }` => $items;
+syntax c11.block_item[fallback] `$statement:c11.statement` => $statement;
+syntax c11.statements `$head:c11.block_item` => c11.syntax.append($head,base.End());
+syntax c11.statements `$head:c11.block_item $tail:c11.statements` => c11.syntax.append($head,$tail);
+syntax c11.statement `return $value:c11.sequence;` => base.Return($value);
+syntax c11.statement `return;` => control.ReturnVoid();
+syntax c11.statement `break;` => control.Break();
+syntax c11.statement `continue;` => control.Continue();
+syntax c11.statement `;` => base.End();
+syntax c11.statement `$block:c11.block` => c11.syntax.Scope($block,base.End());
+syntax c11.block_item `$spec:c11.specifiers $decls:c11.init_decls;` => c11.syntax.local_declarations($spec,$decls);
+effect c11.syntax.local_declarations(c11.syntax.Specifiers($type,$storage,$inline),$decls) => bind(c11.syntax.Locals($body,$base,$class),
+    list.fold("c11.syntax.local_step",list.reverse($decls),c11.syntax.Locals(base.End(),c11.syntax.record_base($type),$storage)),$body);
+effect c11.syntax.local_step(c11.syntax.Locals($body,$base,$storage),c11.syntax.Initialized($decl,$value)) => bind(c11.declarators.Resolved($name,$type),
+    c11.declarators.resolve($decl,$base),c11.syntax.Locals(c11.syntax.local_declaration($name,c11.syntax.initialized_type($type,$value),$value,$storage,$body),$base,$storage));
+effect c11.syntax.local_declaration($name,$type,$value,"none",$body) => c11.syntax.Declare($name,$type,$value,$body);
+effect c11.syntax.local_declaration($name,$type,$value,"static",$body) => c11.syntax.StaticDeclare($name,$type,choose(eq($value,c11.syntax.Uninitialized()),c11.syntax.Zero($type),$value),$body);
+effect[fallback] c11.syntax.local_declaration($name,$type,$value,$storage,$body) => fail("this C local storage class still requires scope rules");
+syntax c11.statement `if ($condition:c11.sequence) $yes:c11.statement else $no:c11.statement` => base.If(c11.syntax.Truth($condition),$yes,$no,base.End());
+syntax c11.statement `if ($condition:c11.sequence) $yes:c11.statement` => base.If(c11.syntax.Truth($condition),$yes,base.End(),base.End());
+syntax c11.statement `while ($condition:c11.sequence) $body:c11.statement` => base.While(c11.syntax.Truth($condition),$body,base.End());
+syntax c11.statement `do $body:c11.statement while ($condition:c11.sequence);` => c11.syntax.DoWhile($body,$condition,base.End());
+// Optional clauses compose through categories that own their separator.
+// This avoids a separate for grammar for every combination of empty clauses.
+syntax c11.for_init `;` => base.End();
+syntax c11.for_init[fallback] `$value:c11.sequence;` => control.Evaluate($value,base.End());
+syntax c11.for_init `$spec:c11.specifiers $decls:c11.init_decls;` => c11.syntax.local_declarations($spec,$decls);
+syntax c11.for_condition `;` => c11.syntax.Literal("1");
+syntax c11.for_condition `$value:c11.sequence;` => $value;
+syntax c11.for_tail `) $body:c11.statement` => [c11.syntax.Literal("0"),$body];
+syntax c11.for_tail `$step:c11.sequence) $body:c11.statement` => [$step,$body];
+syntax c11.statement `for ($init:c11.for_init $condition:c11.for_condition $tail:c11.for_tail` => c11.syntax.for_parts($init,$condition,$tail);
+effect c11.syntax.for_parts($init,$condition,[$step,$body]) => c11.syntax.For($init,$condition,$step,$body,base.End());
+syntax c11.statement[fallback] `$value:c11.sequence;` => control.Evaluate($value,base.End());
+
+effect c11.syntax.append(base.End(),$next) => $next;
+effect c11.syntax.append(c11.syntax.Declare($name,$type,$value,$rest),$next) => c11.syntax.Declare($name,$type,$value,c11.syntax.append($rest,$next));
+effect c11.syntax.append(c11.syntax.Scope($body,$rest),$next) => c11.syntax.Scope($body,c11.syntax.append($rest,$next));
+effect c11.syntax.append(c11.syntax.For($init,$condition,$step,$body,$rest),$next) => c11.syntax.For($init,$condition,$step,$body,c11.syntax.append($rest,$next));
+effect c11.syntax.append(c11.syntax.DoWhile($body,$condition,$rest),$next) => c11.syntax.DoWhile($body,$condition,c11.syntax.append($rest,$next));
+effect[fallback] c11.syntax.append($body,$next) => control.append($body,$next);
+
+syntax c11.expr `$value:number` => c11.syntax.Literal($value);
+syntax c11.expr `$value:string` when c11.syntax.character_quotation($value) => c11.syntax.quotation($value);
+syntax c11.expr[fallback] `$value:string` when not(c11.syntax.character_quotation($value)) => c11.syntax.quotation($value);
+effect[fallback] c11.syntax.character_quotation($raw) => text.starts($raw,"'");
+effect[fallback] c11.syntax.quotation($raw) => choose(text.starts($raw,"'"),c11.syntax.Character($raw),c11.syntax.String(text.unquote($raw)));
+syntax c11.expr[fallback] `$name:ident` => c11.syntax.Name($name);
+syntax c11.expr `($value:c11.sequence)` => $value;
+// Function arguments and initializers keep assignment-expression boundaries.
+syntax c11.sequence `$value:c11.expr` => $value;
+syntax c11.sequence[1,left] `$first:c11.sequence, $last:c11.expr` => c11.syntax.Comma($first,$last);
+syntax c11.expr[100,left] `$callee:c11.expr()` when not(c11.syntax.type_operand_builtin($callee)) => c11.syntax.call_expression($callee,[]);
+syntax c11.expr[100,left] `$callee:c11.expr($arguments:c11.arguments)` when not(c11.syntax.type_operand_builtin($callee)) => c11.syntax.call_expression($callee,$arguments);
+effect[fallback] c11.syntax.type_operand_builtin($callee) => 0;
+effect c11.syntax.call_expression(c11.syntax.Name($name),$arguments) => c11.syntax.Call($name,$arguments);
+effect[fallback] c11.syntax.call_expression($callee,$arguments) => c11.syntax.IndirectCall($callee,$arguments);
+syntax c11.arguments `$value:c11.expr` => [$value];
+syntax c11.arguments `$value:c11.expr, $rest:c11.arguments` => list.prepend($value,$rest);
+syntax c11.expr[100,left] `$value:c11.expr "++"` => c11.syntax.Increment($value,1,0);
+syntax c11.expr[100,left] `$value:c11.expr "--"` => c11.syntax.Increment($value,-1,0);
+syntax c11.expr[100,left] `$value:c11.expr[$index:c11.sequence]` => c11.syntax.Subscript($value,$index);
+syntax c11.member_access `.` => c11.syntax.DirectMember();
+syntax c11.member_access `->` => c11.syntax.IndirectMember();
+syntax c11.expr[100,left] `$value:c11.expr $access:c11.member_access $field:ident` => c11.syntax.member_expression($value,$access,$field);
+effect member_expression($value,DirectMember(),$field) => c11.syntax.Member($value,$field);
+effect member_expression($value,IndirectMember(),$field) => c11.syntax.Member(c11.syntax.Dereference($value),$field);
+syntax c11.expr[90,right] `"++" $value:c11.expr` => c11.syntax.Increment($value,1,1);
+syntax c11.expr[90,right] `"--" $value:c11.expr` => c11.syntax.Increment($value,-1,1);
+syntax c11.expr[90,right] `+ $value:c11.expr` => c11.syntax.Unary("+",$value);
+syntax c11.expr[90,right] `- $value:c11.expr` => c11.syntax.Unary("-",$value);
+syntax c11.expr[90,right] `~ $value:c11.expr` => c11.syntax.Unary("~",$value);
+syntax c11.expr[90,right] `! $value:c11.expr` => c11.syntax.Unary("!",$value);
+syntax c11.expr[90,right] `& $value:c11.expr` => c11.syntax.Address($value);
+syntax c11.expr[90,right] `* $value:c11.expr` => c11.syntax.Dereference($value);
+syntax c11.expr[90,right] `($type:c11.type) $value:c11.expr` => c11.syntax.Cast($type,$value);
+syntax c11.expr `sizeof($type:c11.type)` => c11.syntax.SizeType($type);
+syntax c11.expr[90,right,fallback] `sizeof $value:c11.expr` => c11.syntax.SizeValue($value);
+syntax c11.expr `_Alignof($type:c11.type)` => c11.syntax.AlignType($type);
+syntax c11.generic_association `$type:c11.type: $value:c11.expr` => c11.syntax.TypeAssociation($type,$value);
+syntax c11.generic_association `default: $value:c11.expr` => c11.syntax.DefaultAssociation($value);
+syntax c11.generic_associations `$head:c11.generic_association` => [$head];
+syntax c11.generic_associations `$head:c11.generic_association, $tail:c11.generic_associations` => list.prepend($head,$tail);
+syntax c11.expr `_Generic($control:c11.expr, $associations:c11.generic_associations)` => c11.syntax.Generic($control,$associations);
+syntax c11.expr[80,left] `$a:c11.expr * $b:c11.expr` => c11.syntax.Binary("mul",$a,$b);
+syntax c11.expr[80,left] `$a:c11.expr / $b:c11.expr` => c11.syntax.Binary("div",$a,$b);
+syntax c11.expr[80,left] `$a:c11.expr % $b:c11.expr` => c11.syntax.Binary("rem",$a,$b);
+syntax c11.expr[70,left] `$a:c11.expr + $b:c11.expr` => c11.syntax.Binary("add",$a,$b);
+syntax c11.expr[70,left] `$a:c11.expr - $b:c11.expr` => c11.syntax.Binary("sub",$a,$b);
+syntax c11.expr[60,left] `$a:c11.expr "<<" $b:c11.expr` => c11.syntax.Shift("left",$a,$b);
+syntax c11.expr[60,left] `$a:c11.expr ">>" $b:c11.expr` => c11.syntax.Shift("right",$a,$b);
+syntax c11.expr[50,left] `$a:c11.expr < $b:c11.expr` => c11.syntax.Comparison("lt",$a,$b);
+syntax c11.expr[50,left] `$a:c11.expr "<=" $b:c11.expr` => c11.syntax.Comparison("le",$a,$b);
+syntax c11.expr[50,left] `$a:c11.expr > $b:c11.expr` => c11.syntax.Comparison("gt",$a,$b);
+syntax c11.expr[50,left] `$a:c11.expr ">=" $b:c11.expr` => c11.syntax.Comparison("ge",$a,$b);
+syntax c11.expr[45,left] `$a:c11.expr == $b:c11.expr` => c11.syntax.Comparison("eq",$a,$b);
+syntax c11.expr[45,left] `$a:c11.expr != $b:c11.expr` => c11.syntax.Comparison("ne",$a,$b);
+syntax c11.expr[40,left] `$a:c11.expr & $b:c11.expr` => c11.syntax.Binary("and",$a,$b);
+syntax c11.expr[35,left] `$a:c11.expr ^ $b:c11.expr` => c11.syntax.Binary("xor",$a,$b);
+syntax c11.expr[30,left] `$a:c11.expr | $b:c11.expr` => c11.syntax.Binary("or",$a,$b);
+syntax c11.expr[20,left] `$a:c11.expr && $b:c11.expr` => c11.syntax.Logical("and",$a,$b);
+syntax c11.expr[15,left] `$a:c11.expr || $b:c11.expr` => c11.syntax.Logical("or",$a,$b);
+syntax c11.expr[10,right] `$a:c11.expr ? $b:c11.sequence : $c:c11.expr` => c11.syntax.Conditional($a,$b,$c);
+syntax c11.expr[5,right] `$target:c11.expr = $value:c11.expr` => c11.syntax.Assign($target,$value);
+syntax c11.expr[5,right] `$target:c11.expr "+=" $value:c11.expr` => c11.syntax.Compound("add",$target,$value);
+syntax c11.expr[5,right] `$target:c11.expr "-=" $value:c11.expr` => c11.syntax.Compound("sub",$target,$value);
+syntax c11.expr[5,right] `$target:c11.expr "*=" $value:c11.expr` => c11.syntax.Compound("mul",$target,$value);
+syntax c11.expr[5,right] `$target:c11.expr "/=" $value:c11.expr` => c11.syntax.Compound("div",$target,$value);
+syntax c11.expr[5,right] `$target:c11.expr "%=" $value:c11.expr` => c11.syntax.Compound("rem",$target,$value);
+
+effect c11.syntax.append(c11.syntax.StaticDeclare($name,$type,$value,$rest),$next) => c11.syntax.StaticDeclare($name,$type,$value,c11.syntax.append($rest,$next));
+
+syntax c11.expr[5,right] `$target:c11.expr "&=" $value:c11.expr` => c11.syntax.Compound("and",$target,$value);
+syntax c11.expr[5,right] `$target:c11.expr "^=" $value:c11.expr` => c11.syntax.Compound("xor",$target,$value);
+syntax c11.expr[5,right] `$target:c11.expr "|=" $value:c11.expr` => c11.syntax.Compound("or",$target,$value);
+syntax c11.expr[5,right] `$target:c11.expr "<<=" $value:c11.expr` => c11.syntax.Compound("left",$target,$value);
+syntax c11.expr[5,right] `$target:c11.expr ">>=" $value:c11.expr` => c11.syntax.Compound("right",$target,$value);

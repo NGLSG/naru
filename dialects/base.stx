@@ -1,0 +1,443 @@
+// Ordinary language library. No fn/let/return/type/operator is a core keyword.
+mod base;
+use types;
+use numbers;
+use pipeline;
+use allocation;
+
+syntax expr `$n:int` => Int($n);
+syntax expr[fallback] `$n:number` => Literal($n);
+syntax expr[fallback] `$name:ident` => Name($name);
+syntax expr `true` => Boolean(1);
+syntax expr `false` => Boolean(0);
+syntax expr `($e:expr)` => $e;
+syntax expr `($e:expr : $descriptor:typename)` => Ascribed($e, $descriptor);
+syntax expr[70,right] `- $e:expr` => Neg($e);
+syntax expr[65,left] `$e:expr as $descriptor:typename` => Cast($e, $descriptor);
+syntax expr[50,left] `$a:expr + $b:expr` => Add($a, $b);
+syntax expr[50,left] `$a:expr - $b:expr` => Sub($a, $b);
+syntax expr[60,left] `$a:expr * $b:expr` => Mul($a, $b);
+syntax expr[60,left] `$a:expr / $b:expr` => Div($a, $b);
+syntax expr[60,left] `$a:expr % $b:expr` => Rem($a, $b);
+syntax expr[40,left] `$a:expr == $b:expr` => Compare("eq", $a, $b);
+syntax expr[40,left] `$a:expr < $b:expr` => Compare("lt", $a, $b);
+syntax expr[40,left] `$a:expr <= $b:expr` => Compare("le", $a, $b);
+syntax expr[40,left] `$a:expr != $b:expr` => Compare("ne", $a, $b);
+syntax expr[40,left] `$a:expr > $b:expr` => Compare("gt", $a, $b);
+syntax expr[40,left] `$a:expr >= $b:expr` => Compare("ge", $a, $b);
+syntax expr[45,left] `$a:expr & $b:expr` => Bitwise("and", $a, $b);
+syntax expr[35,left] `$a:expr | $b:expr` => Bitwise("or", $a, $b);
+syntax expr[38,left] `$a:expr ^ $b:expr` => Bitwise("xor", $a, $b);
+syntax expr[fallback] `$name:ident()` => Call($name, []);
+syntax expr[fallback] `$name:ident($arguments:arguments)` => Call($name, $arguments);
+syntax arguments `$first:expr` => [$first];
+syntax arguments `$first:expr, $rest:arguments` => list.prepend($first, $rest);
+syntax parameters `$name:ident : $descriptor:typename` => [Param($name, $descriptor)];
+syntax parameters `$name:ident : $descriptor:typename, $rest:parameters` => list.prepend(Param($name, $descriptor), $rest);
+syntax body `return $value:expr;` => Return($value);
+syntax body `$step:statement $next:body` => continue($step, $next);
+syntax statements `$step:statement` => continue($step, End());
+syntax statements `$step:statement $next:statements` => continue($step, $next);
+syntax block `{ }` => End();
+syntax block[fallback] `{ $steps:statements }` => $steps;
+syntax block `{ $body:body }` => $body;
+syntax statement `let $name:ident : $descriptor:typename = $value:expr;` => Binding($name, $descriptor, $value);
+syntax statement `let $name:ident = $value:expr;` => Binding($name, Any(), $value);
+syntax statement `var $name:ident : $descriptor:typename = $value:expr;` => Variable($name, $descriptor, $value);
+syntax statement `var $name:ident = $value:expr;` => Variable($name, Any(), $value);
+syntax statement `$name:ident = $value:expr;` => Assignment($name, $value);
+syntax statement `while $condition:expr $body:block` => Loop($condition, $body);
+syntax statement `if $condition:expr $yes:block else $no:block` => Branch($condition, $yes, $no);
+syntax statement `if $condition:expr $yes:block` => Branch($condition, $yes, End());
+effect continue(Binding($name, $descriptor, $value), $next) => Let($name, $descriptor, $value, $next);
+effect continue(Variable($name, $descriptor, $value), $next) => Var($name, $descriptor, $value, $next);
+effect continue(Assignment($name, $value), $next) => Set($name, $value, $next);
+effect continue(Loop($condition, $body), $next) => While($condition, $body, $next);
+effect continue(Branch($condition, $yes, $no), $next) => If($condition, $yes, $no, $next);
+
+syntax item `fn $name:ident() -> i32 { return $e:expr; }`
+    => Function($name, $e);
+syntax item[fallback] `fn $name:ident() -> $result:typename $body:block` => TypedFunction($name, [], $result, $body);
+syntax item[fallback] `fn $name:ident($params:parameters) -> $result:typename $body:block` => TypedFunction($name, $params, $result, $body);
+
+// A complete source group can be checked before any IR is constructed.
+effect analyze_program($items) => check_items($items, declarations($items, env.empty()));
+effect emit_program($items) => bind($checked,analyze_program(prepare_module($items)),seq(emit_runtime($checked),lower_items($checked)));
+effect[fallback] emit_runtime($checked) => [];
+// Optional library-wide preparation (for example, hoisting static data). The
+// core does not interpret these terms; libraries extend this phase relation.
+effect[fallback] prepare_module($items) => pipeline.run($items);
+effect declarations([], $environment) => $environment;
+effect declarations($items, $environment) when lt(0, size($items))
+    => declare(list.head($items), list.tail($items), $environment);
+effect declare(Function($name, $value), $rest, $environment)
+    => declaration($name, Signature([], Signed(32)), $rest, $environment);
+effect declare(TypedFunction($name, $params, $result, $body), $rest, $environment)
+    => declaration($name, Signature(list.map("base.param_type", $params), $result), $rest, $environment);
+effect declaration($name, $signature, $rest, $environment) => choose(env.contains($environment, $name),
+    fail(concat("duplicate function: ", $name)), declarations($rest, env.put($environment, $name, $signature)));
+effect param_type(Param($name, $descriptor)) => $descriptor;
+effect[fallback] preparation_slot($descriptor,$identity) => Slot($descriptor,$identity);
+effect check_items([], $environment) => [];
+effect check_items($items, $environment) when lt(0, size($items))
+    => list.prepend(prepare(list.head($items), $environment), check_items(list.tail($items), $environment));
+effect lower_items($items) => list.fold("base.lower_item",$items,[]);
+effect lower_item($state,$item) => seq(lower_function($item),$state);
+effect analyze(Function($name, $value)) => prepare(Function($name, $value), env.put(env.empty(), $name, Signature([], Signed(32))));
+effect analyze(TypedFunction($name, $params, $result, $body)) => prepare(TypedFunction($name, $params, $result, $body),
+    env.put(env.empty(), $name, Signature(list.map("base.param_type", $params), $result)));
+effect[fallback] analyze($expression) => check($expression, env.empty(), Any());
+effect[fallback] emit($item) => lower_checked(analyze($item));
+effect lower_checked(CheckedFunction($name, $params, $result, $body)) => lower_function(CheckedFunction($name, $params, $result, $body));
+effect lower_checked(Typed($descriptor, $expression)) => lower(Typed($descriptor, $expression), env.empty());
+
+effect prepare(Function($name, $value), $environment) => prepare(TypedFunction($name, [], Signed(32), Return($value)), $environment);
+effect prepare(TypedFunction($name, $params, $result, $body), $environment)
+    => bind([$bound, $scope], bind_params($params, $environment, env.empty()),
+        CheckedFunction($name, $bound, $result, check_body($body, $scope, $result)));
+effect bind_params([], $environment, $seen) => [[], $environment];
+effect bind_params($params, $environment, $seen) when lt(0, size($params))
+    => bind_param(list.head($params), list.tail($params), $environment, $seen);
+effect bind_param(Param($name, $descriptor), $rest, $environment, $seen) => choose(env.contains($seen, $name),
+    fail(concat("duplicate parameter: ", $name)), bind($identity, symbol($name),
+        bind([$tail, $scope], bind_params($rest, env.put($environment, $name, Slot($descriptor, $identity)), env.put($seen, $name, 1)),
+            [list.prepend(BoundParam($descriptor, $identity), $tail), $scope])));
+effect check_body(Return($value), $environment, $result) => Return(check($value, $environment, $result));
+effect check_body(End(), $environment, $result) => End();
+effect check_body(Let($name, $descriptor, $value, $next), $environment, $result)
+    => bind(Typed($actual, $checked), check($value, $environment, $descriptor),
+        bind($identity, symbol($name), Local($identity, Typed($actual, $checked),
+            check_body($next, env.put($environment, $name, Slot($actual, $identity)), $result))));
+effect check_body(Var($name, $descriptor, $value, $next), $environment, $result)
+    => bind(Typed($actual, $checked), check($value, $environment, $descriptor),
+        bind($identity, symbol($name), MutableLocal($identity, Typed($actual, $checked),
+            check_body($next, env.put($environment, $name, Mutable($actual, $identity)), $result))));
+effect check_body(Set($name, $value, $next), $environment, $result)
+    => check_assignment(env.get($environment, $name), $value, $next, $environment, $result);
+effect check_assignment(Mutable($descriptor, $identity), $value, $next, $environment, $result)
+    => Store($identity, check($value, $environment, $descriptor), check_body($next, $environment, $result));
+effect check_assignment(Slot($descriptor, $identity), $value, $next, $environment, $result)
+    => fail("assignment requires a mutable var binding");
+effect[fallback] check_assignment($slot, $value, $next, $environment, $result)
+    => fail("assignment target is not a local variable");
+effect check_body(While($condition, $body, $next), $environment, $result)
+    => CheckedWhile(check_condition($condition, $environment), check_body($body, loop_scope($environment), $result),
+        check_body($next, $environment, $result));
+effect check_body(If($condition, $yes, $no, $next), $environment, $result)
+    => CheckedIf(check_condition($condition, $environment), check_body($yes, $environment, $result),
+        check_body($no, $environment, $result), check_body($next, $environment, $result));
+effect check_condition($expression, $environment) => expect(check($expression, $environment, Any()), Bool());
+effect[fallback] loop_scope($environment) => $environment;
+effect[fallback] loop_values($environment, $head, $exit) => $environment;
+
+// Any() requests inference in this library. It is never an MLIR type.
+effect expect(Typed($descriptor, $value), Any()) => Typed($descriptor, $value);
+effect expect(Typed($descriptor, $value), $wanted) when not(eq($wanted, Any())) => choose(eq($descriptor, $wanted),
+    Typed($descriptor, $value), fail("source type mismatch; implicit lossy conversion is not allowed"));
+effect wanted(Any(), $default) => $default;
+effect wanted($descriptor, $default) when not(eq($descriptor, Any())) => $descriptor;
+effect check(Int($n), $environment, $expected) => numeric(numbers.Untyped(text($n)), $expected);
+effect check(Literal($raw), $environment, $expected) => numeric(numbers.decode($raw), $expected);
+effect numeric(numbers.Untyped($raw), $expected) => constant($raw, wanted($expected, numbers.default_type(numbers.Untyped($raw))));
+effect numeric(numbers.Number($descriptor, $raw), $expected) => expect(constant($raw, $descriptor), $expected);
+effect constant($raw, Signed($width)) => Typed(Signed($width), Integer(numbers.integer($raw, Signed($width))));
+effect constant($raw, Unsigned($width)) => Typed(Unsigned($width), Integer(numbers.integer($raw, Unsigned($width))));
+// Index is target-sized and therefore must not be forced through a fixed
+// source integer width.  The backend/verifier applies the target index type;
+// the rule layer still keeps the spelling exact until that point.
+effect constant($raw, Index()) => Typed(Index(), Integer(int.parse($raw)));
+effect constant($raw, Real($format)) => Typed(Real($format), Floating(numbers.real($raw, Real($format))));
+effect check(Boolean($value), $environment, $expected) => expect(Typed(Bool(), Integer($value)), $expected);
+effect check(Name($name), $environment, $expected) => read(env.get($environment, $name), $expected);
+effect read(Slot($descriptor, $identity), $expected) => expect(Typed($descriptor, Read($identity)), $expected);
+effect read(Mutable($descriptor, $identity), $expected) => expect(Typed($descriptor, Load($identity)), $expected);
+effect check(Ascribed($expression, $descriptor), $environment, $expected) => expect(check($expression, $environment, $descriptor), $expected);
+effect check(Cast($expression, $descriptor), $environment, $expected)
+    => bind(Typed($source, $checked), check($expression, $environment, Any()),
+        seq(cast_opcode($source, $descriptor), expect(Typed($descriptor, Converted(Typed($source, $checked))), $expected)));
+effect check(Neg($expression), $environment, $expected) => unary("neg", $expression, $environment, $expected);
+effect[fallback] unary("neg", $expression, $environment, $expected) => negate($expression, $environment, $expected);
+effect negate(Int($n), $environment, $expected) => check(Int(int.neg($n)), $environment, $expected);
+effect negate(Literal($raw), $environment, $expected) => check(Literal(concat("-", $raw)), $environment, $expected);
+effect negate($expression, $environment, $expected) when and(not(eq(tag($expression), tag(Int(0)))),
+    not(eq(tag($expression), tag(Literal(""))))) => negative(check($expression, $environment, $expected));
+effect negative(Typed(Signed($width), $expression)) => Typed(Signed($width), Unary("neg", Typed(Signed($width), $expression)));
+effect negative(Typed(Index(), $expression)) => Typed(Index(), Unary("neg", Typed(Index(), $expression)));
+effect negative(Typed(Real($format), $expression)) => Typed(Real($format), Unary("neg", Typed(Real($format), $expression)));
+effect negative(Typed(Unsigned($width), $expression)) => fail("unary minus is not defined for an unsigned value");
+
+effect hint(Int($n), $environment) => Any();
+effect hint(Literal($raw), $environment) => number_hint(numbers.decode($raw));
+effect number_hint(numbers.Untyped($raw)) => choose(numbers.floating($raw), Real("f64"), Any());
+effect number_hint(numbers.Number($descriptor, $raw)) => $descriptor;
+effect hint(Name($name), $environment) => slot_type(env.get($environment, $name));
+effect slot_type(Slot($descriptor, $identity)) => $descriptor;
+effect slot_type(Mutable($descriptor, $identity)) => $descriptor;
+effect hint(Boolean($value), $environment) => Bool();
+effect hint(Ascribed($value, $descriptor), $environment) => $descriptor;
+effect hint(Cast($value, $descriptor), $environment) => $descriptor;
+effect hint(Neg($value), $environment) => unary_hint("neg", $value, $environment);
+effect[fallback] unary_hint($operation, $value, $environment) => hint($value, $environment);
+effect hint(Add($a, $b), $environment) => binary_hint("add", $a, $b, $environment);
+effect hint(Sub($a, $b), $environment) => binary_hint("sub", $a, $b, $environment);
+effect hint(Mul($a, $b), $environment) => binary_hint("mul", $a, $b, $environment);
+effect hint(Div($a, $b), $environment) => binary_hint("div", $a, $b, $environment);
+effect hint(Rem($a, $b), $environment) => binary_hint("rem", $a, $b, $environment);
+effect hint(Bitwise($operation, $a, $b), $environment) => binary_hint($operation, $a, $b, $environment);
+effect[fallback] binary_hint($operation, $a, $b, $environment) => numeric_hint($a, $b, $environment);
+effect numeric_hint($a, $b, $environment) => wanted(hint($a, $environment), hint($b, $environment));
+effect hint(Compare($predicate, $a, $b), $environment) => comparison_hint($predicate, $a, $b, $environment);
+effect[fallback] comparison_hint($predicate, $a, $b, $environment) => Bool();
+effect hint(Call($name, $arguments), $environment) => signature_result(env.get($environment, $name));
+effect signature_result(Signature($params, $result)) => $result;
+effect signature_params(Signature($params,$result)) => $params;
+effect check(Add($a, $b), $environment, $expected) => binary("add", $a, $b, $environment, $expected);
+effect check(Sub($a, $b), $environment, $expected) => binary("sub", $a, $b, $environment, $expected);
+effect check(Mul($a, $b), $environment, $expected) => binary("mul", $a, $b, $environment, $expected);
+effect check(Div($a, $b), $environment, $expected) => binary("div", $a, $b, $environment, $expected);
+effect check(Rem($a, $b), $environment, $expected) => binary("rem", $a, $b, $environment, $expected);
+effect check(Bitwise($operation, $a, $b), $environment, $expected)
+    => bitwise($operation, $a, $b, $environment, $expected);
+effect[fallback] binary($operation, $a, $b, $environment, $expected) => numeric_binary($operation, $a, $b, $environment, $expected);
+effect numeric_binary($operation, $a, $b, $environment, $expected) => bind(Typed($descriptor, $left),
+    check($a, $environment, wanted($expected, wanted(hint($a, $environment), hint($b, $environment)))),
+    bind($right, check($b, $environment, $descriptor),
+        seq(opcode($operation, $descriptor), Typed($descriptor, Binary($operation, Typed($descriptor, $left), $right)))));
+effect check(Compare($predicate, $a, $b), $environment, $expected) => comparison($predicate, $a, $b, $environment, $expected);
+effect[fallback] comparison($predicate, $a, $b, $environment, $expected) => numeric_comparison($predicate, $a, $b, $environment, $expected);
+effect numeric_comparison($predicate, $a, $b, $environment, $expected) => bind(Typed($descriptor, $left),
+    check($a, $environment, wanted(hint($a, $environment), hint($b, $environment))),
+    bind($right, check($b, $environment, $descriptor),
+        seq(predicate($predicate, $descriptor), expect(Typed(Bool(), Comparison($predicate, Typed($descriptor, $left), $right)), $expected))));
+effect[fallback] bitwise($operation, $a, $b, $environment, $expected) => numeric_bitwise($operation, $a, $b, $environment, $expected);
+effect numeric_bitwise($operation, $a, $b, $environment, $expected) => bind(Typed($descriptor, $left),
+    check($a, $environment, wanted($expected, wanted(hint($a, $environment), hint($b, $environment)))),
+    bind($right, check($b, $environment, $descriptor),
+        seq(bitop($operation, $descriptor), Typed($descriptor, Binary($operation, Typed($descriptor, $left), $right)))));
+effect check(Call($name, $arguments), $environment, $expected)
+    => call_checked($name, $arguments, env.get($environment, $name), $environment, $expected);
+effect call_checked($name, $arguments, Signature($params, $result), $environment, $expected)
+    => expect(Typed($result, Invoke($name, check_arguments($arguments, $params, $environment))), $expected);
+effect check_arguments([], [], $environment) => [];
+effect check_arguments($arguments, $params, $environment) when and(eq(size($arguments), size($params)), lt(0, size($params)))
+    => list.prepend(check(list.head($arguments), $environment, list.head($params)),
+        check_arguments(list.tail($arguments), list.tail($params), $environment));
+effect check_arguments($arguments, $params, $environment) when not(eq(size($arguments), size($params)))
+    => fail("function argument count mismatch");
+
+// This open relation separates source signedness from signless MLIR storage.
+effect opcode("add", Signed($width)) => "arith.addi";
+effect opcode("add", Unsigned($width)) => "arith.addi";
+effect opcode("sub", Signed($width)) => "arith.subi";
+effect opcode("sub", Unsigned($width)) => "arith.subi";
+effect opcode("mul", Signed($width)) => "arith.muli";
+effect opcode("mul", Unsigned($width)) => "arith.muli";
+effect opcode("div", Signed($width)) => "arith.divsi";
+effect opcode("div", Unsigned($width)) => "arith.divui";
+effect opcode("rem", Signed($width)) => "arith.remsi";
+effect opcode("rem", Unsigned($width)) => "arith.remui";
+effect opcode("add", Index()) => "arith.addi";
+effect opcode("sub", Index()) => "arith.subi";
+effect opcode("mul", Index()) => "arith.muli";
+effect opcode("div", Index()) => "arith.divsi";
+effect opcode("rem", Index()) => "arith.remsi";
+effect opcode("add", Real($format)) => "arith.addf";
+effect opcode("sub", Real($format)) => "arith.subf";
+effect opcode("mul", Real($format)) => "arith.mulf";
+effect opcode("div", Real($format)) => "arith.divf";
+effect opcode("rem", Real($format)) => "arith.remf";
+effect opcode("and", Signed($width)) => "arith.andi";
+effect opcode("and", Unsigned($width)) => "arith.andi";
+effect opcode("or", Signed($width)) => "arith.ori";
+effect opcode("or", Unsigned($width)) => "arith.ori";
+effect opcode("xor", Signed($width)) => "arith.xori";
+effect opcode("xor", Unsigned($width)) => "arith.xori";
+effect bitop("and", Signed($width)) => "arith.andi";
+effect bitop("and", Unsigned($width)) => "arith.andi";
+effect bitop("or", Signed($width)) => "arith.ori";
+effect bitop("or", Unsigned($width)) => "arith.ori";
+effect bitop("xor", Signed($width)) => "arith.xori";
+effect bitop("xor", Unsigned($width)) => "arith.xori";
+effect bitop("and", Index()) => "arith.andi";
+effect bitop("or", Index()) => "arith.ori";
+effect bitop("xor", Index()) => "arith.xori";
+effect predicate("eq", Signed($width)) => ["arith.cmpi", 0];
+effect predicate("eq", Unsigned($width)) => ["arith.cmpi", 0];
+effect predicate("eq", Bool()) => ["arith.cmpi", 0];
+effect predicate("lt", Signed($width)) => ["arith.cmpi", 2];
+effect predicate("le", Signed($width)) => ["arith.cmpi", 3];
+effect predicate("gt", Signed($width)) => ["arith.cmpi", 4];
+effect predicate("ge", Signed($width)) => ["arith.cmpi", 5];
+effect predicate("ne", Signed($width)) => ["arith.cmpi", 1];
+effect predicate("lt", Unsigned($width)) => ["arith.cmpi", 6];
+effect predicate("le", Unsigned($width)) => ["arith.cmpi", 7];
+effect predicate("gt", Unsigned($width)) => ["arith.cmpi", 8];
+effect predicate("ge", Unsigned($width)) => ["arith.cmpi", 9];
+effect predicate("ne", Unsigned($width)) => ["arith.cmpi", 1];
+effect predicate("eq", Index()) => ["arith.cmpi", 0];
+effect predicate("lt", Index()) => ["arith.cmpi", 2];
+effect predicate("le", Index()) => ["arith.cmpi", 3];
+effect predicate("gt", Index()) => ["arith.cmpi", 4];
+effect predicate("ge", Index()) => ["arith.cmpi", 5];
+effect predicate("ne", Index()) => ["arith.cmpi", 1];
+effect predicate("eq", Real($format)) => ["arith.cmpf", 1];
+effect predicate("lt", Real($format)) => ["arith.cmpf", 4];
+effect predicate("le", Real($format)) => ["arith.cmpf", 5];
+effect predicate("gt", Real($format)) => ["arith.cmpf", 2];
+effect predicate("ge", Real($format)) => ["arith.cmpf", 3];
+effect predicate("ne", Real($format)) => ["arith.cmpf", 6];
+
+effect lower_function(CheckedFunction($name, $params, $result, $body)) => lower_function_attrs(CheckedFunction($name,$params,$result,$body),[]);
+effect lower_function_attrs(CheckedFunction($name, $params, $result, $body),$attributes)
+    => mlir.op("func.func", [], [], list.concat($attributes,[Attr("sym_name", $name),
+                RawAttr("function_type", concat(concat("(", types.join(list.map("base.bound_type", $params))),
+                    concat(") -> ", result_repr($result))))]), [function_region($params,$body,$result,env.empty())]);
+// Function dialects share binding, storage planning and CFG lowering.
+effect function_region($params,$body,$result,$policy) => bind($block,mlir.block(list.map("base.bound_type",$params)),
+    bind($scope,allocation.plan_frame($body,$block,prepare_storage($body,$block,bind_ssa($params,$block,0,$policy))),
+        mlir.region_blocks(lower_flow($body,$scope,$block,function_continuation($result)))));
+// Type descriptions and nested functions cannot introduce runtime sites
+// in the current frame. Other languages may add independent facts.
+effect allocation.children(Typed($descriptor,$value)) => [$value];
+effect allocation.children(CheckedFunction($name,$params,$result,$body)) => [];
+effect return_in($environment,$values) => bind($returned,base.return_values($environment,$values),
+    seq(base.before_return($environment),mlir.op(choose(env.contains($environment,ReturnOpKey()),env.get($environment,ReturnOpKey()),"func.return"),$returned,[],[],[])));
+effect[fallback] base.return_values($environment,$values) => $values;
+effect[fallback] base.before_return($environment) => 1;
+effect base.jump_in($environment,$target) => seq(base.before_jump($environment,$target),jump($target));
+effect[fallback] base.before_jump($environment,$target) => 1;
+effect[fallback] base.flow_targets($environment,$targets) => $environment;
+effect[fallback] finish_context($continuation,$environment) => finish($continuation);
+effect[fallback] function_continuation($result) => NoContinuation();
+effect[fallback] result_repr($descriptor) => types.repr($descriptor);
+effect[fallback] result_types($descriptor) => [types.repr($descriptor)];
+effect bound_type(BoundParam($descriptor, $identity)) => types.repr($descriptor);
+effect bind_ssa([], $block, $index, $environment) => $environment;
+effect bind_ssa($params, $block, $index, $environment) when lt(0, size($params))
+    => bind(BoundParam($descriptor, $identity), list.head($params),
+        bind_ssa(list.tail($params), $block, add($index, 1), env.put($environment, $identity, mlir.block_arg($block, $index))));
+effect lower_body(Return($value), $environment) => ret(lower($value, $environment));
+effect lower_body(Local($identity, $value, $next), $environment)
+    => lower_body($next, env.put($environment, $identity, lower($value, $environment)));
+effect lower(Typed($descriptor, Integer($value)), $environment)
+    => mlir.op("arith.constant", [], [types.repr($descriptor)], [Attr("value", $value, types.repr($descriptor))], []);
+effect lower(Typed($descriptor, Floating($attribute)), $environment)
+    => mlir.op("arith.constant", [], [types.repr($descriptor)], [RawAttr("value", $attribute)], []);
+effect lower(Typed($descriptor, Read($identity)), $environment) => env.get($environment, $identity);
+effect lower(Typed($descriptor, Load($identity)), $environment)
+    => storage_load($descriptor, env.get($environment, $identity));
+effect lower(Typed($descriptor, Converted(Typed($source, $value))), $environment)
+    => base.emit_cast(cast_opcode($source, $descriptor), lower(Typed($source, $value), $environment), $descriptor, $environment);
+effect lower(Typed($descriptor, Binary($operation, $a, $b)), $environment)
+    => base.emit_binary(opcode($operation, $descriptor), lower($a, $environment), lower($b, $environment), $descriptor, $environment);
+effect lower(Typed($descriptor, Comparison($predicate, Typed($operand_type, $a), $b)), $environment)
+    => bind([$operation, $code], predicate($predicate, $operand_type),
+        base.emit_comparison($operation, $code, lower(Typed($operand_type, $a), $environment), lower($b, $environment), $environment));
+effect lower(Typed(Signed($width), Unary("neg", $value)), $environment)
+    => mlir.op("arith.subi", [lower(Typed(Signed($width), Integer(0)), $environment), lower($value, $environment)], [types.repr(Signed($width))], [], []);
+effect lower(Typed(Index(), Unary("neg", $value)), $environment)
+    => mlir.op("arith.subi", [lower(Typed(Index(), Integer(0)), $environment), lower($value, $environment)], [types.repr(Index())], [], []);
+effect lower(Typed(Real($format), Unary("neg", $value)), $environment)
+    => mlir.op("arith.negf", [lower($value, $environment)], [types.repr(Real($format))], [], []);
+effect lower(Typed($descriptor, Invoke($name, $arguments)), $environment)
+    => mlir.op("func.call", lower_arguments($arguments, $environment), result_types($descriptor),
+        [RawAttr("callee", concat("@", $name))], []);
+effect lower_arguments([], $environment) => [];
+effect lower_arguments($arguments, $environment) when lt(0, size($arguments))
+    => list.prepend(lower(list.head($arguments), $environment), lower_arguments(list.tail($arguments), $environment));
+effect ret($value) => mlir.op("func.return", [$value], [], [], []);
+
+// Mutable storage is a library policy, not a core construct. Rank-zero stack
+// slots lower through memref; LLVM's scalar promotion removes their loads and
+// stores in optimized native builds. User types extend storage_type as needed.
+effect[fallback] storage_type($descriptor) => concat("memref<", concat(types.repr($descriptor), ">"));
+effect[fallback] storage_alloc($descriptor) => mlir.op("memref.alloca", [], [storage_type($descriptor)],
+    [RawAttr("operandSegmentSizes", "array<i32: 0, 0>")], []);
+effect[fallback] storage_load($descriptor, $slot) => mlir.op("memref.load", [$slot], [types.repr($descriptor)], [], []);
+effect[fallback] storage_store(Typed($descriptor, $value), $slot, $environment)
+    => mlir.op("memref.store", [lower(Typed($descriptor, $value), $environment), $slot], [], [], []);
+// Allocate once in the entry block, including declarations nested in a loop.
+// Initialization still executes at the declaration's source control-flow point.
+effect prepare_storage(Return($value), $entry, $environment) => $environment;
+effect prepare_storage(End(), $entry, $environment) => $environment;
+effect prepare_storage(Local($identity, $value, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect prepare_storage(Store($identity, $value, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect prepare_storage(MutableLocal($identity, Typed($descriptor, $value), $next), $entry, $environment)
+    => bind($slot, mlir.with_block($entry, storage_alloc($descriptor)),
+        prepare_storage($next, $entry, env.put($environment, $identity, $slot)));
+effect prepare_storage(CheckedWhile($condition, $body, $next), $entry, $environment)
+    => prepare_storage($next, $entry, prepare_storage($body, $entry, $environment));
+effect prepare_storage(CheckedIf($condition, $yes, $no, $next), $entry, $environment)
+    => prepare_storage($next, $entry, prepare_storage($no, $entry, prepare_storage($yes, $entry, $environment)));
+
+// Every statement lowers through the same continuation/CFG builder. No rule
+// knows an algorithm, iteration count, local name, or numeric benchmark seed.
+effect lower_flow(Return($value), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, return_in($environment,[lower($value, $environment)])), [$block]);
+effect lower_flow(End(), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, finish_context($continuation,$environment)), [$block]);
+effect finish(NoContinuation()) => fail("function can reach its end without returning a value");
+effect finish($block) when eq(term.kind($block), 9) => jump($block);
+effect jump($block) => mlir.op("cf.br", [], [], [], [], [$block]);
+effect branch_to($condition, $yes, $no)
+    => mlir.op("cf.cond_br", [$condition], [],
+        [RawAttr("operandSegmentSizes", "array<i32: 1, 0, 0>")], [], [$yes, $no]);
+effect lower_flow(Local($identity, $value, $next), $environment, $block, $continuation)
+    => bind($ssa, mlir.with_block($block, lower($value, $environment)),
+        lower_flow($next, env.put($environment, $identity, $ssa), $block, $continuation));
+effect lower_flow(MutableLocal($identity, $value, $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, storage_store($value, env.get($environment, $identity), $environment)),
+        lower_flow($next, $environment, $block, $continuation));
+effect lower_flow(Store($identity, $value, $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, storage_store($value, env.get($environment, $identity), $environment)),
+        lower_flow($next, $environment, $block, $continuation));
+effect lower_flow(CheckedWhile($condition, $body, $next), $environment, $block, $continuation)
+    => lower_while($condition, $body, $next, $environment, $block, $continuation,
+        mlir.block([]), mlir.block([]), mlir.block([]));
+effect lower_while($condition, $body, $next, $environment, $block, $continuation, $head, $loop, $exit)
+    => seq(mlir.in_block($block, jump($head)),
+        seq(mlir.in_block($head, branch_to(lower($condition, $environment), $loop, $exit)),
+            list.concat([$block, $head], list.concat(lower_flow($body, loop_values($environment, $head, $exit), $loop, $head),
+                lower_flow($next, $environment, $exit, $continuation)))));
+effect lower_flow(CheckedIf($condition, $yes, $no, $next), $environment, $block, $continuation)
+    => lower_if($condition, $yes, $no, $next, $environment, $block, $continuation,
+        mlir.block([]), mlir.block([]), mlir.block([]));
+effect lower_if($condition, $yes, $no, $next, $environment, $block, $continuation, $yes_block, $no_block, $join)
+    => seq(mlir.in_block($block, branch_to(lower($condition, $environment), $yes_block, $no_block)),
+        list.concat([$block], list.concat(lower_flow($yes, $environment, $yes_block, $join),
+            list.concat(lower_flow($no, $environment, $no_block, $join),
+                choose(choose(and(flow_terminal($yes), flow_terminal($no)),not(keep_continuation($next)),0), [], lower_flow($next, $environment, $join, $continuation))))));
+effect[fallback] keep_continuation($next) => 0;
+effect flow_terminal(Return($value)) => 1;
+effect flow_terminal(End()) => 0;
+effect flow_terminal(Local($identity, $value, $next)) => flow_terminal($next);
+effect flow_terminal(MutableLocal($identity, $value, $next)) => flow_terminal($next);
+effect flow_terminal(Store($identity, $value, $next)) => flow_terminal($next);
+effect flow_terminal(CheckedIf($condition, $yes, $no, $next)) => or(and(flow_terminal($yes), flow_terminal($no)), flow_terminal($next));
+effect flow_terminal(CheckedWhile($condition, $body, $next)) => flow_terminal($next);
+effect[fallback] flow_terminal($body) => 0;
+
+// Explicit integer casts are modular, with sign extension determined by the
+// source descriptor. The relation is open to other numeric type libraries.
+effect cast_opcode(Signed($from), Signed($to)) => integer_cast($from, $to, "arith.extsi");
+effect cast_opcode(Signed($from), Unsigned($to)) => integer_cast($from, $to, "arith.extsi");
+effect cast_opcode(Unsigned($from), Signed($to)) => integer_cast($from, $to, "arith.extui");
+effect cast_opcode(Unsigned($from), Unsigned($to)) => integer_cast($from, $to, "arith.extui");
+effect[fallback] cast_opcode($source, $target) when eq($source, $target) => "identity";
+effect integer_cast($from, $to, $extend)
+    => seq(types.width($from), seq(types.width($to),
+        choose(eq($from, $to), "identity", choose(lt($from, $to), $extend, "arith.trunci"))));
+effect lower_cast("identity", $value, $descriptor) => $value;
+effect lower_cast($operation, $value, $descriptor) when not(eq($operation, "identity"))
+    => mlir.op($operation, [$value], [types.repr($descriptor)], [], []);
+
+// Emission policy is carried by the lexical lowering environment. Libraries
+// may preserve rounding and exceptions without replacing expression grammar
+// or changing other languages that compose this module.
+effect[fallback] base.emit_binary($operation,$a,$b,$descriptor,$environment)
+    => mlir.op($operation,[$a,$b],[types.repr($descriptor)],[],[]);
+effect[fallback] base.emit_comparison($operation,$predicate,$a,$b,$environment)
+    => mlir.op($operation,[$a,$b],["i1"],[Attr("predicate",$predicate,"i64")],[]);
+effect[fallback] base.emit_cast($operation,$value,$descriptor,$environment) => base.lower_cast($operation,$value,$descriptor);

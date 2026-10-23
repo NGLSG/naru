@@ -1,0 +1,40 @@
+{
+  "format": 1,
+  "generator": "naru",
+  "packages": [
+    {"name": "naru-emergence", "version": "0.1.0", "manifest": "Naru.toml", "sha256": "4848d3859010cfcaf8dd7d565f93de7528e371dec9fa77ffc48710fc99a285b0"},
+    {"name": "naru-stdlib", "version": "0.2.0", "manifest": "../../dialects/Naru.toml", "sha256": "666f8ad942bed892b0f97659837e0412262ad4a292a94fc56cd8f5840daf0de7"}
+  ],
+  "dependencies": [
+    {"owner": 0, "alias": "std", "target": 1}
+  ],
+  "rules": [
+    {"module": "affine", "path": "../../dialects/affine.stx", "sha256": "c79028b0955c23328da7be1cd7d785bdce175bd34b90108871da8fcd474a6ba5"},
+    {"module": "allocation", "path": "../../dialects/allocation.stx", "sha256": "8d5cdbe987dc087efd50dfceb7dd317215dc47c775b096b597a61eb0309fe028"},
+    {"module": "arrays", "path": "../../dialects/arrays.stx", "sha256": "f6a11caebe1dfe8e71f66c19e160168a55804d180e30e4c8e51ff808de4f13bf"},
+    {"module": "base", "path": "../../dialects/base.stx", "sha256": "695120457711fe8bebd4166c4c8e29e0fef43dc54bfab60ac5735a441ce3b24a"},
+    {"module": "closures", "path": "../../dialects/closures.stx", "sha256": "5edf331347b1c8cdc3b2bb094570c2df8a90e12f81a5b1fef3dc08122704e09a"},
+    {"module": "control", "path": "../../dialects/control.stx", "sha256": "11e537939d2846706f7b362ca54c6ce0cdda147e8005934ad6b46046a5e6e10b"},
+    {"module": "defer", "path": "../../dialects/defer.stx", "sha256": "a1e98e834b33ae3f9b56a0394ad2aa168008eb8d367bc8b98b3bb7d6f2e952f2"},
+    {"module": "demo", "path": "demo.stx", "sha256": "e1de20ad06462e613dea8d72cecad142bd7d8d2dad3d3229c54fb9fb10ab8de2"},
+    {"module": "externc", "path": "../../dialects/externc.stx", "sha256": "ca77d3afde6d5ea8e204c012849fb8a5521c9f0f1f30474f3ac44c707266e5f6"},
+    {"module": "functions", "path": "../../dialects/functions.stx", "sha256": "ce6fe87757005ef159fca039ba60c09639661d8546e28a78b637bc91dacd4345"},
+    {"module": "generics", "path": "../../dialects/generics.stx", "sha256": "94499ef5038db5475875297150017519a3076bd7c969460bbd073df98e66ac48"},
+    {"module": "loops", "path": "../../dialects/loops.stx", "sha256": "18d70b3053214469a412be44bcfdcceaab32669369c81177260c3e25801c96d7"},
+    {"module": "money", "path": "../../dialects/money.stx", "sha256": "f809b345cffbd8cf64921211b5a0880469379b880ece1404e628793e887f65f6"},
+    {"module": "numbers", "path": "../../dialects/numbers.stx", "sha256": "9cb7d661e744e9897253a94046b144abc17e70cffe71da13131070f6bd387d85"},
+    {"module": "operators", "path": "../../dialects/operators.stx", "sha256": "a2a0f29d445c3a87986722da285d9045c0ba458f81a115533fc6d03c2205e2da"},
+    {"module": "ownership", "path": "../../dialects/ownership.stx", "sha256": "9fc067ec0597607e0d91891748dc31330ea5d96c0239ac10190fd0d5bee9a44d"},
+    {"module": "patterns", "path": "../../dialects/patterns.stx", "sha256": "5d8c4aacd927a1c31e419728b4e1a86fe38508bba4d6bb58ac32a4ef86ccd096"},
+    {"module": "pipeline", "path": "../../dialects/pipeline.stx", "sha256": "4110be63ae2f5c6563c97f396cb1479093f2fb994c356ea93f125bab49b3de5c"},
+    {"module": "records", "path": "../../dialects/records.stx", "sha256": "0e7e3a0153460c89929053f39f37e3fc36858a810223f29c3ec62ee2a7ed533c"},
+    {"module": "resources", "path": "../../dialects/resources.stx", "sha256": "7afbcc64accc7f38cfde536bf164181bbdfd2b2141ef37b665aa765da665b1a4"},
+    {"module": "shapes", "path": "../../dialects/shapes.stx", "sha256": "a84b8161dff8746534e90515beb7537e6a33e83f1106f421aaff397f449fa966"},
+    {"module": "standard", "path": "../../dialects/standard.stx", "sha256": "673d2a29030342cdbc4951d18bb4463497b451f2ff426e639323a805847ebe27"},
+    {"module": "traits", "path": "../../dialects/traits.stx", "sha256": "6cbf0530d5803998b4a4b02a4532c6cf61d6e0cb171e525aa76d18a8b3e2f6ba"},
+    {"module": "tree", "path": "../../dialects/tree.stx", "sha256": "28f45ee250c8b6f1fa0a9c312795f6d5cc625cb8a49b8c7a643f182b2c4ec4d0"},
+    {"module": "types", "path": "../../dialects/types.stx", "sha256": "002035a34acec1a7dc674e4794d8c08c1d3b1cc18ae6a247c8b8d60fff88b05e"},
+    {"module": "unless", "path": "../../dialects/unless.stx", "sha256": "3140df4ba33cd453a6636efc8ba1dbf852520c382ffcb5408c0b5dbf2ce400d6"},
+    {"module": "variants", "path": "../../dialects/variants.stx", "sha256": "6a81af8fec63fc4afa549d4cc4a6632f7e928b389327e29bb16a677a1065fa14"}
+  ]
+}

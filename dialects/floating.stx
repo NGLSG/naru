@@ -1,0 +1,43 @@
+// Language-neutral floating emission policy. The owning function must carry
+// LLVM strictfp when using strict exceptions. Constant evaluation is separate.
+mod floating;
+use base;
+use types;
+use ir_effects;
+
+effect floating.strict($environment) => env.put($environment,floating.PolicyKey(),floating.Policy(7,2));
+effect floating.enabled($environment) => env.contains($environment,floating.PolicyKey());
+effect floating.rounding(floating.Policy($rounding,$exceptions)) => Attr("roundingmode",$rounding,"i64");
+effect floating.exceptions(floating.Policy($rounding,$exceptions)) => Attr("fpExceptionBehavior",$exceptions,"i64");
+effect floating.intrinsic($operation,$arguments,$result,$policy,$rounded)
+    => ir_effects.ordered(concat("llvm.intr.experimental.constrained.",$operation),$arguments,[$result],
+        choose($rounded,[floating.rounding($policy),floating.exceptions($policy)],[floating.exceptions($policy)]));
+effect floating.binary_name("arith.addf") => "fadd";
+effect floating.binary_name("arith.subf") => "fsub";
+effect floating.binary_name("arith.mulf") => "fmul";
+effect floating.binary_name("arith.divf") => "fdiv";
+effect floating.binary_name("arith.remf") => "frem";
+effect[fallback] floating.binary_name($operation) => "";
+effect floating.cast_name("arith.sitofp") => "sitofp";
+effect floating.cast_name("arith.uitofp") => "uitofp";
+effect floating.cast_name("arith.fptosi") => "fptosi";
+effect floating.cast_name("arith.fptoui") => "fptoui";
+effect floating.cast_name("arith.truncf") => "fptrunc";
+effect floating.cast_name("arith.extf") => "fpext";
+effect[fallback] floating.cast_name($operation) => "";
+effect floating.rounded_cast($name) => not(or(or(eq($name,"fptosi"),eq($name,"fptoui")),eq($name,"fpext")));
+effect base.emit_binary($operation,$a,$b,$descriptor,$environment)
+    when and(floating.enabled($environment),not(eq(floating.binary_name($operation),"")))
+    => floating.intrinsic(floating.binary_name($operation),[$a,$b],types.repr($descriptor),env.get($environment,floating.PolicyKey()),1);
+effect base.emit_cast($operation,$value,$descriptor,$environment)
+    when and(floating.enabled($environment),not(eq(floating.cast_name($operation),"")))
+    => floating.intrinsic(floating.cast_name($operation),[$value],types.repr($descriptor),env.get($environment,floating.PolicyKey()),floating.rounded_cast(floating.cast_name($operation)));
+effect base.emit_comparison("arith.cmpf",$predicate,$a,$b,$environment) when floating.enabled($environment)
+    => floating.compare($predicate,$a,$b,env.get($environment,floating.PolicyKey()));
+// Quiet comparisons for equality/truth; ordered relational comparisons signal
+// invalid on quiet NaNs as required by the conservative IEC arithmetic policy.
+effect floating.compare($predicate,$a,$b,$policy)
+    => floating.comparison($predicate,$a,$b,$policy,or(or(eq($predicate,1),eq($predicate,6)),or(eq($predicate,8),eq($predicate,13))));
+effect floating.comparison($predicate,$a,$b,$policy,$quiet)
+    => ir_effects.ordered(choose($quiet,"llvm.intr.experimental.constrained.fcmp","llvm.intr.experimental.constrained.fcmps"),[$a,$b],["i1"],
+        [Attr("predicate",$predicate,"i64"),floating.exceptions($policy)]);

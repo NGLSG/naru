@@ -1,0 +1,32 @@
+// Qualifiers inside [] qualify the adjusted parameter pointer, not its element.
+mod c11.parameter_arrays;
+use c11.syntax;
+use c11.types;
+use c11.declarators;
+use c11.specifiers;
+use base;
+
+syntax c11.parameter_array `[static $count:c11.expr]` => ArraySpec($count,c11.specifiers.Qualifier(0,0,0),1);
+syntax c11.parameter_array `[static $quals:c11.qualifiers $count:c11.expr]` => ArraySpec($count,$quals,1);
+syntax c11.parameter_array `[$quals:c11.qualifiers static $count:c11.expr]` => ArraySpec($count,$quals,1);
+syntax c11.parameter_array `[$quals:c11.qualifiers $count:c11.expr]` => ArraySpec($count,$quals,0);
+syntax c11.parameter_array `[$quals:c11.qualifiers]` => ArraySpec(UnspecifiedBound(),$quals,0);
+syntax c11.parameter_array `[$quals:c11.qualifiers *]` => ArraySpec(PrototypeBound(),$quals,0);
+syntax c11.declarator[30,left] `$decl:c11.declarator $spec:c11.parameter_array` => ArrayDecl($decl,$spec);
+syntax c11.abstract_decl `$spec:c11.parameter_array` => ArrayDecl(c11.declarators.Named(""),$spec);
+syntax c11.abstract_decl[30,left] `$decl:c11.abstract_decl $spec:c11.parameter_array` => ArrayDecl($decl,$spec);
+effect c11.declarators.resolve(ArrayDecl($inner,ArraySpec($count,$quals,$static)),$type)
+    => seq(c11.declarators.array_element($type),c11.declarators.resolve($inner,ParameterArray(c11.parameter_arrays.bound_source($count),$type,$quals,$static)));
+effect[fallback] c11.parameter_arrays.bound_source($count) => $count;
+effect c11.declarators.adjust_parameter(ParameterArray($count,$element,$quals,$static))
+    => seq(c11.parameter_arrays.parameter_element($element),seq(check_bound($count),
+        c11.specifiers.qualify(c11.types.Pointer($element),$quals)));
+effect[fallback] c11.parameter_arrays.parameter_element($element) => c11.declarators.validate_type($element);
+effect check_bound(UnspecifiedBound()) => 1;
+effect check_bound(PrototypeBound()) => 1;
+effect[fallback] check_bound($count) => c11.parameter_arrays.bound_constraint($count);
+effect[fallback] c11.parameter_arrays.bound_constraint($count) => c11.declarators.array_count($count);
+effect c11.declarators.validate_type(ParameterArray($count,$element,$quals,$static))
+    => fail("C static and qualifiers inside array brackets require the outermost array derivation of a function parameter");
+// A static bound is a caller precondition, not a runtime bounds check. Runtime
+// bounds and prototype [*] will compose here with the VM type/lifetime module.

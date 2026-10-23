@@ -1,0 +1,12 @@
+Naru is licensed, at your option, under either:
+
+  * the MIT License (LICENSE-MIT), or
+  * the Apache License, Version 2.0 (LICENSE-APACHE).
+
+SPDX-License-Identifier: MIT OR Apache-2.0
+Copyright (c) 2026 Naru contributors
+
+This applies to original Naru code, rule libraries, examples and documentation.
+Third-party software, fonts, language marks and historical documents retain
+their own copyright and license terms. See THIRD_PARTY.md and historical/README.md.
+The project license does not relicense historical source documents.

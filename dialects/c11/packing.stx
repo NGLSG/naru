@@ -1,0 +1,104 @@
+// Packing is a translation-stream policy, captured on each aggregate
+// definition. Its nominal identity stays independent from its layout facts.
+mod c11.packing;
+use c11.pp;
+use c11.lex;
+use c11.names;
+use c11.scopes;
+use c11.syntax;
+use c11.types;
+use c11.objects;
+use c11.members;
+use c11.bitfields;
+use c11.aggregate_alignment;
+use layout;
+
+syntax c11.packing.pragma `pack()` => c11.packing.Set(0);
+syntax c11.packing.pragma `pack($n:number)` => c11.packing.Set(c11.packing.number($n));
+syntax c11.packing.pragma `pack(push)` => c11.packing.Push("",c11.packing.Unchanged());
+syntax c11.packing.pragma `pack(push,$n:number)` => c11.packing.Push("",c11.packing.Set(c11.packing.number($n)));
+syntax c11.packing.pragma `pack(push,$label:ident)` => c11.packing.Push($label,c11.packing.Unchanged());
+syntax c11.packing.pragma `pack(push,$label:ident,$n:number)` => c11.packing.Push($label,c11.packing.Set(c11.packing.number($n)));
+syntax c11.packing.pragma `pack(pop)` => c11.packing.Pop("",c11.packing.Unchanged());
+syntax c11.packing.pragma `pack(pop,$n:number)` => c11.packing.Pop("",c11.packing.Set(c11.packing.number($n)));
+syntax c11.packing.pragma `pack(pop,$label:ident)` => c11.packing.Pop($label,c11.packing.Unchanged());
+syntax c11.packing.pragma `pack(pop,$label:ident,$n:number)` => c11.packing.Pop($label,c11.packing.Set(c11.packing.number($n)));
+syntax c11.packing.pragma `pack(show)` => c11.packing.Show();
+effect c11.packing.number($raw) => bind($value,int.parse($raw),choose(c11.packing.valid($value),$value,fail("C target packing must be 1, 2, 4, 8 or 16")));
+effect c11.packing.valid($value) => or(or(eq($value,1),eq($value,2)),or(eq($value,4),or(eq($value,8),eq($value,16))));
+effect c11.packing.state($macros) => choose(env.contains($macros,c11.packing.StateKey()),env.get($macros,c11.packing.StateKey()),c11.packing.State(0,[]));
+effect c11.pp.enabled("pragma",$tokens,c11.pp.State($out,$macros,$conditions,$pending),$at)
+    when choose(lt(0,size($tokens)),eq(c11.lex.spelling(list.head($tokens)),"pack"),0)
+    => bind([$action],source.parse_tokens(list.map("c11.lex.parser_token",$tokens),"c11.packing.pragma",env.empty(),"c11.scopes.identity_commit"),
+        c11.pp.State($out,env.put($macros,c11.packing.StateKey(),c11.packing.apply($action,c11.packing.state($macros))),$conditions,$pending));
+effect c11.packing.apply(c11.packing.Set($cap),c11.packing.State($current,$stack)) => c11.packing.State($cap,$stack);
+effect c11.packing.apply(c11.packing.Show(),$state) => $state;
+effect c11.packing.apply(c11.packing.Push($label,$next),c11.packing.State($current,$stack))
+    => c11.packing.apply_next($next,c11.packing.State($current,list.prepend(c11.packing.Saved($label,$current),$stack)));
+effect c11.packing.apply(c11.packing.Pop($label,$next),$state) => c11.packing.apply_next($next,c11.packing.pop($label,$state));
+effect c11.packing.apply_next(c11.packing.Unchanged(),$state) => $state;
+effect c11.packing.apply_next(c11.packing.Set($cap),c11.packing.State($current,$stack)) => c11.packing.State($cap,$stack);
+effect c11.packing.pop($label,c11.packing.State($cap,$stack)) => bind(c11.packing.Search($wanted,$rest,$found),
+    rule.iterate("c11.packing.pop_step",c11.packing.Search($label,$stack,c11.packing.State($cap,$stack)),1000000),$found);
+effect c11.packing.pop_step(c11.packing.Search($label,[],$fallback)) => [0,c11.packing.Search($label,[],$fallback)];
+effect c11.packing.pop_step(c11.packing.Search($label,$stack,$fallback)) when lt(0,size($stack))
+    => bind(c11.packing.Saved($name,$cap),list.head($stack),choose(or(eq($label,""),eq($label,$name)),
+        [0,c11.packing.Search($label,[],c11.packing.State($cap,list.tail($stack)))],
+        [1,c11.packing.Search($label,list.tail($stack),$fallback)]));
+
+// Source-order annotations also work for block and nested definitions. No
+// parser-global packing stack or file-only commit state is required.
+effect c11.pp.expand_token($at,$hide,$rest,$macros,$depth)
+    when or(eq(c11.lex.spelling($at),"struct"),eq(c11.lex.spelling($at),"union"))
+    => choose(and(c11.pp.defined($macros,c11.lex.macro_key($at)),not(env.contains($hide,c11.lex.macro_key($at)))),
+        c11.pp.replace_macro(env.get($macros,c11.lex.macro_key($at)),$at,$hide,$rest,$macros,$depth),
+        bind(c11.packing.State($cap,$stack),c11.packing.state($macros),
+            [1,c11.pp.Expansion($rest,$macros,$depth),[c11.pp.MarkedToken($at,env.put($hide,c11.packing.CaptureKey(),$cap))]]));
+// Materialize parser metadata only after all macro replacement/stringification.
+// It must never become part of a # string or a header operand's spelling.
+effect c11.pp.final_token(c11.pp.MarkedToken($at,$hide)) when and(
+    or(eq(c11.lex.spelling($at),"struct"),eq(c11.lex.spelling($at),"union")),env.contains($hide,c11.packing.CaptureKey()))
+    => bind($cap,env.get($hide,c11.packing.CaptureKey()),choose(eq($cap,0),[$at],
+        [$at,c11.lex.made(1,"__naru_pack",$at),c11.lex.made(5,"(",$at),c11.lex.made(2,text($cap),$at),c11.lex.made(5,")",$at)]));
+effect c11.packing.prefix($nodes) => choose(lt(1,size($nodes)),eq(c11.scopes.raw(list.head($nodes)),"__naru_pack"),0);
+syntax c11.packing.annotation `$n:number` => c11.packing.number($n);
+effect c11.names.tag_prefix($kind,$nodes,$context,$own) when c11.packing.prefix($nodes)
+    => bind(c11.scopes.Group($open,$inside,$close),arg($nodes,1),
+        bind($cap,c11.scopes.expression($inside,"c11.packing.annotation",$context),
+            c11.packing.mark(c11.names.read_tag($kind,list.tail(list.tail($nodes)),$context,$own),$kind,$cap)));
+effect c11.packing.definition($items) => list.fold("c11.packing.definition_item",$items,0);
+effect c11.packing.definition_item($found,c11.syntax.RecordDeclaration($name,$fields,$origin)) => 1;
+effect c11.packing.definition_item($found,c11.syntax.UnionDeclaration($name,$fields,$origin)) => 1;
+effect[fallback] c11.packing.definition_item($found,$item) => $found;
+effect c11.packing.mark(c11.names.TagRead($rest,$type,$items,$scope),$kind,$cap)
+    => choose(c11.packing.definition($items),bind($key,c11.aggregate_alignment.tag_key($type),bind($tags,c11.names.tags($scope),
+        bind($updated,env.put($tags,$key,c11.packing.tag(env.get($tags,$key),$cap)),
+            c11.names.TagRead($rest,c11.packing.type($type,$key,$kind,$updated,$cap),c11.packing.items($items,$cap),
+                env.put($scope,c11.objects.TagsKey(),$updated))))),c11.names.TagRead($rest,$type,$items,$scope));
+effect c11.packing.tag(c11.objects.Tag($kind,$fields,$origin),$cap) => c11.objects.Tag($kind,$fields,c11.packing.Origin($origin,$cap));
+effect c11.packing.type(c11.syntax.RecordSpecifier($name,$fields,$origin),$key,$kind,$tags,$cap)
+    => c11.syntax.RecordSpecifier($name,$fields,c11.packing.Origin($origin,$cap));
+effect c11.packing.type(c11.syntax.UnionSpecifier($name,$fields,$origin),$key,$kind,$tags,$cap)
+    => c11.syntax.UnionSpecifier($name,$fields,c11.packing.Origin($origin,$cap));
+effect[fallback] c11.packing.type($type,$key,$kind,$tags,$cap) => c11.objects.complete_tag($key,$kind,$tags,[]);
+effect c11.packing.items($items,$cap) => bind(c11.packing.Items($out,$limit),
+    list.fold("c11.packing.item",$items,c11.packing.Items([],$cap)),list.reverse($out));
+effect c11.packing.item(c11.packing.Items($out,$cap),c11.syntax.RecordDeclaration($name,$fields,$origin))
+    => c11.packing.Items(list.prepend(c11.syntax.RecordDeclaration($name,$fields,c11.packing.Origin($origin,$cap)),$out),$cap);
+effect c11.packing.item(c11.packing.Items($out,$cap),c11.syntax.UnionDeclaration($name,$fields,$origin))
+    => c11.packing.Items(list.prepend(c11.syntax.UnionDeclaration($name,$fields,c11.packing.Origin($origin,$cap)),$out),$cap);
+effect[fallback] c11.packing.item(c11.packing.Items($out,$cap),$item) => c11.packing.Items(list.prepend($item,$out),$cap);
+
+effect c11.objects.defined_aggregate($kind,$name,$fields,c11.packing.Origin($source,$cap))
+    => c11.packing.packed_type(c11.objects.defined_aggregate($kind,$name,$fields,$source),$cap);
+effect c11.packing.packed_type(c11.types.Record($name,$fields),$cap) => c11.types.Record(c11.packing.Name($name,$cap),$fields);
+effect c11.packing.packed_type(c11.types.Union($name,$fields),$cap) => c11.types.Union(c11.packing.Name($name,$cap),$fields);
+effect c11.types.nominal_identity(c11.packing.Name($name,$cap)) => c11.types.nominal_identity($name);
+effect c11.types.aggregate_required_alignment(c11.packing.Name($name,$cap),$fields) => c11.types.aggregate_required_alignment($name,$fields);
+effect c11.types.named_aggregate_layout($kind,c11.packing.Name($name,$cap),$fields)
+    => layout.with_alignment(c11.packing.layout($kind,$fields,$cap),c11.types.aggregate_required_alignment($name,$fields));
+effect c11.packing.layout("struct",$fields,$cap) => c11.bitfields.record_layout($fields,$cap);
+effect c11.packing.layout("union",$fields,$cap) => c11.bitfields.union_layout($fields,$cap);
+effect c11.members.record_is_physical(c11.packing.Name($name,$cap),$fields)
+    => and(not(c11.bitfields.has_bits($fields)),or(c11.members.needs_storage($fields),
+        not(eq(c11.types.named_aggregate_layout("struct",c11.packing.Name($name,$cap),$fields),c11.types.record_layout($fields)))));

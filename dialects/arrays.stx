@@ -1,0 +1,73 @@
+mod arrays;
+use base;
+use types;
+use shapes;
+use records;
+use control;
+use affine;
+
+syntax typename `array<$count:int, $element:typename>` => Array($count, $element);
+syntax expr `[$values:arguments]` => ArrayLiteral($values);
+syntax expr[90,left,fallback] `$value:expr[$index:expr]` => IndexExpression($value, $index);
+syntax statement `$name:ident[$index:expr] = $value:expr;` => Assignment($name, $index, $value);
+effect base.continue(Assignment($name, $index, $value), $next) => ArrayStore($name, $index, $value, $next);
+effect types.repr(Array($count, $element)) => seq(records.storable($element),concat("!llvm.array<", concat(text(types.extent($count)), concat(" x ", concat(types.repr($element), ">")))));
+effect records.aggregate(Array($count, $element)) => 1;
+effect base.hint(ArrayLiteral($values), $environment) => base.Any();
+effect base.hint(IndexExpression($value, $index), $environment) => element(base.hint($value, $environment));
+effect element(Array($count, $type)) => $type;
+effect base.check(ArrayLiteral($values), $environment, $expected)
+    => literal_checked($values, $environment, base.wanted($expected, Array(size($values), base.Any())));
+effect literal_checked($values, $environment, Array($count, $type))
+    => choose(eq(size($values), $count), bind($first, base.check(list.head($values), $environment, $type),
+        base.Typed(Array($count, arg($first,0)), records.Packed(list.prepend($first,
+            values(list.tail($values), arg($first,0), $environment))))), fail("array initializer length mismatch"));
+effect values([], $type, $environment) => [];
+effect values($values, $type, $environment) when lt(0,size($values))
+    => list.prepend(base.check(list.head($values), $environment, $type), values(list.tail($values), $type, $environment));
+effect shapes.extract_checked(Array($count, $element), $container, $index, $expected)
+    => choose(and(not(lt($index,0)),lt($index,$count)),
+        base.expect(base.Typed($element, records.Project(base.Typed(Array($count,$element),$container),$index)), $expected),
+        fail("array index out of bounds"));
+effect base.check(IndexExpression($value, $index), $environment, $expected)
+    => bind(base.Typed(Array($count,$element),$checked),base.check($value,$environment,base.Any()),
+        base.expect(base.Typed($element, Indexed(base.Typed(Array($count,$element),$checked), index_checked($index,$environment))),$expected));
+effect index_checked($index,$environment) => normalize_index(base.check($index,$environment,base.Any()));
+effect normalize_index(base.Typed(Signed($width),$value)) => index_convert(base.Typed(Signed($width),$value),Signed(64));
+effect normalize_index(base.Typed(Unsigned($width),$value)) => index_convert(base.Typed(Unsigned($width),$value),Unsigned(64));
+effect index_convert(base.Typed($from,$value),$to) => seq(base.cast_opcode($from,$to),base.Typed($to,base.Converted(base.Typed($from,$value))));
+effect base.check_body(ArrayStore($name,$index,$value,$next),$environment,$result)
+    => check_store(env.get($environment,$name),$index,$value,$next,$environment,$result);
+effect check_store(base.Mutable(Array($count,$element),$identity),$index,$value,$next,$environment,$result)
+    => Stored($identity,Array($count,$element),index_checked($index,$environment),base.check($value,$environment,$element),base.check_body($next,$environment,$result));
+effect[fallback] check_store($other,$index,$value,$next,$environment,$result) => fail("array assignment requires a mutable array");
+effect base.prepare_storage(Stored($identity,$type,$index,$value,$next),$entry,$environment) => base.prepare_storage($next,$entry,$environment);
+effect base.flow_terminal(Stored($identity,$type,$index,$value,$next)) => base.flow_terminal($next);
+effect base.lower(base.Typed($element,Indexed(base.Typed(Array($count,$element),$array),$index)),$environment)
+    => bind($offset,base.lower($index,$environment),seq(bounds($offset,arg($index,0),$count),
+        read_array($array,Array($count,$element),$offset,$environment)));
+effect read_array(base.Load($identity),Array($count,$element),$index,$environment)
+    => records.load($element,pointer(env.get($environment,$identity),Array($count,$element),$index));
+effect[fallback] read_array($array,Array($count,$element),$index,$environment)
+    => bind($value,base.lower(base.Typed(Array($count,$element),$array),$environment),
+        bind($saved,mlir.op("llvm.intr.stacksave",[],["!llvm.ptr"],[],[]),bind($slot,records.allocate(Array($count,$element)),
+            seq(mlir.op("llvm.store",[$value,$slot],[],[],[]),bind($result,records.load($element,pointer($slot,Array($count,$element),$index)),
+                seq(mlir.op("llvm.intr.stackrestore",[$saved],[],[],[]),$result))))));
+effect pointer($slot,$type,$index) => mlir.op("llvm.getelementptr",[$slot,$index],["!llvm.ptr"],
+    [RawAttr("rawConstantIndices","array<i32: 0, -2147483648>"),RawAttr("elem_type",types.repr($type))],[]);
+effect bounds($index,$type,$count) => bind($valid,arrays.valid_index($index,$type,$count),
+    mlir.op("scf.if",[$valid],[],[],[mlir.region(mlir.op("scf.yield",[],[],[],[])),
+        mlir.region(seq(mlir.op("llvm.intr.trap",[],[],[],[]),mlir.op("scf.yield",[],[],[],[])))]));
+effect valid_index($index,Signed($width),$count) => mlir.op("arith.andi",
+    [compare($index,Signed($width),0,5),compare($index,Signed($width),$count,2)],["i1"],[],[]);
+effect valid_index($index,Unsigned($width),$count) => compare($index,Unsigned($width),$count,6);
+effect compare($index,$type,$constant,$predicate) => mlir.op("arith.cmpi",
+    [$index,base.lower(base.Typed($type,base.Integer($constant)),env.empty())],["i1"],[Attr("predicate",$predicate,"i64")],[]);
+effect base.lower_flow(Stored($identity,$type,$index,$value,$next),$environment,$block,$continuation)
+    => seq(mlir.in_block($block,bind($offset,base.lower($index,$environment),seq(bounds($offset,arg($index,0),arg($type,0)),
+        records.store($value,pointer(env.get($environment,$identity),$type,$offset),$environment)))),base.lower_flow($next,$environment,$block,$continuation));
+effect control.append(ArrayStore($name,$index,$value,$next),$suffix) => ArrayStore($name,$index,$value,control.append($next,$suffix));
+effect control.range_continues(ArrayStore($name,$index,$value,$next),$increment) => ArrayStore($name,$index,$value,control.range_continues($next,$increment));
+effect affine.body(ArrayStore($name,$index,$value,$next),$state)
+    => bind([$checked_index,$after_index],affine.expression($index,$state),bind([$checked_value,$after],affine.expression($value,$after_index),
+        bind([$tail,$last],affine.body($next,$after),[ArrayStore($name,$checked_index,$checked_value,$tail),$last])));

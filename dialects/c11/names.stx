@@ -1,0 +1,224 @@
+// C lexical policy over the language-independent immutable name_scope facts.
+mod c11.names;
+use name_scope;
+use c11.syntax;
+use c11.types;
+use c11.objects;
+use c11.enums;
+use c11.scopes;
+use c11.lex;
+use c11.layout;
+use base;
+use c11.sema;
+use tree;
+
+effect c11.names.initialize($context) => env.put(env.put(env.put($context,FrameKey(),name_scope.root()),EnumTrailKey(),[]),c11.objects.TagsKey(),
+    choose(env.contains($context,c11.objects.TagsKey()),env.get($context,c11.objects.TagsKey()),env.empty()));
+effect c11.names.ensure($context) => choose(env.contains($context,FrameKey()),$context,c11.names.initialize($context));
+effect c11.names.frame($context) => env.get($context,FrameKey());
+effect c11.names.tags($context) => env.put(env.get($context,c11.objects.TagsKey()),c11.sema.VisibleFrameKey(),c11.names.frame($context));
+effect c11.names.enter($context) => env.put(c11.names.put_frame($context,name_scope.child(c11.names.frame($context))),EnumTrailKey(),[]);
+effect c11.names.put_frame($context,$frame) => env.put(env.put($context,FrameKey(),$frame),c11.objects.TagsKey(),
+    env.put(env.get($context,c11.objects.TagsKey()),c11.sema.VisibleFrameKey(),$frame));
+// text(constructor) prints only its tag. The frame Symbol prints its unique
+// identity; combine that with the spelling in this fixed tag namespace.
+effect c11.names.tag_identity($binding) => bind(name_scope.Identity($frame,$namespace,$name),name_scope.binding_identity($binding),
+    concat("tag:",concat(text($frame),concat(":",$name))));
+effect c11.names.tag_kind(TagName($kind)) => $kind;
+effect c11.names.tag_binding($context,$kind,$name,$own) => bind($frame,c11.names.frame($context),
+    bind($binding,choose($own,name_scope.local($frame,"tag",$name),name_scope.lookup($frame,"tag",$name)),
+        bind($next,choose(eq($binding,name_scope.Missing()),name_scope.put($frame,"tag",$name,TagName($kind)),
+            seq(choose(eq(c11.names.tag_kind(name_scope.value($binding)),$kind),1,fail(concat("C tag kind mismatch: ",$name))),$frame)),
+            bind($identity,c11.names.tag_identity(name_scope.lookup($next,"tag",$name)),
+                [env.put(c11.names.put_frame($context,$next),c11.objects.TagsKey(),
+                    choose(env.contains(c11.names.tags($context),$identity),c11.names.tags($context),
+                        env.put(c11.names.tags($context),$identity,c11.objects.IncompleteTag($kind)))),$identity]))));
+effect c11.names.ordinary($context,$name,$fact) => c11.names.put_frame($context,name_scope.put(c11.names.frame($context),"ordinary",$name,$fact));
+effect c11.names.ordinary_local($context,$name) => name_scope.local(c11.names.frame($context),"ordinary",$name);
+effect c11.names.visible_binding($context,$name) => name_scope.lookup(c11.names.frame($context),"ordinary",$name);
+effect c11.names.enum_conflict($context,$name) => not(eq(c11.names.ordinary_local($context,$name),name_scope.Missing()));
+effect c11.names.ordinary_allowed($context,$name) => choose(c11.names.enum_binding(c11.names.ordinary_local($context,$name)),
+    fail(concat("C ordinary identifier conflicts with enumeration constant: ",$name)),1);
+effect c11.names.enum_binding(name_scope.Binding($identity,EnumerationName($value))) => 1;
+effect[fallback] c11.names.enum_binding($binding) => 0;
+effect c11.names.enum_publish($context,$name,$value) => env.put(env.put(env.put(c11.names.ordinary($context,$name,EnumerationName($value)),
+    c11.enums.EnumConstantKey($name),$value),$name,c11.enums.EnumerationConstant($value)),EnumTrailKey(),
+        list.prepend(c11.enums.Enumerated($name,$value),c11.names.enum_trail($context)));
+
+// Only the declaration with no declarator explicitly introduces a tag in the
+// current frame. A type reference reuses a visible binding if there is one.
+effect c11.names.bare([c11.scopes.Token($kind),c11.scopes.Token($name),c11.scopes.Token($end)])
+    => and(c11.names.tag_word(c11.lex.spelling($kind)),eq(c11.lex.spelling($end),";"));
+effect[fallback] c11.names.bare($nodes) => 0;
+effect c11.names.tag_word($word) => or(eq($word,"struct"),or(eq($word,"union"),eq($word,"enum")));
+effect c11.names.rewrite($nodes,$context) => c11.names.rewrite_mode($nodes,$context,c11.names.bare($nodes));
+effect c11.names.rewrite_mode($nodes,$context,$own) => bind(Walk($rest,$out,$scope,$explicit),
+    rule.iterate("c11.names.walk",Walk($nodes,[],$context,$own),1000000),c11.scopes.Rewritten(list.reverse($out),$scope));
+effect c11.names.walk(Walk([],$out,$context,$own)) => [0,Walk([],$out,$context,$own)];
+effect c11.names.walk(Walk($nodes,$out,$context,$own)) when lt(0,size($nodes))
+    => bind($head,list.head($nodes),choose(c11.names.tag_word(c11.scopes.raw($head)),
+        bind(TagRead($rest,$type,$items,$scope),c11.names.read_tag(c11.scopes.raw($head),list.tail($nodes),$context,$own),
+            bind($name,text(symbol("c.tag.specifier")),[1,Walk($rest,list.prepend(c11.scopes.synthetic(c11.scopes.first_row($head),$name),$out),
+                env.put(env.put($scope,SpecifierKey($name),$type),TagItemsKey($name),$items),$own)])),
+        [1,Walk(list.tail($nodes),list.prepend($head,$out),$context,$own)]));
+syntax c11.atom_type `$name:ident` when env.contains(syntax.context(),SpecifierKey($name)) => env.get(syntax.context(),SpecifierKey($name));
+syntax c11.item `$name:ident ;` when env.contains(syntax.context(),TagItemsKey($name))
+    => c11.syntax.DeclarationGroup(env.get(syntax.context(),TagItemsKey($name)));
+
+effect c11.names.read_tag($kind,$nodes,$context,$own) when lt(0,size($nodes)) => c11.names.tag_prefix($kind,$nodes,$context,$own);
+effect[fallback] c11.names.tag_prefix($kind,$nodes,$context,$own) => c11.names.read_head($kind,list.head($nodes),list.tail($nodes),$context,$own);
+effect c11.names.read_head($kind,c11.scopes.Group($open,$fields,$close),$rest,$context,$own) when eq(c11.lex.spelling($open),"{")
+    => c11.names.definition($kind,text(symbol("c.anonymous.tag")),$fields,$context,$rest,1);
+effect c11.names.read_head($kind,c11.scopes.Token($row),$rest,$context,$own) => choose(eq(c11.lex.kind($row),1),
+    c11.names.named_tag($kind,c11.lex.spelling($row),$rest,$context,$own),c11.lex.error($row,"C tag requires an identifier or definition"));
+effect[fallback] c11.names.read_head($kind,$head,$rest,$context,$own) => fail("C tag requires an identifier or definition");
+effect[fallback] c11.names.read_tag($kind,$nodes,$context,$own) => fail("C tag requires an identifier or definition");
+effect c11.names.named_tag($kind,$name,$rest,$context,$own) => bind([$scope,$identity],c11.names.tag_binding($context,$kind,$name,
+    or(and($own,not(eq($kind,"enum"))),choose(eq(size($rest),0),0,eq(c11.scopes.raw(list.head($rest)),"{")))),
+        choose(choose(eq(size($rest),0),0,eq(c11.scopes.raw(list.head($rest)),"{")),
+            bind(c11.scopes.Group($open,$fields,$close),list.head($rest),c11.names.definition($kind,$identity,$fields,$scope,list.tail($rest),0)),
+            seq(choose(eq($kind,"enum"),seq(c11.enums.require_complete($identity,c11.names.tags($scope)),
+                choose($own,fail("C enum declaration requires a definition or declarator"),1)),1),
+                TagRead($rest,c11.names.reference($kind,$identity),[c11.syntax.ForwardTag($identity,$kind)],$scope))));
+effect c11.names.reference("struct",$identity) => c11.types.RecordName($identity);
+effect c11.names.reference("union",$identity) => c11.types.UnionName($identity);
+effect c11.names.reference("enum",$identity) => c11.enums.Enum($identity);
+effect c11.names.definition($kind,$identity,$nodes,$context,$rest,$anonymous) =>
+    seq(choose(lt(0,size($nodes)),1,fail("C tag definition requires at least one member or enumerator")),
+    seq(choose(env.contains(c11.names.tags($context),$identity),
+        choose(eq(env.get(c11.names.tags($context),$identity),c11.objects.IncompleteTag($kind)),1,fail("duplicate C tag definition")),1),
+        bind($pending,env.put($context,c11.objects.TagsKey(),env.put(c11.names.tags($context),$identity,c11.objects.IncompleteTag($kind))),
+            c11.names.finish_definition($kind,$identity,$nodes,$pending,$rest,$anonymous,symbol("c.tag.definition")))));
+effect c11.names.finish_definition($kind,$identity,$nodes,$context,$rest,$anonymous,$origin) when not(eq($kind,"enum"))
+    => bind(TagFields($scope,$fields,$active),list.fold("c11.names.field",c11.names.field_parts($nodes),TagFields($context,[],$identity)),
+        bind($members,list.flatten(list.reverse($fields)),
+            bind($complete,env.put($scope,c11.objects.TagsKey(),env.put(c11.names.tags($scope),$identity,c11.objects.Tag($kind,$members,$origin))),
+                bind($type,c11.objects.complete_tag($identity,$kind,c11.names.tags($complete),[]),
+                    TagRead($rest,choose($anonymous,$type,c11.names.specifier($kind,$identity,$members,$origin)),
+                        [c11.names.declaration($kind,$identity,$members,$origin)],$complete)))));
+effect c11.names.field_parts($nodes) => list.flatten(list.map("c11.names.nonempty",c11.scopes.semicolon_parts($nodes)));
+effect c11.names.nonempty($nodes) => choose(lt(0,size($nodes)),[$nodes],[]);
+effect c11.names.field(TagFields($context,$out,$identity),$nodes) => bind(c11.scopes.Rewritten($rewritten,$scope),c11.scopes.parameter_groups($nodes,$context),
+    bind($fields,c11.scopes.expression($rewritten,"c11.field",$scope),
+        TagFields($scope,list.prepend(c11.objects.rewrite($fields,c11.names.tags($scope),[$identity]),$out),$identity)));
+effect c11.names.specifier("struct",$identity,$fields,$origin) => c11.syntax.RecordSpecifier($identity,$fields,$origin);
+effect c11.names.specifier("union",$identity,$fields,$origin) => c11.syntax.UnionSpecifier($identity,$fields,$origin);
+effect c11.names.declaration("struct",$identity,$fields,$origin) => c11.syntax.RecordDeclaration($identity,$fields,$origin);
+effect c11.names.declaration("union",$identity,$fields,$origin) => c11.syntax.UnionDeclaration($identity,$fields,$origin);
+effect c11.names.finish_definition("enum",$identity,$nodes,$context,$rest,$anonymous,$origin)
+    => bind($parts,list.flatten(list.map("c11.names.nonempty",c11.scopes.comma_parts($nodes))),
+        seq(choose(lt(0,size($parts)),1,fail("C enum definition requires at least one enumerator")),
+        bind(c11.enums.Enumerating($scope,$values,$next),list.fold("c11.names.enumerator",$parts,c11.enums.Enumerating($context,[],0)),
+        bind($complete,env.put($scope,c11.objects.TagsKey(),env.put(c11.names.tags($scope),$identity,c11.objects.Tag("enum",[],$origin))),
+            TagRead($rest,c11.enums.EnumSpecifier($identity,list.reverse($values),$origin),
+                [c11.enums.EnumDeclaration($identity,list.reverse($values),$origin)],$complete)))));
+effect c11.names.enumerator(c11.enums.Enumerating($context,$values,$next),$nodes)
+    => bind(c11.scopes.Rewritten($rewritten,$scope),c11.names.expression_groups(list.tail($nodes),$context),
+        c11.enums.enumerate(c11.enums.Enumerating($scope,$values,$next),c11.scopes.expression(list.prepend(list.head($nodes),$rewritten),"c11.enumerator",$scope)));
+
+// Expression groups share their containing lexical frame. Declarator parameter
+// groups are handled separately by scopes.parameter_groups in prototype frames.
+effect c11.names.expression_groups($nodes,$context) => bind(ExpressionWalk($rest,$out,$scope,$previous),
+    rule.iterate("c11.names.expression_step",ExpressionWalk($nodes,[],$context,""),1000000),c11.scopes.Rewritten(list.reverse($out),$scope));
+effect c11.names.expression_step(ExpressionWalk([],$out,$context,$previous)) => [0,ExpressionWalk([],$out,$context,$previous)];
+effect c11.names.expression_step(ExpressionWalk($nodes,$out,$context,$previous)) when lt(0,size($nodes))
+    => bind($head,list.head($nodes),choose(c11.names.tag_word(c11.scopes.raw($head)),
+        bind(TagRead($rest,$type,$items,$scope),c11.names.read_tag(c11.scopes.raw($head),list.tail($nodes),$context,0),
+            bind($name,text(symbol("c.tag.specifier")),[1,ExpressionWalk($rest,list.prepend(c11.scopes.synthetic(c11.scopes.first_row($head),$name),$out),
+                env.put(env.put($scope,SpecifierKey($name),TypeAt($type,c11.names.tags($scope))),TagItemsKey($name),$items),$name)])),
+        c11.names.expression_node($head,list.tail($nodes),$out,$context,$previous)));
+effect c11.names.expression_node(c11.scopes.Group($open,$nodes,$close),$rest,$out,$context,$previous)
+    => choose(c11.scopes.annotation_word($previous),
+        [1,ExpressionWalk($rest,list.prepend(c11.scopes.Group($open,$nodes,$close),$out),$context,c11.lex.spelling($close))],
+        bind(c11.scopes.Rewritten($rewritten,$scope),c11.names.expression_groups($nodes,$context),
+            [1,ExpressionWalk($rest,list.prepend(c11.scopes.Group($open,$rewritten,$close),$out),$scope,c11.lex.spelling($close))]));
+effect c11.names.expression_node(c11.scopes.Token($row),$rest,$out,$context,$previous) when or(eq(c11.lex.spelling($row),"."),eq(c11.lex.spelling($row),"->"))
+    => bind($key,text(symbol("c.member.point")),[1,ExpressionWalk($rest,list.prepend(c11.scopes.synthetic($row,$key),$out),
+        env.put($context,MemberPointKey($key),MemberPoint(c11.names.tags($context),eq(c11.lex.spelling($row),"->"))),c11.lex.spelling($row))]);
+effect[fallback] c11.names.expression_node(c11.scopes.Token($row),$rest,$out,$context,$previous) => bind($name,c11.lex.spelling($row),
+    choose(and(eq(c11.lex.kind($row),1),not(c11.names.literal_identifier($name,$previous,$context))),
+        bind($key,text(symbol("c.name.reference")),[1,ExpressionWalk($rest,list.prepend(c11.scopes.synthetic($row,$key),$out),
+            c11.names.reference_context($context,$key,$name,$row),$name)]),
+        [1,ExpressionWalk($rest,list.prepend(c11.scopes.Token($row),$out),$context,$name)]));
+effect c11.names.literal_identifier($name,$previous,$context) => or(or(env.contains($context,MemberPointKey($name)),env.contains($context,MemberPointKey($previous))),or(c11.lex.keyword($name),or(c11.names.syntax_identifier($name),
+    or(or(eq($previous,"."),eq($previous,"->")),or(eq($previous,"goto"),
+        or(env.contains($context,SpecifierKey($name)),env.contains($context,ReferenceKey($name))))))));
+// Only operators with dedicated grammar keep literal tokens. Reserved library
+// local names and wchar_t still have normal C lexical identities and scopes.
+effect[fallback] c11.names.syntax_identifier($name) => 0;
+effect c11.names.reference_context($context,$key,$name,$row) => bind($point,env.put($context,ReferenceKey($key),Reference(c11.names.frame($context),$name,$row)),
+    choose(c11.syntax.typedef_visible($context,$name),
+        env.put(env.put($point,$key,env.get($context,$name)),TypedefAtKey(c11.names.frame($context),$name),1),$point));
+// Type/expression grammar choices use the role at the reference point. A
+// later local object can hide the same spelling without changing this fact.
+effect c11.names.typedef_reference($frame,$name,$context) => env.contains($context,TypedefAtKey($frame,$name));
+// Syntax guards receive the substituted expression template before commit.
+// Its synthetic token already owns the frozen type descriptor, so inspect
+// that role without evaluating the whole expression inside a grammar guard.
+effect c11.names.typedef_expression(c11.names.read_reference(env.get(syntax.context(),ReferenceKey($key))),$context)
+    => c11.syntax.typedef_visible($context,$key);
+effect c11.names.typedef_expression(NameAt($frame,$name),$context) => c11.names.typedef_reference($frame,$name,$context);
+effect[fallback] c11.names.typedef_expression($expression,$context) => 0;
+syntax c11.expr `$name:ident` when env.contains(syntax.context(),ReferenceKey($name)) => c11.names.read_reference(env.get(syntax.context(),ReferenceKey($name)));
+effect c11.names.read_reference(Reference($frame,$name,$row)) => NameAt($frame,$name);
+effect c11.syntax.call_expression(NameAt($frame,$name),$arguments) => CallAt($frame,$name,$arguments);
+effect c11.names.spelling($name) => choose(env.contains(syntax.context(),ReferenceKey($name)),arg(env.get(syntax.context(),ReferenceKey($name)),1),$name);
+effect c11.names.inject_visible($context,$binding,$name) => bind(name_scope.Frame($identity,$local,$visible),c11.names.frame($context),
+    choose(name_scope.contains_local(c11.names.frame($context),"ordinary",$name),$context,
+        c11.names.put_frame($context,name_scope.Frame($identity,$local,env.put($visible,name_scope.NameKey("ordinary",$name),$binding)))));
+// File declarators publish ordinary names before their initializer. Parsing
+// the declaration group already retained per-token enum facts; add only the
+// ordinary declarations committed up to this declarator, never future enums.
+effect c11.names.file_references($item,$context) => arg(tree.rewrite_with($item,"c11.names.file_reference_enter","c11.names.file_reference_leave",c11.names.frame($context),0),0);
+effect c11.names.file_reference_enter(NameAt($frame,$name),$declared,$state) => tree.Stop(NameAt(c11.names.file_reference_frame($frame,$name,$declared),$name),$state);
+effect c11.names.file_reference_enter(CallAt($frame,$name,$arguments),$declared,$state) => tree.Descend([$arguments],$declared,FileCall(c11.names.file_reference_frame($frame,$name,$declared),$name),$state);
+effect c11.names.file_reference_frame($frame,$name,$declared) => choose(eq(name_scope.frame_identity($frame),name_scope.frame_identity($declared)),
+    bind($binding,name_scope.lookup($declared,"ordinary",$name),choose(c11.names.file_ordinary($binding),
+        bind(name_scope.Frame($identity,$local,$visible),$frame,name_scope.Frame($identity,$local,env.put($visible,name_scope.NameKey("ordinary",$name),$binding))),$frame)),$frame);
+effect c11.names.file_ordinary(name_scope.Binding($identity,c11.scopes.OrdinaryDeclaration())) => 1;
+effect c11.names.file_ordinary(name_scope.Binding($identity,c11.sema.DeclarationView($binding))) => 1;
+effect[fallback] c11.names.file_ordinary($binding) => 0;
+effect[fallback] c11.names.file_reference_enter($node,$declared,$state) => choose(or(eq(term.kind($node),0),eq(term.kind($node),5)),
+    tree.Descend(term.children($node),$declared,$node,$state),tree.Stop($node,$state));
+effect c11.names.file_reference_leave(FileCall($frame,$name),[$arguments],$declared,$state) => [CallAt($frame,$name,$arguments),$state];
+effect[fallback] c11.names.file_reference_leave($original,$children,$declared,$state) => [term.rebuild($original,$children),$state];
+
+effect c11.names.parameter_scope($context) => choose(env.contains($context,LastParametersKey()),env.get($context,LastParametersKey()),c11.names.enter($context));
+effect c11.names.restore_parameters($parent,$parameter) => env.put($parent,c11.objects.TagsKey(),c11.names.tags($parameter));
+// A persistent trail records only newly published enumerators in this frame.
+// Statement/declaration deltas never scan unrelated ordinary-name bindings.
+effect c11.names.enum_trail($context) => env.get($context,EnumTrailKey());
+effect c11.names.local_constants($context,$body) => c11.names.wrap_constants(list.reverse(c11.names.enum_trail($context)),$body);
+effect c11.names.enum_delta($before,$after) => bind($trail,c11.names.enum_trail($after),
+    list.reverse(list.slice($trail,0,sub(size($trail),size(c11.names.enum_trail($before))))));
+effect c11.names.delta_constants($before,$after,$body) => c11.names.wrap_constants(c11.names.enum_delta($before,$after),$body);
+effect c11.names.wrap_constants($values,$body) => choose(eq(size($values),0),$body,c11.enums.LocalEnum($values,$body));
+effect c11.names.local_specifiers(c11.syntax.Specifiers($type,$storage,$inline),$body) => c11.names.local_type($type,$body);
+effect c11.names.local_specifiers(c11.layout.AlignedSpec($spec,$alignment),$body) => c11.names.local_specifiers($spec,$body);
+effect c11.names.local_type(c11.enums.EnumSpecifier($name,$values,$origin),$body) => c11.enums.LocalEnum($values,$body);
+effect[fallback] c11.names.local_type($type,$body) => $body;
+effect c11.names.empty_specifiers(c11.syntax.Specifiers($type,"none",0)) => c11.names.empty_type($type);
+effect c11.names.empty_type(c11.types.RecordName($name)) => 1;
+effect c11.names.empty_type(c11.types.UnionName($name)) => 1;
+effect c11.names.empty_type(c11.syntax.RecordSpecifier($name,$fields,$origin)) => 1;
+effect c11.names.empty_type(c11.syntax.UnionSpecifier($name,$fields,$origin)) => 1;
+effect c11.names.empty_type(c11.enums.EnumSpecifier($name,$values,$origin)) => 1;
+effect[fallback] c11.names.empty_type($type) => fail("C declaration requires a declarator or tag definition");
+
+// Expression type uses and member operators keep their token's tag state.
+// Environments are opaque metadata; checked values contain no source frame.
+syntax c11.member_access `$name:ident` when env.contains(syntax.context(),MemberPointKey($name)) => env.get(syntax.context(),MemberPointKey($name));
+effect c11.syntax.member_expression($value,MemberPoint($tags,$indirect),$field)
+    => ExpressionAt($tags,c11.syntax.Member(choose($indirect,c11.syntax.Dereference($value),$value),$field));
+effect expression_environment($tags,$env) => env.put($env,c11.objects.TagsKey(),$tags);
+effect base.check(ExpressionAt($tags,$value),$env,$expected) => base.check($value,expression_environment($tags,$env),$expected);
+effect c11.sema.lvalue(ExpressionAt($tags,$value),$env) => c11.sema.lvalue($value,expression_environment($tags,$env));
+effect c11.sema.object_type(ExpressionAt($tags,$value),$env) => c11.sema.object_type($value,expression_environment($tags,$env));
+effect base.check(c11.syntax.Address(ExpressionAt($tags,$value)),$env,$expected)
+    => base.check(c11.syntax.Address($value),expression_environment($tags,$env),$expected);
+effect c11.sema.constant_value(ExpressionAt($tags,$value),$env) => c11.sema.constant_value($value,expression_environment($tags,$env));
+effect c11.sema.integer_constant_expression(ExpressionAt($tags,$value),$env) => c11.sema.integer_constant_expression($value,expression_environment($tags,$env));
+effect c11.objects.rewrite_enter(ExpressionAt($tags,$value),$context,$state) => tree.Stop(ExpressionAt($tags,$value),$state);
+effect c11.objects.rewrite_enter(TypeAt($type,$tags),$context,$state) => tree.Stop(TypeAt($type,$tags),$state);
+effect c11.sema.complete_type(TypeAt($type,$tags),$env) => c11.sema.complete_type($type,expression_environment($tags,$env));
+effect c11.types.compatibility_shape(TypeAt($type,$tags)) => c11.types.compatibility_shape(c11.objects.declaration_type($type,$tags));

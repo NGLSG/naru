@@ -1,0 +1,6 @@
+fn main() -> i32 {
+    let value: i32 = forty(20);
+    let value = value + 2;
+    return value;
+}
+fn forty(value: i32) -> i32 { return value * 2; }

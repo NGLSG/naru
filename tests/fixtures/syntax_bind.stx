@@ -1,0 +1,25 @@
+mod syntax_bind;
+
+effect commit($scope,$value) => [$scope,[$value]];
+
+// Syntax actions use the same lexical binding contract as effect bodies.
+syntax bind.expr `local $n:int`
+    => bind($x,add($n,1),Pair($x,$n));
+syntax bind.expr `shadow $n:int`
+    => bind($n,add($n,1),Pair($n,bind($n,add($n,1),$n)));
+syntax bind.expr `nested $n:int`
+    => bind(Pair($left,Box($right)),Pair($n,Box(add($n,2))),[$left,$right,$n]);
+syntax bind.expr `discard $n:int`
+    => bind(Pair($_,$value),Pair(0,$n),$value);
+syntax bind.expr `repeated $n:int`
+    => bind(Pair($n,$n),Pair($n,$n),$n);
+syntax bind.expr `outer $n:int`
+    => bind($x,add($n,1),bind($n,add($x,$n),[$x,$n]));
+syntax bind.expr `siblings $n:int`
+    => [bind($n,add($n,1),$n),$n,bind($n,add($n,2),$n)];
+syntax bind.expr `mismatch $n:int`
+    => bind(Pair($n,$n),Pair($n,add($n,1)),$n);
+syntax bind.expr `wildcard $n:int`
+    => bind($_,$n,$_);
+syntax bind.expr `ignored $_:int` => $_;
+syntax bind.expr `omit $_:int` => 42;

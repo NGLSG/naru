@@ -1,0 +1,13 @@
+check {
+    own first: i32;
+    own second: vector<4, f32>;
+    borrow first as a;
+    borrow first as b;
+    move second;
+    touch first;
+    end a;
+    end b;
+    borrow mut first as exclusive;
+    end exclusive;
+    move first;
+}

@@ -1,0 +1,3 @@
+fn consume(x: owned<i32>) -> void { let r = &x; let n = *r; end r; }
+fn pick(x: bool) -> i32 { if x { return 42; } else { return 1; } }
+fn main() -> i32 { let x = own(4); defer consume(move x); return pick(true); }

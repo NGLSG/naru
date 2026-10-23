@@ -1,0 +1,4 @@
+mod nested_root;
+use pkg.inner;
+
+effect test() => pkg.inner.answer();

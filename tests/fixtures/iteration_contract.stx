@@ -1,0 +1,75 @@
+mod iteration_contract;
+
+effect range($count) => list.unfold("iteration_contract.range_step",[0,$count],1000000);
+effect range_step([$index,$count]) => choose(lt($index,$count),
+    [1,[add($index,1),$count],[$index]],[0,[$index,$count],[]]);
+effect sum($total,$value) => add($total,$value);
+
+// The last chunk is observable even when continue is false.
+effect stop($state) => [0,$state,[7,8]];
+effect malformed($state) => [1,$state];
+effect malformed_chunk($state) => [1,$state,42];
+effect bad_truth($state) => ["bad",$state,[]];
+effect forever($state) => [1,add($state,1),[]];
+
+// Every output value keeps an older immutable tail alive.
+effect linked($count) => list.unfold("iteration_contract.linked_step",[0,$count,[]],1000000);
+effect linked_step([$index,$count,$prior]) => choose(lt($index,$count),
+    bind($next,list.prepend($index,$prior),[1,[add($index,1),$count,$next],[$next]]),
+    [0,[$index,$count,$prior],[]]);
+effect last($_,$value) => $value;
+effect head_sum($total,$values) => add($total,list.head($values));
+effect linked_check($count) => bind($output,linked($count),
+    [size($output),size(list.head($output)),size(list.head(list.tail($output))),
+     size(list.fold("iteration_contract.last",$output,[])),list.fold("iteration_contract.head_sum",$output,0)]);
+
+// The current state survives collection even when no output retains it.
+effect state($count) => list.unfold("iteration_contract.state_step",[0,$count,env.empty()],1000000);
+effect state_step([$index,$count,$environment]) => choose(lt($index,$count),
+    [1,[add($index,1),$count,env.put($environment,"value",$index)],[]],
+    [0,[$index,$count,$environment],[env.get($environment,"value")]]);
+effect sparse($count) => list.unfold("iteration_contract.sparse_step",[0,$count],1000000);
+effect sparse_step([$index,$count]) => choose(lt($index,$count),
+    [1,[add($index,1),$count],choose(eq(int.rem($index,10000),0),[$index],[])],
+    [0,[$index,$count],[]]);
+effect repeated($count) => bind($values,
+    list.unfold("iteration_contract.repeated_step",[0,$count,Shared(42)],1000000),
+    [size($values),eq(list.head($values),list.fold("iteration_contract.last",$values,0))]);
+effect repeated_step([$index,$count,$value]) => choose(lt($index,$count),
+    [1,[add($index,1),$count,$value],[$value]],[0,[$index,$count,$value],[]]);
+
+// A nested unfolding replaces the previous scratch list on every callback.
+effect scratch($count,$width) => list.unfold("iteration_contract.scratch_step",[0,$count,$width,[]],1000000);
+effect scratch_step([$index,$count,$width,$old]) => choose(lt($index,$count),
+    [1,[add($index,1),$count,$width,range($width)],[]],
+    [0,[$index,$count,$width,$old],[$old]]);
+effect scratch_check($count,$width) => bind($result,list.head(scratch($count,$width)),
+    [size($result),list.fold("iteration_contract.sum",$result,0)]);
+
+effect insert($environment,$key) => env.put($environment,$key,add($key,1));
+effect environment($count) => bind($result,list.fold("iteration_contract.insert",range($count),env.empty()),
+    [env.get($result,0),env.get($result,sub($count,1)),size(env.entries($result))]);
+effect replace($_,$value) => [add($value,1),range(32)];
+effect fold_scratch($count) => bind([$last,$values],list.fold("iteration_contract.replace",range($count),[0,[]]),
+    [$last,size($values),list.fold("iteration_contract.sum",$values,0)]);
+effect cons($state,$value) => list.prepend($value,$state);
+effect fold_sharing($count) => bind($values,list.fold("iteration_contract.cons",range($count),[]),
+    [size($values),list.head($values),list.fold("iteration_contract.sum",$values,0)]);
+effect iterate_sharing($count) => bind([$done,$limit,$values],
+    rule.iterate("iteration_contract.iterate_step",[0,$count,[]],1000000),
+    [$done,size($values),list.head($values),list.fold("iteration_contract.sum",$values,0)]);
+effect iterate_step([$index,$count,$values]) => choose(lt($index,$count),
+    [1,[add($index,1),$count,list.prepend($index,$values)]],[0,[$index,$count,$values]]);
+
+// Discarded rule results must not discard observable IR creation.
+syntax item `iterations $count:int` => Program($count);
+effect emit(Program($count)) => mlir.op("func.func",[],[],
+    [Attr("sym_name","main"),RawAttr("function_type","() -> i32")],
+    [mlir.region(body($count))]);
+effect constant($number) => mlir.op("arith.constant",[],["i32"],[Attr("value",$number,"i32")],[]);
+effect body($count) => seq(list.unfold("iteration_contract.ir_unfold",[0,$count],1000000),
+    seq(list.fold("iteration_contract.ir_fold",range($count),0),
+        mlir.op("func.return",[constant(42)],[],[],[])));
+effect ir_unfold([$index,$count]) => choose(lt($index,$count),
+    seq(constant($index),[1,[add($index,1),$count],[]]),[0,[$index,$count],[]]);
+effect ir_fold($prior,$number) => seq(constant($number),$prior);

@@ -1,0 +1,33 @@
+// Preserve real target #pragma comment linker directives in object metadata.
+// Selection/decoding is language policy; linker.stx supplies the generic IR.
+mod c11.link_directives;
+use c11.pp;
+use c11.lex;
+use c11.syntax;
+use c11.scopes;
+use c11.characters;
+use c11.sema;
+use base;
+use linker;
+
+syntax c11.link_pragma `comment(linker, $value:c11.string_sequence)` => c11.link_directives.Option(c11.link_directives.string($value));
+syntax c11.link_pragma `comment(lib, $value:c11.string_sequence)` => c11.link_directives.Option(concat("/DEFAULTLIB:",c11.link_directives.string($value)));
+effect c11.link_directives.string(c11.characters.StringLiteral("",$facts)) => text.from_bytes(c11.characters.encode_units("",$facts));
+effect[fallback] c11.link_directives.string($literal) => fail("linker pragma requires an ordinary string literal");
+effect c11.link_directives.supported($tokens) => choose(lt(2,size($tokens)),
+    and(eq(c11.lex.spelling(arg($tokens,0)),"comment"),or(eq(c11.lex.spelling(arg($tokens,2)),"linker"),eq(c11.lex.spelling(arg($tokens,2)),"lib"))),0);
+effect c11.pp.enabled("pragma",$tokens,c11.pp.State($out,$macros,$conditions,$pending),$at) when c11.link_directives.supported($tokens)
+    => bind([$expanded,$final],c11.pp.expand_result($tokens,$macros,env.empty(),0),bind([c11.link_directives.Option($option)],source.parse_tokens(list.map("c11.lex.parser_token",$expanded),
+        "c11.link_pragma",env.empty(),"c11.scopes.identity_commit"),
+        c11.pp.State($out,env.put($final,c11.link_directives.OptionsKey(),list.prepend(c11.link_directives.RecordedOption($option,$at),
+            choose(env.contains($final,c11.link_directives.OptionsKey()),env.get($final,c11.link_directives.OptionsKey()),[]))),$conditions,$pending)));
+effect c11.pp.output_tokens($macros,$options) => list.flatten(list.map("c11.link_directives.tokens",
+    choose(env.contains($macros,c11.link_directives.OptionsKey()),list.reverse(env.get($macros,c11.link_directives.OptionsKey())),[])));
+effect c11.link_directives.tokens(c11.link_directives.RecordedOption($option,$at))
+    => bind(c11.pp.Located($tokens,$origin),c11.pp.relocate(c11.lex.tokens(concat("__naru_linker_option(",concat(text.quote($option),");")),arg($at,2)),$at),$tokens);
+syntax c11.item `__naru_linker_option($value:c11.string_sequence);` => c11.link_directives.Option(c11.link_directives.string($value));
+effect c11.scopes.annotation_extension("__naru_linker_option") => 1;
+effect c11.sema.declare(c11.link_directives.Option($option),$rest,$environment) => c11.sema.declarations($rest,$environment);
+effect c11.sema.prepare_item(c11.link_directives.Option($option),$rest,$environment,$seen)
+    => list.prepend(c11.link_directives.CheckedOption($option),c11.sema.prepare_items($rest,$environment,$seen));
+effect base.lower_function(c11.link_directives.CheckedOption($option)) => linker.options([$option]);

@@ -1,0 +1,11 @@
+mod entry_frontend;
+use base;
+
+// Deliberately opaque to the default lexer. The selected frontend receives
+// these bytes regardless of the entry filename or its extension.
+effect frontend($path,$source,$options) => choose(eq($source,"#include <opaque.header>\n@raw source\n"),
+    [base.Function("main",base.Int(42))],source.error($path,1,1,"raw entry contents changed"));
+effect alternate($path,$source,$options) => [base.Function("main",base.Int(43))];
+effect configured($path,$source,$options) => [base.Function("main",base.Int(int.parse(env.get($options,"answer"))))];
+effect dependency($path,$source,$options) => bind($value,source.read(source.path(source.directory($path),"helper.payload")),
+    [base.Function("main",base.Int(int.parse(text.trim($value))))]);
