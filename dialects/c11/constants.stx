@@ -7,8 +7,13 @@ use base;
 use numbers;
 use types;
 use tree;
+use c11.names;
+use c11.objects;
+use c11.initializers;
+use name_scope;
 
-effect arithmetic($op,$a,$b) => bind($type,c11.types.usual(arg($a,0),arg($b,0)),
+effect arithmetic($op,$a,$b) => c11.constants.arithmetic_domain($op,$a,$b);
+effect[fallback] c11.constants.arithmetic_domain($op,$a,$b) => bind($type,c11.types.usual(arg($a,0),arg($b,0)),
     arithmetic_typed($op,c11.sema.constant_convert($a,$type),c11.sema.constant_convert($b,$type)));
 effect arithmetic_typed($op,base.Typed($type,base.Integer($a)),base.Typed($type,base.Integer($b)))
     => c11.sema.constant_result($type,c11.sema.constant_integer($op,$a,$b));
@@ -31,6 +36,8 @@ effect c11.sema.constant_convert(base.Typed($from,base.Floating($value)),c11.typ
         base.Typed(c11.types.PlainChar(),$integer));
 effect c11.sema.constant_convert(base.Typed($from,base.Floating($value)),c11.types.CBool())
     => base.Typed(c11.types.CBool(),base.Integer(c11.constants.truth(base.Typed($from,base.Floating($value)))));
+effect c11.sema.constant_convert(base.Typed(c11.types.Pointer($type),$value),c11.types.CBool())
+    => base.Typed(c11.types.CBool(),base.Integer(c11.constants.truth(base.Typed(c11.types.Pointer($type),$value))));
 
 effect negate(base.Typed($type,base.Integer($value))) => bind($promoted,c11.types.promotion($type),
     c11.sema.constant_result($promoted,int.neg(c11.sema.integer_value(c11.sema.constant_convert(base.Typed($type,base.Integer($value)),$promoted)))));
@@ -38,7 +45,27 @@ effect negate(base.Typed($type,base.Floating($value))) => base.Typed($type,base.
 effect truth(base.Typed($type,base.Integer($value))) => not(eq($value,0));
 effect truth(base.Typed($type,base.Floating($value)))
     => not(eq(float.compare($value,arg(arg(c11.types.floating_zero($type),1),0)),0));
-effect comparison($op,$a,$b) => bind($type,c11.types.usual(arg($a,0),arg($b,0)),
+// Interpret only proved constant pointer forms, never stored pointer values.
+// Offsets of non-null object addresses remain non-null for defined C pointer
+// arithmetic; unknown pointers and arithmetic on a null base are not folded.
+effect truth(base.Typed(c11.types.Pointer($type),$value)) => c11.constants.pointer_truth($value);
+effect pointer_truth(c11.sema.NullPointer()) => 0;
+effect pointer_truth(c11.sema.GlobalAddress($name)) => 1;
+effect pointer_truth(c11.sema.FunctionAddress($name,$definition)) => 1;
+effect pointer_truth(c11.sema.StringPointer($name)) => 1;
+effect pointer_truth(c11.objects.ArrayDecay($reference)) => c11.constants.reference_truth($reference);
+effect pointer_truth(c11.objects.ByteAddress($reference,$offset)) => c11.constants.reference_truth($reference);
+effect pointer_truth(c11.objects.ReferenceAddress($reference)) => c11.constants.reference_truth($reference);
+effect pointer_truth(c11.objects.Offset($pointer,$index))
+    => choose(c11.constants.truth($pointer),1,fail("C constant pointer truth cannot use arithmetic on a null base"));
+effect pointer_truth(c11.sema.PointerConverted(base.Typed($type,base.Integer($value)),"llvm.inttoptr"))
+    => not(eq(int.and($value,sub(int.shl(1,64),1)),0));
+effect[fallback] pointer_truth($value) => fail("C constant pointer truth requires a proved constant address");
+effect reference_truth(c11.sema.GlobalReference($type,$name)) => 1;
+effect reference_truth(c11.sema.IndirectReference($type,$pointer)) => c11.constants.truth($pointer);
+effect[fallback] reference_truth($reference) => fail("C constant pointer truth requires static storage");
+effect comparison($op,$a,$b) => c11.constants.comparison_domain($op,$a,$b);
+effect[fallback] c11.constants.comparison_domain($op,$a,$b) => bind($type,c11.types.usual(arg($a,0),arg($b,0)),
     base.Typed(c11.types.integer("int"),base.Integer(compare_typed($op,c11.sema.constant_convert($a,$type),c11.sema.constant_convert($b,$type)))));
 effect compare_typed($op,base.Typed($type,base.Integer($a)),base.Typed($type,base.Integer($b)))
     => c11.sema.constant_compare($op,$a,$b);
@@ -83,37 +110,113 @@ effect c11.sema.constant_convert(SourceConstant($value,$ice),c11.types.Pointer($
 effect[fallback] c11.sema.constant_convert(SourceConstant($value,$ice),$type)
     => c11.sema.constant_convert($value,$type);
 
-effect c11.sema.constant_value(c11.syntax.Address(c11.syntax.Name($name)),$env)
-    => address_constant(env.get($env,$name),$name);
+// Address constants walk source references, never read an object's stored
+// value. The reference/type adapters are shared with ordinary C expressions;
+// only their static-storage and ICE obligations are additional facts here.
+effect c11.sema.constant_value(c11.syntax.Address($source),$env) => address_of($source,$env);
+effect address_of(c11.syntax.Name($name),$env) => storage_address_constant(c11.sema.lookup_name($env,$name),$name,$env);
+effect address_of(c11.names.NameAt($frame,$name),$env) => storage_address_constant(address_binding_at($frame,$name,$env),$name,$env);
+effect[fallback] storage_address_constant($binding,$name,$env) => address_constant($binding,$name);
+effect address_of(c11.syntax.Dereference($pointer),$env) => require_pointer(c11.sema.constant_value($pointer,$env));
+effect address_of(c11.syntax.Generic($control,$associations),$env)
+    => address_of(c11.sema.generic_source($control,$associations,$env),$env);
+effect c11.constants.static_reference(c11.syntax.Generic($control,$associations),$env)
+    => c11.constants.static_reference(c11.sema.generic_source($control,$associations,$env),$env);
+effect[fallback] address_of($source,$env) => reference_address(c11.constants.static_reference($source,$env));
 effect address_constant(c11.sema.GlobalSlot($type,$symbol),$name)
     => base.Typed(c11.types.Pointer($type),c11.sema.GlobalAddress($symbol));
 effect address_constant(c11.sema.CSignature($params,$result,$variadic,$definition),$name)
     => c11.sema.read_function($name,$params,$result,$variadic,$definition);
+effect address_constant(c11.sema.UnspecifiedSignature($result),$name) => c11.sema.unspecified_address($name,$result);
+effect address_constant(c11.sema.OldSignature($params,$result),$name) => c11.sema.old_address($name,$params,$result);
 effect[fallback] address_constant($binding,$name) => fail("C address constant requires an object with static storage duration or a function");
+
+effect static_reference(c11.syntax.Name($name),$env) => static_binding_environment(c11.sema.lookup_name($env,$name),$env);
+effect static_reference(c11.names.NameAt($frame,$name),$env) => static_binding_environment(address_binding_at($frame,$name,$env),$env);
+effect[fallback] static_binding_environment($binding,$env) => static_binding($binding);
+effect c11.constants.static_reference(c11.names.ExpressionAt($tags,$value),$env)
+    => c11.constants.static_reference($value,c11.names.expression_environment($tags,$env));
+// All module/static objects publish their exact lexical identity during
+// declaration preparation. An ordinary block object has no such published
+// storage fact; do not fall back to a later object with the same spelling.
+effect address_binding_at($frame,$name,$env) => bind($binding,name_scope.lookup($frame,"ordinary",$name),
+    choose(eq($binding,name_scope.Missing()),c11.sema.lookup_at($frame,$name,$env),
+        choose(or(env.contains($env,c11.sema.NameBindingKey(name_scope.binding_identity($binding))),
+            c11.sema.current_identity($env,$name,name_scope.binding_identity($binding))),c11.sema.lookup_at($frame,$name,$env),
+            fail("C address constant requires an object with static storage duration or a function"))));
+effect static_reference(c11.initializers.StaticLiteral($type,$symbol),$env) => c11.initializers.static_reference($type,$symbol,$env);
+effect static_reference(c11.syntax.Member($source,$field),$env)
+    => c11.objects.field_reference(c11.objects.complete_reference(c11.constants.static_reference($source,$env),$env),$field);
+effect static_reference(c11.syntax.Dereference($source),$env)
+    => bind(base.Typed(c11.types.Pointer($type),$value),require_pointer(c11.sema.constant_value($source,$env)),c11.sema.IndirectReference($type,base.Typed(c11.types.Pointer($type),$value)));
+effect static_reference(c11.syntax.Subscript($source,$index),$env)
+    => constant_subscript(c11.sema.constant_value($source,$env),c11.sema.constant_value($index,$env),$source,$index,$env);
+effect[fallback] static_reference($source,$env) => fail("C address constant requires an object with static storage duration or a function");
+effect static_binding(c11.sema.GlobalSlot($type,$symbol)) => c11.sema.GlobalReference($type,$symbol);
+effect[fallback] static_binding($binding) => fail("C address constant requires an object with static storage duration or a function");
+effect reference_address(c11.sema.GlobalReference($type,$symbol)) => base.Typed(c11.types.Pointer($type),c11.sema.GlobalAddress($symbol));
+effect reference_address(c11.sema.IndirectReference($type,$pointer)) => $pointer;
+effect[fallback] reference_address($reference) => fail("C reference does not denote static storage");
+effect require_pointer(base.Typed(c11.types.Pointer($type),$value)) => base.Typed(c11.types.Pointer($type),$value);
+effect[fallback] require_pointer($value) => fail("C address constant requires a pointer constant");
+effect decay_reference($reference) => decay_type(c11.types.unqualified(arg($reference,0)),$reference);
+effect decay_type(c11.types.Array($count,$element),$reference) => c11.sema.object_read(arg($reference,0),$reference);
+effect decay_type(c11.types.IncompleteArray($element),$reference) => c11.sema.object_read(arg($reference,0),$reference);
+effect[fallback] decay_type($type,$reference) => fail("C static initializer cannot read an object's stored value");
+effect c11.sema.function_constant(c11.sema.GlobalSlot($type,$symbol),$name)
+    => decay_reference(c11.sema.GlobalReference($type,$symbol));
+effect c11.sema.constant_value(c11.syntax.Member($source,$field),$env) => decay_reference(c11.constants.static_reference(c11.syntax.Member($source,$field),$env));
+effect c11.sema.constant_value(c11.syntax.Subscript($source,$index),$env) => decay_reference(c11.constants.static_reference(c11.syntax.Subscript($source,$index),$env));
+effect constant_subscript(base.Typed(c11.types.Pointer($type),$pointer),$index,$source,$index_source,$env)
+    => c11.objects.subscript(c11.sema.arithmetic_operand(base.Typed(c11.types.Pointer($type),$pointer),$env),c11.sema.integer_constant_value($index_source,$env));
+effect constant_subscript($index,base.Typed(c11.types.Pointer($type),$pointer),$index_source,$source,$env)
+    => c11.objects.subscript(c11.sema.arithmetic_operand(base.Typed(c11.types.Pointer($type),$pointer),$env),c11.sema.integer_constant_value($index_source,$env));
+effect[fallback] constant_subscript($source,$index,$source_ast,$index_ast,$env) => fail("C constant subscript requires a pointer and an integer constant expression");
+
+effect c11.sema.constant_value(c11.syntax.Binary("add",$a,$b),$env)
+    => constant_binary("add",c11.sema.constant_value($a,$env),c11.sema.constant_value($b,$env),$a,$b,$env);
+effect c11.sema.constant_value(c11.syntax.Binary("sub",$a,$b),$env)
+    => constant_binary("sub",c11.sema.constant_value($a,$env),c11.sema.constant_value($b,$env),$a,$b,$env);
+effect constant_binary($op,base.Typed(c11.types.Pointer($type),$pointer),$b,$a_ast,$b_ast,$env)
+    => c11.sema.binary_checked($op,base.Typed(c11.types.Pointer($type),$pointer),c11.sema.integer_constant_value($b_ast,$env),$env);
+effect constant_binary("add",$a,base.Typed(c11.types.Pointer($type),$pointer),$a_ast,$b_ast,$env)
+    => c11.sema.binary_checked("add",base.Typed(c11.types.Pointer($type),$pointer),c11.sema.integer_constant_value($a_ast,$env),$env);
+effect[fallback] constant_binary($op,$a,$b,$a_ast,$b_ast,$env) => arithmetic($op,$a,$b);
+effect c11.sema.constant_value(c11.syntax.Cast(c11.types.Pointer($type),$source),$env)
+    => seq(base.check(c11.syntax.Cast(c11.types.Pointer($type),$source),$env,base.Any()),
+        pointer_cast(c11.sema.constant_value($source,$env),$source,c11.types.Pointer($type),$env));
+effect c11.sema.constant_value(c11.syntax.Cast(c11.types.Qualified($type,$const,$volatile,$restrict),$source),$env)
+    => c11.sema.constant_value(c11.syntax.Cast(c11.types.unqualified($type),$source),$env);
+effect pointer_cast(base.Typed(c11.types.Pointer($from),$value),$source,$type,$env)
+    => c11.sema.explicit_convert(base.Typed(c11.types.Pointer($from),$value),$type);
+effect[fallback] pointer_cast($value,$source,$type,$env)
+    => c11.sema.explicit_convert(c11.sema.integer_constant_value($source,$env),$type);
+effect c11.sema.constant_value(c11.syntax.Generic($control,$associations),$env)
+    => c11.sema.constant_value(c11.constants.generic_source($control,$associations,$env),$env);
+// Constraint-check both operands, but evaluate only the selected source.
+// This also permits address-valued conditionals without folding a load or
+// executing an unselected call/division during constant interpretation.
+effect c11.sema.constant_value(c11.syntax.Conditional($test,$yes,$no),$env)
+    => bind($type,arg(base.check(c11.syntax.Conditional($test,$yes,$no),$env,base.Any()),0),
+        c11.sema.constant_convert(c11.sema.constant_value(choose(c11.constants.truth(c11.sema.constant_value($test,$env)),$yes,$no),$env),$type));
 
 // Reuse the ordinary generic checker for all association constraints. Retain
 // the selected source separately, because unevaluated arms need not be constant.
-effect generic_source($control,$associations,$context) => generic_source_in($control,$associations,semantic_environment($context));
+effect c11.constants.generic_source($control,$associations,$context) => generic_source_in($control,$associations,semantic_environment($context));
 effect[fallback] semantic_environment($env) => $env;
 effect generic_source_in($control,$associations,$env)
-    => seq(base.check(c11.syntax.Generic($control,$associations),$env,base.Any()),
-        bind(SourceSelection($scope,$type,$selected,$default),list.fold("c11.constants.generic_source_step",$associations,
-            SourceSelection($env,c11.types.unqualified(arg(base.check($control,$env,base.Any()),0)),None(),None())),
-            selected_source($selected,$default)));
-effect generic_source_step(SourceSelection($env,$control,$selected,$default),c11.syntax.TypeAssociation($type,$source))
-    => SourceSelection($env,$control,choose(eq($control,c11.sema.complete_type($type,$env)),Some($source),$selected),$default);
-effect generic_source_step(SourceSelection($env,$control,$selected,$default),c11.syntax.DefaultAssociation($source))
-    => SourceSelection($env,$control,$selected,Some($source));
-effect selected_source(Some($source),$default) => $source;
-effect selected_source(None(),Some($source)) => $source;
-effect selected_source(None(),None()) => fail("no compatible C generic association and no default");
+    => c11.sema.generic_source($control,$associations,$env);
 effect c11.sema.integer_constant_expression(c11.syntax.Generic($control,$associations),$env)
-    => c11.sema.integer_constant_expression(generic_source($control,$associations,$env),$env);
+    => c11.sema.integer_constant_expression(c11.constants.generic_source($control,$associations,$env),$env);
 
 // Prune sizeof and generic operands before rewriting constant names. Their
 // expressions are checked as types, rather than accidentally evaluated.
 effect context_enter(c11.syntax.Generic($control,$associations),$env,$state)
-    => tree.Stop(c11.sema.constant_context(generic_source($control,$associations,$env),$env),$state);
+    => tree.Stop(c11.sema.constant_context(c11.constants.generic_source($control,$associations,$env),$env),$state);
+effect context_enter(c11.names.ExpressionAt($tags,$value),$env,$state)
+    => tree.Stop(c11.sema.constant_context($value,c11.names.expression_environment($tags,$env)),$state);
+effect context_enter(c11.names.TypeAt($type,$tags),$env,$state)
+    => tree.Stop(c11.sema.complete_type(c11.names.TypeAt($type,$tags),$env),$state);
 effect context_enter(c11.syntax.SizeValue($value),$env,$state)
     => tree.Stop(c11.sema.constant_node_value(c11.syntax.SizeValue($value),$env),$state);
 effect context_enter(c11.syntax.SizeType($type),$env,$state)

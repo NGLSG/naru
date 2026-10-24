@@ -43,8 +43,13 @@ class ProcessInfo(ctypes.Structure):
                 ("pid", wintypes.DWORD), ("tid", wintypes.DWORD)]
 
 
+class StartupInfoEx(ctypes.Structure):
+    _fields_ = [("startup", StartupInfo), ("attributes", ctypes.c_void_p)]
+
+
 def execute(arguments: list[str], *, cwd: Path, timeout: float = 120,
-            env: dict[str, str] | None = None, memory_limit: int | None = None) -> subprocess.CompletedProcess[str]:
+            env: dict[str, str] | None = None, memory_limit: int | None = None,
+            stdin_data: bytes | None = None) -> subprocess.CompletedProcess[str]:
     """A child-process-based compiler necessarily fails under this restriction."""
     if os.name != "nt":
         raise RuntimeError("The no-child-process acceptance test currently requires Windows Job Objects")
@@ -71,10 +76,19 @@ def execute(arguments: list[str], *, cwd: Path, timeout: float = 120,
     kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
     kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.InitializeProcThreadAttributeList.argtypes = [ctypes.c_void_p, wintypes.DWORD,
+        wintypes.DWORD, ctypes.POINTER(ctypes.c_size_t)]
+    kernel.InitializeProcThreadAttributeList.restype = wintypes.BOOL
+    kernel.UpdateProcThreadAttribute.argtypes = [ctypes.c_void_p, wintypes.DWORD,
+        ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_void_p]
+    kernel.UpdateProcThreadAttribute.restype = wintypes.BOOL
+    kernel.DeleteProcThreadAttributeList.argtypes = [ctypes.c_void_p]
+    kernel.DeleteProcThreadAttributeList.restype = None
     job = kernel.CreateJobObjectW(None, None)
     if not job:
         raise ctypes.WinError(ctypes.get_last_error())
     info = ProcessInfo()
+    attribute_list = None
     started = time.perf_counter()
     try:
         limits = ExtendedLimits()
@@ -89,22 +103,45 @@ def execute(arguments: list[str], *, cwd: Path, timeout: float = 120,
             raise ctypes.WinError(ctypes.get_last_error())
         with tempfile.TemporaryDirectory(prefix="naru process guard ") as scratch:
             stdout_path, stderr_path = Path(scratch) / "stdout", Path(scratch) / "stderr"
-            with open(os.devnull, "rb") as stdin, stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
+            # An optional byte payload replaces the empty stdin so suites can
+            # exercise line-oriented input without a shell pipeline.
+            stdin_path = Path(scratch) / "stdin"
+            if stdin_data is not None:
+                stdin_path.write_bytes(stdin_data)
+            stdin_open = (open(os.devnull, "rb") if stdin_data is None
+                          else stdin_path.open("rb"))
+            with stdin_open as stdin, stdout_path.open("wb") as stdout, stderr_path.open("wb") as stderr:
                 for stream in (stdin, stdout, stderr):
                     os.set_inheritable(stream.fileno(), True)
-                startup = StartupInfo()
-                startup.cb = ctypes.sizeof(startup)
-                startup.flags = 0x00000100  # STARTF_USESTDHANDLES
-                startup.stdin = msvcrt.get_osfhandle(stdin.fileno())
-                startup.stdout = msvcrt.get_osfhandle(stdout.fileno())
-                startup.stderr = msvcrt.get_osfhandle(stderr.fileno())
+                startup = StartupInfoEx()
+                startup.startup.cb = ctypes.sizeof(startup)
+                startup.startup.flags = 0x00000100  # STARTF_USESTDHANDLES
+                startup.startup.stdin = msvcrt.get_osfhandle(stdin.fileno())
+                startup.startup.stdout = msvcrt.get_osfhandle(stdout.fileno())
+                startup.startup.stderr = msvcrt.get_osfhandle(stderr.fileno())
+                # Restrict inheritance to this invocation's streams. In a
+                # threaded runner, inheriting every live stream lets unrelated
+                # children retain each other's output files after process exit.
+                attribute_bytes = ctypes.c_size_t()
+                kernel.InitializeProcThreadAttributeList(None, 1, 0, ctypes.byref(attribute_bytes))
+                storage = ctypes.create_string_buffer(attribute_bytes.value)
+                if not kernel.InitializeProcThreadAttributeList(storage, 1, 0, ctypes.byref(attribute_bytes)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                attribute_list = storage
+                handles = (wintypes.HANDLE * 3)(startup.startup.stdin,
+                    startup.startup.stdout, startup.startup.stderr)
+                if not kernel.UpdateProcThreadAttribute(attribute_list, 0, 0x00020002,
+                        handles, ctypes.sizeof(handles), None, None):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                startup.attributes = ctypes.cast(attribute_list, ctypes.c_void_p)
                 environment = env if env is not None else dict(os.environ)
                 env_block = ctypes.create_unicode_buffer("\0".join(f"{key}={value}" for key, value in
                                                          sorted(environment.items(), key=lambda item: item[0].upper())) + "\0\0")
                 command = ctypes.create_unicode_buffer(subprocess.list2cmdline(arguments))
                 if not kernel.CreateProcessW(arguments[0], command, None, None, True,
-                                               0x00000004 | 0x00000400 | 0x08000000,
-                                               env_block, str(cwd), ctypes.byref(startup), ctypes.byref(info)):
+                                               0x00000004 | 0x00000400 | 0x08000000 | 0x00080000,
+                                               env_block, str(cwd), ctypes.cast(ctypes.byref(startup),
+                                                   ctypes.POINTER(StartupInfo)), ctypes.byref(info)):
                     raise ctypes.WinError(ctypes.get_last_error())
                 if not kernel.AssignProcessToJobObject(job, info.process):
                     error = ctypes.get_last_error()
@@ -132,6 +169,8 @@ def execute(arguments: list[str], *, cwd: Path, timeout: float = 120,
             result.peak_memory_bytes = usage.peak_process_memory
             return result
     finally:
+        if attribute_list is not None:
+            kernel.DeleteProcThreadAttributeList(attribute_list)
         if info.thread:
             kernel.CloseHandle(info.thread)
         if info.process:

@@ -1,0 +1,537 @@
+{
+  "format": 1,
+  "target": "windows-x86_64-llp64",
+  "scope": "declaration specifier sequences; target scalar subset and extensible atoms",
+  "cases": [
+    {
+      "id": "interleaved-0",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){unsigned const long register int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-1",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){unsigned const register long int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-2",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){unsigned long const register int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-3",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){unsigned long register const int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-4",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){unsigned register const long int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-5",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){unsigned register long const int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-6",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){const unsigned long register int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-7",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){const unsigned register long int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-8",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){const long unsigned register int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-9",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){const long register unsigned int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-10",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){const register unsigned long int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-11",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){const register long unsigned int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-12",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){long unsigned const register int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-13",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){long unsigned register const int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-14",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){long const unsigned register int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-15",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){long const register unsigned int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-16",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){long register unsigned const int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-17",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){long register const unsigned int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-18",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){register unsigned const long int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-19",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){register unsigned long const int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-20",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){register const unsigned long int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-21",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){register const long unsigned int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-22",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){register long unsigned const int n=42;return (int)n;}"
+    },
+    {
+      "id": "interleaved-23",
+      "work_item": "specifier-normalization",
+      "feature": "storage",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){register long const unsigned int n=42;return (int)n;}"
+    },
+    {
+      "id": "pointer-qualifiers-0",
+      "work_item": "specifier-normalization",
+      "feature": "types",
+      "clause": "6.7.3;6.7.6.1",
+      "source": "int main(void){int n=42;int *const volatile restrict p=&n;return *p;}"
+    },
+    {
+      "id": "pointer-qualifiers-1",
+      "work_item": "specifier-normalization",
+      "feature": "types",
+      "clause": "6.7.3;6.7.6.1",
+      "source": "int main(void){int n=42;int *const restrict volatile p=&n;return *p;}"
+    },
+    {
+      "id": "pointer-qualifiers-2",
+      "work_item": "specifier-normalization",
+      "feature": "types",
+      "clause": "6.7.3;6.7.6.1",
+      "source": "int main(void){int n=42;int *volatile const restrict p=&n;return *p;}"
+    },
+    {
+      "id": "pointer-qualifiers-3",
+      "work_item": "specifier-normalization",
+      "feature": "types",
+      "clause": "6.7.3;6.7.6.1",
+      "source": "int main(void){int n=42;int *volatile restrict const p=&n;return *p;}"
+    },
+    {
+      "id": "pointer-qualifiers-4",
+      "work_item": "specifier-normalization",
+      "feature": "types",
+      "clause": "6.7.3;6.7.6.1",
+      "source": "int main(void){int n=42;int *restrict const volatile p=&n;return *p;}"
+    },
+    {
+      "id": "pointer-qualifiers-5",
+      "work_item": "specifier-normalization",
+      "feature": "types",
+      "clause": "6.7.3;6.7.6.1",
+      "source": "int main(void){int n=42;int *restrict volatile const p=&n;return *p;}"
+    },
+    {
+      "id": "typedef-as-declarator",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "typedef int T;int main(void){T T=42;return T;}"
+    },
+    {
+      "id": "typedef-after-builtin",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "typedef int T;int main(void){unsigned int T=42;return T;}"
+    },
+    {
+      "id": "typedef-interleaved",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "long typedef const unsigned T;int main(void){T n=42;return (int)n;}"
+    },
+    {
+      "id": "typedef-duplicate-qualifiers",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "typedef const int T;typedef const const int T;int main(void){T n=42;return n;}"
+    },
+    {
+      "id": "typedef-qualified-pointer",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "typedef int *P;int main(void){int n=42;restrict const volatile P p=&n;return *p;}"
+    },
+    {
+      "id": "repeated-qualifiers",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){const volatile const int n=42;return n;}"
+    },
+    {
+      "id": "array-qualified-typedef",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "typedef int A[2];int main(void){const A a={20,22};return a[0]+a[1];}"
+    },
+    {
+      "id": "abstract-pointer-qualifiers",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "typedef int *const volatile restrict P;int main(void){return sizeof(int *restrict const volatile)==sizeof(P)?42:1;}"
+    },
+    {
+      "id": "nested-pointer-qualifiers",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){int n=42;int *p=&n;int *const volatile *volatile const q=&p;return **q;}"
+    },
+    {
+      "id": "pointer-to-qualified-array",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){const int a[2]={20,22};const int (*const volatile p)[2]=&a;return (*p)[0]+(*p)[1];}"
+    },
+    {
+      "id": "parameter-register-after-type",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int f(int const register n){return n;}int main(void){return f(42);}"
+    },
+    {
+      "id": "parameter-unnamed-register",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int f(int register);int f(int n){return n;}int main(void){return f(42);}"
+    },
+    {
+      "id": "parameter-pointer-qualified",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int f(int *const volatile restrict p){return *p;}int main(void){int n=42;return f(&n);}"
+    },
+    {
+      "id": "parameter-unnamed-pointer",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int f(int *const volatile);int f(int *p){return *p;}int main(void){int n=42;return f(&n);}"
+    },
+    {
+      "id": "fields-interleaved",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "struct S{unsigned volatile const long int n;int const *volatile const p;};int main(void){int n=22;struct S s={20,&n};return (int)s.n+*s.p;}"
+    },
+    {
+      "id": "enum-qualified",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "enum E{N=42};int main(void){enum E volatile const n=N;return n;}"
+    },
+    {
+      "id": "struct-typedef-shadow",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "typedef struct S{int n;}S;int main(void){S const S={42};return S.n;}"
+    },
+    {
+      "id": "static-inline-repeated",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int inline static inline f(void){return 42;}int main(void){return f();}"
+    },
+    {
+      "id": "file-storage-after-type",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "long unsigned static const int n=42;int main(void){return (int)n;}"
+    },
+    {
+      "id": "alignment-interleaved",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int _Alignas(16) static const n=42;int main(void){return n;}"
+    },
+    {
+      "id": "alignment-repeated",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int _Alignas(0) const static _Alignas(16) n=42;int main(void){return n;}"
+    },
+    {
+      "id": "alignment-local-register-order",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){int _Alignas(16) auto n=42;return n;}"
+    },
+    {
+      "id": "for-interleaved-storage",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){int n=0;for(int register i=0;i<6;++i)n+=7;return n;}"
+    },
+    {
+      "id": "function-pointer-qualified",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int f(void){return 42;}int main(void){int (*const volatile p)(void)=f;return p();}"
+    },
+    {
+      "id": "duplicate-storage",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int static static n=42;int main(void){return n;}",
+      "reject": "multiple C storage"
+    },
+    {
+      "id": "conflicting-storage",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int static extern n;int main(void){return 42;}",
+      "reject": "multiple C storage"
+    },
+    {
+      "id": "parameter-duplicate-storage",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int f(int register register n){return n;}int main(void){return f(42);}",
+      "reject": "multiple C storage"
+    },
+    {
+      "id": "parameter-auto",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int f(int auto n){return n;}int main(void){return f(42);}",
+      "reject": "storage class must be register"
+    },
+    {
+      "id": "file-auto-after-type",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int auto n=42;int main(void){return n;}",
+      "reject": "cannot use auto or register"
+    },
+    {
+      "id": "restrict-scalar",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int restrict n=42;int main(void){return n;}",
+      "reject": "restrict qualifier requires"
+    },
+    {
+      "id": "restrict-function-pointer",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int (*restrict p)(void);int main(void){return 42;}",
+      "reject": "restrict qualifier requires"
+    },
+    {
+      "id": "restrict-scalar-typedef",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "typedef int T;T restrict n=42;int main(void){return n;}",
+      "reject": "restrict qualifier requires"
+    },
+    {
+      "id": "qualifier-does-not-hide-duplicate-type",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int const int n=42;int main(void){return n;}",
+      "reject": "duplicate C type"
+    },
+    {
+      "id": "qualifier-does-not-hide-invalid-type",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "unsigned const double n=42;int main(void){return (int)n;}",
+      "reject": "incompatible C type"
+    },
+    {
+      "id": "too-many-long",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "long const long volatile long n;int main(void){return 42;}",
+      "reject": "duplicate C type"
+    },
+    {
+      "id": "inline-object",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int inline n=42;int main(void){return n;}",
+      "reject": "function specifier requires"
+    },
+    {
+      "id": "inline-local-object",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int main(void){int inline n=42;return n;}",
+      "reject": "function specifier requires"
+    },
+    {
+      "id": "inline-typedef",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int inline typedef F(void);int main(void){return 42;}",
+      "reject": "function specifier requires"
+    },
+    {
+      "id": "parameter-inline",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int f(int inline n){return n;}int main(void){return f(42);}",
+      "reject": "parameter cannot have a function"
+    },
+    {
+      "id": "parameter-alignment",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.2p2;6.7.3",
+      "source": "int f(int _Alignas(16) n){return n;}int main(void){return f(42);}",
+      "reject": "cannot apply to a parameter"
+    },
+    {
+      "id": "inline-aligned-object",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.4p2;6.7.5",
+      "source": "int inline _Alignas(16) n=42;int main(void){return n;}",
+      "reject": "function specifier requires"
+    },
+    {
+      "id": "inline-hosted-main-definition",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.4p4",
+      "source": "inline int main(void){return 42;}",
+      "reject": "hosted main cannot"
+    },
+    {
+      "id": "inline-hosted-main-prototype",
+      "work_item": "specifier-normalization",
+      "feature": "declarations",
+      "clause": "6.7.4p4",
+      "source": "int inline main(void);int main(void){return 42;}",
+      "reject": "hosted main cannot"
+    }
+  ]
+}

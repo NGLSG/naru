@@ -19,7 +19,7 @@ B 语言(1972,Users' Reference to B on MH-TSS)在 Naru 规则系统上的重构�
 `--frontend b.frontend` 必须显式给出:B 的词法(`=+` 系列赋值算符、`/* */` 注释、
 保留字表)由方言自己定义。
 
-## 已实现(里程碑 1+2)
+## 支持的语法
 
 - **字机器**(§3.0):无类型,一切皆字;本宿主定义 64 位字。语言地址为字地址，
   仅在宿主指针转换时乘/除 8
@@ -57,10 +57,10 @@ B 语言(1972,Users' Reference to B on MH-TSS)在 Naru 规则系统上的重构�
 | recursion.b(项目) | 递归 fact(5),跨函数调用 | 120 |
 | vecglob.b(项目) | 向量外部定义 + extrn | 30 |
 
-上述 vector/ptr/recursion/vecglob/goto 的当前结果与新增边界用例见
-`target/dialect-debug.json`；其他早期结果不代表本轮重新运行。
+回归入口为 `python tests/dialect_debug.py --dialect b`，报告保存在
+`target/dialect-debug.json`。
 
-## 与手册的偏离和未实现范围
+## 实现选择与限制
 
 | 偏离 | 理由 |
 | --- | --- |
@@ -68,23 +68,22 @@ B 语言(1972,Users' Reference to B on MH-TSS)在 Naru 规则系统上的重构�
 | 地址 = 宿主指针 ÷8 | 保留 v+n 的字寻址语义，宿主访问时转回字节指针 |
 | 字符串每字节一字符 | H6070 每字 4-5 字符打包;打包为机器相关(§4.1.5) |
 | putchar 单字符输出 | H6070 每字 4 字符;NUL/EOT 删除语义随打包走 |
-| auto 变量零初始化 | 手册:返回后未定义;零初始化给出干净诊断 |
+| auto 变量零初始化 | 当前实现选择 |
 | 外部向量名重绑定和取地址 | 尚无独立地址槽；明确拒绝，避免覆盖元素 0 |
 | 多字符常量、name-ival、printf/getchar/putstr/getvec | 尚未补齐；外部向量数据读写已支持 |
 | 大小写敏感 | §2.2 仅小写关键字;源标识符大小写敏感度未查证,默认敏感 |
 
-## 结构(方言作者备注)
+## 规则实现
 
 - **词法**:c11/lex 模式 —— 通用扫描器 `text.lex` + 数据配置;token 重分类
   (标点→kind 14、保留字→kind 8、换行行丢弃、八进制数字串→kind 3 保留拼写);
-  全部用 `list.fold` 迭代(深度上限)。
+  使用 `list.fold` 迭代。
 - **多字符算符**:所有不在核心 tokenizer 双字符表里的算符(`=+` 系列、`<<`、`++`)
   模板必须写引号终结符;`==`/`!=`/`->` 在表内可直接裸写。
 - **commit 即转换**:`source.parse_tokens` 冻结 item,语句→续体的转换在
   commit 的逐项求值中完成;`pseq` 既是链构造器也是转换器。
 - **字符串驻留**:commit 的树遍历把字符串字面量去重为字节全局
-  (`llvm.mlir.global` i8 数组,externc 的 value-attr 模式),EOT 追加一次
-  (走查与属性各一次会翻倍 —— 曾为此调试)。
+  (`llvm.mlir.global` i8 数组,externc 的 value-attr 模式),EOT 追加一次。
 - **putchar 格式**:printf 的格式串是 NUL 结尾的**字节**数组
   (`ByteFmt`),不是 B 的字打包字符串 —— C 运行时按字节读格式串。
 - **内在函数**:`b_intrinsic_env` 播种(单函数模式)+ `BIntrinsics` 哨兵项
@@ -94,8 +93,8 @@ B 语言(1972,Users' Reference to B on MH-TSS)在 Naru 规则系统上的重构�
 
 具体缺陷、修复和验收边界见 [方言调试记录](dialect-debug.md)。
 
-## 里程碑 3 候选(按手册)
+## 后续支持
 
-裸地址/向量的运行时越界保护与外部向量地址槽(字地址模型不等于原机器 ABI);
+裸地址/向量越界保护、外部向量地址槽及原机器 ABI;
 switch(§5.4,落空穿透);printf(§8.1 的 %c/%d/%o/%s);putstr/getstr;
 name-ival 初值(§7.1);nargs(§8.2);字长参数化(i16 档案档,PDP-11)。

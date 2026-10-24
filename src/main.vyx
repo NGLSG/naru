@@ -2,10 +2,32 @@ module naru;
 use std.collections;
 use std.string;
 use std.fs;
+use std.log;
 
 extern "C" {
     fn naru_same_file(first: rawptr, first_len: i64, second: rawptr, second_len: i64) -> i32;
     fn naru_mlir_open(path: rawptr, length: i64) -> i32;
+}
+
+fn naru_error(message: string) {
+    log_error(message);
+    log_flush();
+}
+
+fn naru_storage_log(e: &mut Engine) {
+    log_debug("arena nodes=" + naru_number(e.nodes.len) + " free=" + naru_number(e.free_nodes.len)
+        + " edges=" + naru_number(e.edges.len) + " free=" + naru_number(e.free_edges.len)
+        + " indexes=" + naru_number(e.env_index.len) + " free=" + naru_number(e.free_env_index.len)
+        + " interned=" + naru_number(e.text_pool.len));
+}
+
+fn naru_log_level(name: string) -> i32 {
+    if (name == "trace") { return log_level_trace(); }
+    if (name == "debug") { return log_level_debug(); }
+    if (name == "info") { return log_level_info(); }
+    if (name == "warn") { return log_level_warn(); }
+    if (name == "error") { return log_level_error(); }
+    return -1;
 }
 
 fn usage() {
@@ -23,6 +45,7 @@ fn usage() {
     print("         --frontend RELATION --frontend-option key=value (raw source frontend defined by rules)");
     print("         --rule-budget STEPS --parse-budget STEPS (aliases: --rule-steps/--parse-steps; default 1000000)");
     print("         --rule-depth DEPTH --parse-depth DEPTH (1..1024, default 256)");
+    print("         --log-level trace|debug|info|warn|error (diagnostics on stderr)");
     print("emit verifies MLIR; build optimizes and emits entirely in process.");
 }
 
@@ -97,7 +120,7 @@ fn backend_configuration(e: &mut Engine, target: string, input: string, project:
 }
 
 public fn project_comments(source: string) -> string {
-    var out = StringBuilder.create();
+    var out = std.string.StringBuilder.create();
     var in_string = false; var escaped = false; var comment = false;
     var i: i64 = 0;
     while (i < source.len) {
@@ -187,12 +210,12 @@ fn evaluation_depth(e: &mut Engine, text: string) -> i64 {
     return value;
 }
 
-fn main() -> i32 {
+fn naru_command() -> i32 {
     if (argCount() < 2) { usage(); return 0; }
     let command = getArg(1);
     if (command == "help" || command == "--help" || command == "--version") { usage(); return 0; }
     if (command != "parse" && command != "check" && command != "emit" && command != "eval"
-        && command != "build" && command != "freeze" && command != "opt" && command != "resolve") { print("unknown command: " + command); return 2; }
+        && command != "build" && command != "freeze" && command != "opt" && command != "resolve") { naru_error("unknown command: " + command); return 2; }
     var e = Engine.new();
     var rules = Vec::<string>.new();
     var backend_args = Vec::<string>.new();
@@ -207,10 +230,10 @@ fn main() -> i32 {
         let arg = getArg(index);
         if (arg == "--locked") { locked = true; index = index + 1; continue; }
         if (!arg.starts_with("-")) {
-            if (input.len > 0) { print("unexpected argument: " + arg); return 2; }
+            if (input.len > 0) { naru_error("unexpected argument: " + arg); return 2; }
             input = arg; index = index + 1; continue;
         }
-        if (index + 1 >= argCount()) { print("missing value for " + arg); return 2; }
+        if (index + 1 >= argCount()) { naru_error("missing value for " + arg); return 2; }
         let value = getArg(index + 1);
         if (arg == "--rules") { rules.push(value); }
         else if (arg == "--entry") { entry = value; }
@@ -227,18 +250,23 @@ fn main() -> i32 {
         else if (arg == "--parse-budget" || arg == "--parse-steps") { parse_budget = value; }
         else if (arg == "--rule-depth") { rule_depth = value; }
         else if (arg == "--parse-depth") { parse_depth = value; }
+        else if (arg == "--log-level") {
+            let level = naru_log_level(value);
+            if (level < 0) { naru_error("invalid log level: " + value); return 2; }
+            set_log_level(level);
+        }
         else if (arg == "--pass-pipeline" || arg == "--irdl" || arg == "--dialect-plugin" || arg == "--pass-plugin" || arg == "--report" || arg == "--opt-level"
             || arg == "--lowering-pipeline" || arg == "--native-entry" || arg == "--triple" || arg == "--cpu" || arg == "--features"
             || arg == "--link-object" || arg == "--link-library" || arg == "--library-path" || arg == "--runtime"
             || arg == "--subsystem" || arg == "--vc-tools-dir" || arg == "--windows-sdk-dir" || arg == "--windows-sdk-version") {
             backend_args.push(arg); backend_args.push(value);
-        } else { print("unknown option: " + arg); return 2; }
+        } else { naru_error("unknown option: " + arg); return 2; }
         index = index + 2;
     }
     if (command != "opt" && project.len == 0 && rules.len == 0 && !specialized_available()) { project = discover_project(); }
     if (project.len > 0) { project = project_manifest_path(project); }
     let explicit_rule_count = rules.len;
-    if (project.len > 0 && !read_project(&mut e, project, &mut rules, &mut settings, &mut graph)) { print(e.diagnostic); return 1; }
+    if (project.len > 0 && !read_project(&mut e, project, &mut rules, &mut settings, &mut graph)) { naru_error(e.diagnostic); return 1; }
     if (rule_budget.len == 0 && settings.contains("limits.rule_steps")) { rule_budget = settings.get("limits.rule_steps"); }
     if (parse_budget.len == 0 && settings.contains("limits.parse_steps")) { parse_budget = settings.get("limits.parse_steps"); }
     if (rule_budget.len > 0) { e.rule_limit = evaluation_budget(&mut e, rule_budget); }
@@ -247,7 +275,7 @@ fn main() -> i32 {
     if (parse_depth.len == 0 && settings.contains("limits.parse_depth")) { parse_depth = settings.get("limits.parse_depth"); }
     if (rule_depth.len > 0) { e.rule_depth_limit = evaluation_depth(&mut e,rule_depth); }
     if (parse_depth.len > 0) { e.parse_depth_limit = evaluation_depth(&mut e,parse_depth); }
-    if (!e.good()) { print(e.diagnostic); return 2; }
+    if (!e.good()) { naru_error(e.diagnostic); return 2; }
     if (graph.root >= 0) {
         var combined = Vec::<string>.new(); project_backend_options(&mut graph, &mut combined); var option_index: i64 = 0;
         while (option_index < backend_args.len) { combined.push(backend_args.get(option_index)); option_index = option_index + 1; }
@@ -257,7 +285,7 @@ fn main() -> i32 {
     if (relation.len == 0 && settings.contains("language.relation")) { relation = settings.get("language.relation"); }
     if (frontend.len == 0 && settings.contains("language.frontend")) { frontend = settings.get("language.frontend"); }
     if (unit.len == 0) { unit = settings.contains("language.unit") ? settings.get("language.unit") : "item"; }
-    if (unit != "item" && unit != "program") { print("language unit must be item or program"); return 2; }
+    if (unit != "item" && unit != "program") { naru_error("language unit must be item or program"); return 2; }
     if (input.len == 0 && settings.contains("package.entry")) { input = naru_join_path(naru_dirname(project), settings.get("package.entry")); }
     if (target.len == 0) {
         target = settings.contains("backend.target") ? settings.get("backend.target") : "mlir";
@@ -271,26 +299,26 @@ fn main() -> i32 {
             output = naru_join_path(naru_dirname(project), naru_join_path(directory, settings.get("package.name") + extension));
         }
     }
-    if (backend_library.len > 0 && naru_mlir_open(backend_library.c_str(), backend_library.len) != 0) { print(str_dup(from_cstr(naru_mlir_error(null)))); return 1; }
+    if (backend_library.len > 0 && naru_mlir_open(backend_library.c_str(), backend_library.len) != 0) { naru_error(str_dup(from_cstr(naru_mlir_error(null)))); return 1; }
     if (command == "opt") {
-        if (input.len == 0 || output.len == 0) { print("opt requires an MLIR input and -o <artifact>"); return 2; }
-        if (!validate_output_paths(&mut e, output, input, project, command, &mut backend_args)) { print(e.diagnostic); return 2; }
+        if (input.len == 0 || output.len == 0) { naru_error("opt requires an MLIR input and -o <artifact>"); return 2; }
+        if (!validate_output_paths(&mut e, output, input, project, command, &mut backend_args)) { naru_error(e.diagnostic); return 2; }
         let text = naru_read_text(&mut e, input);
-        if (!e.good()) { print(e.diagnostic); return 1; }
+        if (!e.good()) { naru_error(e.diagnostic); return 1; }
         if (backend_library.len > 0 && naru_mlir_open(backend_library.c_str(), backend_library.len) != 0) {
-            print(str_dup(from_cstr(naru_mlir_error(null)))); return 1;
+            naru_error(str_dup(from_cstr(naru_mlir_error(null)))); return 1;
         }
         let configuration = backend_configuration(&mut e, target, input, project, output, command, &mut backend_args);
         var session = new_mlir_session(&mut e, configuration);
         if (e.good()) { parse_mlir_session(&mut e, &mut session, text, input); }
         let success = e.good() && compile_mlir_session(&mut e, &mut session, target, output);
         session.close();
-        if (!success || !e.good()) { print(e.diagnostic); return 1; }
-        print("naru: wrote " + output + " (in-process MLIR/LLVM/LLD)"); return 0;
+        if (!success || !e.good()) { naru_error(e.diagnostic); return 1; }
+        log_info("naru: wrote " + output + " (in-process MLIR/LLVM/LLD)"); return 0;
     }
     if (command == "resolve" && graph.root >= 0 && rules.len == 0) {
-        if (!validate_output_paths(&mut e, output, input, project, command, &mut backend_args)) { print(e.diagnostic); return 2; }
-        if (!project_lock(&mut e, &mut graph, locked)) { print(e.diagnostic); return 1; }
+        if (!validate_output_paths(&mut e, output, input, project, command, &mut backend_args)) { naru_error(e.diagnostic); return 2; }
+        if (!project_lock(&mut e, &mut graph, locked)) { naru_error(e.diagnostic); return 1; }
         print(project_lock_text(&mut e, &mut graph)); return e.good() ? 0 : 1;
     }
     if (specialized_available()) {
@@ -309,46 +337,50 @@ fn main() -> i32 {
         }
         if (!e.linked && e.good()) { link_rules(&mut e); }
     } else {
-        if (rules.len == 0) { print("select a dialect group with --rules or --project"); return 2; }
+        if (rules.len == 0) { naru_error("select a dialect group with --rules or --project"); return 2; }
         var i: i64 = 0;
         while (i < rules.len && e.good()) { load_rule_file(&mut e, rules.get(i)); i = i + 1; }
         if (e.good()) { link_rules(&mut e); }
     }
-    if (!e.good()) { print(e.diagnostic); return 1; }
-    if (!validate_output_paths(&mut e, output, input, project, command, &mut backend_args)) { print(e.diagnostic); return 2; }
+    if (!e.good()) { naru_error(e.diagnostic); return 1; }
+    if (!validate_output_paths(&mut e, output, input, project, command, &mut backend_args)) { naru_error(e.diagnostic); return 2; }
     if (graph.root >= 0 && (command == "build" || command == "resolve" || command == "freeze" || locked)) {
-        if (!project_lock(&mut e, &mut graph, locked)) { print(e.diagnostic); return 1; }
-    } else if (locked) { print("--locked requires a project"); return 2; }
+        if (!project_lock(&mut e, &mut graph, locked)) { naru_error(e.diagnostic); return 1; }
+    } else if (locked) { naru_error("--locked requires a project"); return 2; }
     if (command == "resolve") {
-        if (graph.root < 0) { print("resolve requires a project"); return 2; }
+        if (graph.root < 0) { naru_error("resolve requires a project"); return 2; }
         print(project_lock_text(&mut e, &mut graph)); return e.good() ? 0 : 1;
     }
-    if (!validate_output_paths(&mut e, output, input, project, command, &mut backend_args)) { print(e.diagnostic); return 2; }
+    if (!validate_output_paths(&mut e, output, input, project, command, &mut backend_args)) { naru_error(e.diagnostic); return 2; }
     if (command == "freeze") {
-        if (output.len == 0) { print("freeze requires -o specialized.vyx"); return 2; }
-        if (!write_specialization(&mut e, output)) { print(e.diagnostic); return 1; }
-        print("generated native effect rules: " + output); return 0;
+        if (output.len == 0) { naru_error("freeze requires -o specialized.vyx"); return 2; }
+        if (!write_specialization(&mut e, output)) { naru_error(e.diagnostic); return 1; }
+        log_info("generated native effect rules: " + output); return 0;
     }
+    log_debug("linked " + naru_number(e.modules.len) + " rule modules, "
+        + naru_number(e.effect_rules.len) + " effect rules");
     var rt = new_runtime(&mut e);
     rt.specialized = specialized_available();
     if (command == "eval") {
-        if (expression.len == 0) { print("eval requires --expr"); return 2; }
+        if (expression.len == 0) { naru_error("eval requires --expr"); return 2; }
         var stream = tokenize(expression, "<command>");
         let root = stx_term(&mut e, &mut stream, 0);
         if (stream.diagnostic.len > 0) { e.reject(stream.diagnostic); }
         if (stream.peek().kind != 0) { e.reject("trailing tokens after --expr"); }
         if (root >= 0 && e.good()) { qualify_expression(&mut e, root, ""); }
-        if (!e.good()) { print(e.diagnostic); return 1; }
+        if (!e.good()) { naru_error(e.diagnostic); return 1; }
         let value = eval_term(&mut e, &mut rt, root, 0);
-        if (!e.good()) { print(e.diagnostic); return 1; }
+        if (!e.good()) { naru_error(e.diagnostic); return 1; }
+        log_debug("rule evaluation completed in " + naru_number(rt.steps) + " steps");
+        naru_storage_log(&mut e);
         print(render_term(&mut e, value)); return 0;
     }
-    if (input.len == 0 || !fileExists(input)) { print("source file not found: " + input); return 2; }
+    if (input.len == 0 || !fileExists(input)) { naru_error("source file not found: " + input); return 2; }
     var items: i64 = -1;
     if (frontend.len == 0) { items = load_program(&mut e, input, entry); }
     else {
         var options = e.add_node(11, "env", input, 1, 1);
-        let keys = settings.keys(); var option_index: i64 = 0;
+        let keys = naru_text_keys(&settings); var option_index: i64 = 0;
         while (option_index < keys.len) {
             let key = keys.get(option_index);
             if (key.starts_with("frontend.")) {
@@ -372,9 +404,9 @@ fn main() -> i32 {
         }
         if (e.good()) { items = load_frontend_program(&mut e, &mut rt, input, frontend, options); }
     }
-    if (!e.good()) { print(e.diagnostic); return 1; }
-    if (!validate_output_paths(&mut e, output, input, project, command, &mut backend_args)) { print(e.diagnostic); return 2; }
-    if (command == "parse") { print(render_term(&mut e, items)); return 0; }
+    if (!e.good()) { naru_error(e.diagnostic); return 1; }
+    if (!validate_output_paths(&mut e, output, input, project, command, &mut backend_args)) { naru_error(e.diagnostic); return 2; }
+    if (command == "parse") { naru_storage_log(&mut e); print(render_term(&mut e, items)); return 0; }
     if ((command == "emit" || command == "build") && relation.len == 0) { relation = "emit"; }
     if (relation.len > 0) {
         let full_relation = resolve_entry(&mut e, relation);
@@ -391,32 +423,40 @@ fn main() -> i32 {
             i = i + 1;
         }
     }
-    if (!e.good()) { print(e.diagnostic); return 1; }
+    if (!e.good()) { naru_error(e.diagnostic); return 1; }
     if (command == "check" && e.node(rt.active_region).count == 0) { print("check passed"); return 0; }
-    if (command == "build" && output.len == 0) { print("build requires -o <artifact>"); return 2; }
+    if (command == "build" && output.len == 0) { naru_error("build requires -o <artifact>"); return 2; }
     if (backend_library.len > 0 && naru_mlir_open(backend_library.c_str(), backend_library.len) != 0) {
-        print(str_dup(from_cstr(naru_mlir_error(null)))); return 1;
+        naru_error(str_dup(from_cstr(naru_mlir_error(null)))); return 1;
     }
+    naru_storage_log(&mut e);
     let configuration = backend_configuration(&mut e, target, input, project, output, command, &mut backend_args);
     var session = new_mlir_session(&mut e, configuration);
     if (e.good()) { import_mlir_graph(&mut e, &mut session, rt.active_region); }
     if (e.good()) { verify_mlir_session(&mut e, &mut session); }
-    if (!e.good()) { session.close(); print(e.diagnostic); return 1; }
+    if (!e.good()) { session.close(); naru_error(e.diagnostic); return 1; }
     if (command == "check") { session.close(); print("check passed"); return 0; }
     if (command == "emit") {
         if (output.len > 0) {
             let success = compile_mlir_session(&mut e, &mut session, "mlir", output);
             session.close();
-            if (!success || !e.good()) { print(e.diagnostic); return 1; }
+            if (!success || !e.good()) { naru_error(e.diagnostic); return 1; }
             return 0;
         }
         let ir = print_mlir_session(&mut e, &mut session);
         session.close();
-        if (!e.good()) { print(e.diagnostic); return 1; }
+        if (!e.good()) { naru_error(e.diagnostic); return 1; }
         print(ir); return 0;
     }
     let success = compile_mlir_session(&mut e, &mut session, target, output);
     session.close();
-    if (!success || !e.good()) { print(e.diagnostic); return 1; }
-    print("naru: wrote " + output + " (in-process MLIR/LLVM/LLD)"); return 0;
+    if (!success || !e.good()) { naru_error(e.diagnostic); return 1; }
+    log_info("naru: wrote " + output + " (in-process MLIR/LLVM/LLD)"); return 0;
+}
+
+fn main() -> i32 {
+    set_log_level(log_level_info());
+    let result = naru_command();
+    log_flush();
+    return result;
 }

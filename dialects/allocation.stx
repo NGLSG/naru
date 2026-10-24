@@ -1,0 +1,24 @@
+// Static allocation sites are language-library facts. Planning traverses
+// checked expressions but never evaluates their runtime initializers.
+mod allocation;
+use tree;
+
+// Site(identity, allocator relation, allocator arguments). A language can
+// select any target allocator without coupling this traversal to its types.
+effect plan_frame($body,$entry,$environment)
+    => bind(Planning($block,$scope),tree.fold_with($body,"allocation.visit",
+        Planning($entry,$environment),"allocation.children"),$scope);
+effect visit(Planning($entry,$environment),$node)
+    => allocation.reserve(allocation.site($node),$entry,$environment);
+effect reserve(NoSite(),$entry,$environment) => Planning($entry,$environment);
+effect reserve(Site($identity,$allocator,$arguments),$entry,$environment)
+    => choose(env.contains($environment,SlotKey($identity)),
+        allocation.reuse(env.get($environment,SlotKey($identity)),$allocator,$arguments,$entry,$environment),
+        bind($slot,mlir.with_block($entry,apply($allocator,$arguments)),
+            Planning($entry,env.put($environment,SlotKey($identity),Allocated($allocator,$arguments,$slot)))));
+effect reuse(Allocated($allocator,$arguments,$slot),$requested,$parameters,$entry,$environment)
+    => choose(and(eq($allocator,$requested),eq($arguments,$parameters)),Planning($entry,$environment),
+        fail("conflicting allocation facts for one static site"));
+effect lookup($environment,$identity) => arg(env.get($environment,SlotKey($identity)),2);
+effect[fallback] site($node) => NoSite();
+effect[fallback] children($node) => tree.raw_children($node);

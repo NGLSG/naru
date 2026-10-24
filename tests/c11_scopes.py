@@ -10,6 +10,8 @@ import subprocess
 import time
 
 from native_process import execute
+from frozen_snapshot import validate_frozen
+from rule_dependencies import c11_rule_inputs
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = [
@@ -81,7 +83,7 @@ REFERENCE_OPTIONS = {name: ["-fms-extensions"] for name, _, _ in CASES if name.s
 
 def fingerprints(compiler: Path) -> dict[str, str]:
     result = {str(p.relative_to(ROOT)).replace("\\", "/"): hashlib.sha256(p.read_bytes()).hexdigest()
-              for p in sorted((ROOT / "dialects").rglob("*.stx"))}
+              for p in c11_rule_inputs()}
     result["compiler:" + str(compiler)] = hashlib.sha256(compiler.read_bytes()).hexdigest()
     backend = compiler.parent / "naru_mlir_backend.dll"
     if backend.is_file():
@@ -101,6 +103,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=20)
     args = parser.parse_args()
     args.compiler = args.compiler.resolve()
+    frozen = validate_frozen(args.compiler,core=ROOT/'target/naru.exe',required_rules=[ROOT/'dialects/c11.stx']) if args.frozen else None
     if args.case and set(args.case) - {case[0] for case in CASES}:
         parser.error("Unknown scope case")
     work = ROOT / "target/c11-scopes"
@@ -153,9 +156,11 @@ def main() -> int:
                   ("" if record["passed"] else ": " + record["error"][:500]), flush=True)
     after = fingerprints(args.compiler)
     unchanged = after == before
+    if args.frozen:
+        unchanged = unchanged and frozen == validate_frozen(args.compiler,core=ROOT/'target/naru.exe',required_rules=[ROOT/'dialects/c11.stx'])
     rules_unchanged = all(after.get(key) == value for key, value in before.items() if key.startswith("dialects/"))
     report = dict(generated_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                  compiler=str(args.compiler), frozen=args.frozen, fingerprints=before,
+                  compiler=str(args.compiler), frozen=args.frozen, fingerprints=before, frozen_provenance=frozen,
                   compiler_sha256=hashlib.sha256(args.compiler.read_bytes()).hexdigest(),
                   test_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                   rule_sha256={key: value for key, value in before.items() if key.startswith("dialects/")},

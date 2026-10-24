@@ -2,12 +2,14 @@ module naru;
 use std.collections;
 use std.string;
 
+@[derive(Clone, Copy)]
 struct ParseChoice { public value: i64; public rule: i64; }
 class ParseSelection {
     public value: i64; public rule: i64; public end: i64; public fallback: bool;
     public ties: Vec<ParseChoice>;
 }
 
+@[derive(Clone, Copy)]
 struct ParseMemo { public value: i64; public end: i64; public farthest: i64; }
 
 class Grammar {
@@ -48,8 +50,9 @@ public fn prepare_grammar_index(e: &mut Engine) {
         i = i - 1;
         var rule = e.syntax_rules.get(i);
         rule.next = heads.contains(rule.category) ? heads.get(rule.category) : -1;
+        // Dict.put takes ownership. Keep the category in the rule record.
+        heads.put(str_dup(rule.category), i);
         e.syntax_rules.set(i, rule);
-        heads.put(rule.category, i);
     }
     var prefix_heads = Dict::<string,i64>.new();
     var generic_heads = Dict::<string,i64>.new();
@@ -93,7 +96,7 @@ public fn syntax_guard_matches(e: &mut Engine, g: &mut Grammar, guard: i64, bind
 }
 
 public fn is_infix(e: &mut Engine, rule_id: i64) -> bool {
-    let r = e.syntax_rules.get(rule_id);
+    let r = e.syntax_rules.get_ref(rule_id);
     let first = e.child(r.pattern, 0);
     if (first < 0 || e.node(first).kind != 3) { return false; }
     return e.node(e.child(first, 0)).text == r.category && r.precedence > 0;
@@ -139,12 +142,12 @@ public fn match_syntax(e: &mut Engine, g: &mut Grammar, s: &mut Stream, rule_id:
     // The dispatcher charges one production attempt for both interpreted and
     // frozen rules.  Frozen matchers deliberately do not charge again.
     if (!syntax_evaluation_step(e,g,s)) { return -1; }
-    let r = e.syntax_rules.get(rule_id); let p = e.node(r.pattern);
+    let r = e.syntax_rules.get_ref(rule_id); let p = e.node(r.pattern);
     let start = s.pos;
     let bindings = e.add_node(5, "", s.path, s.peek().line, s.peek().column);
     var edge = p.first; var index: i64 = 0;
     while (edge >= 0 && e.good()) {
-        let part_edge = e.edges.get(edge); let part = e.node(part_edge.value);
+        let part_edge = e.edge(edge); let part = e.node(part_edge.value);
         if (left >= 0 && index == 0) {
             bind_value(e, bindings, part.text, left);
         } else if (part.kind == 1) {
@@ -173,7 +176,7 @@ public fn match_syntax(e: &mut Engine, g: &mut Grammar, s: &mut Stream, rule_id:
     if (result >= 0) {
         var n = e.node(result);
         let origin = s.tokens.get(start);
-        n.file = origin.file; n.line = origin.line; n.column = origin.column;
+        n.file = e.intern(origin.file); n.line = origin.line; n.column = origin.column;
         e.nodes.set(result, n);
     }
     return result;
@@ -195,7 +198,7 @@ public fn consider_syntax(e: &mut Engine, selection: &mut ParseSelection, value:
 public fn syntax_candidate(e: &mut Engine, choice: ParseChoice, origin: Token) -> i64 {
     let rule = e.syntax_rules.get(choice.rule); var literals: i64 = 0; var captures: i64 = 0;
     var edge = e.node(rule.pattern).first;
-    while (edge >= 0) { let part = e.edges.get(edge);
+    while (edge >= 0) { let part = e.edge(edge);
         if (e.node(part.value).kind == 1) { literals = literals + 1; } else { captures = captures + 1; }
         edge = part.next;
     }
@@ -249,8 +252,8 @@ public fn try_syntax_bucket(e: &mut Engine, g: &mut Grammar, s: &mut Stream, buc
     if (bucket < 0) { return; }
     var edge = e.node(bucket).first;
     while (edge >= 0 && e.good()) {
-        let item = e.edges.get(edge); let rule_id = str_to_int(e.node(item.value).text);
-        let rule = e.syntax_rules.get(rule_id);
+        let item = e.edge(edge); let rule_id = str_to_int(e.node(item.value).text);
+        let rule = e.syntax_rules.get_ref(rule_id);
         if (left < 0 || rule.precedence >= min_bp) {
             s.pos = start; let found = match_syntax(e,g,s,rule_id,left,depth);
             if (found >= 0) {
@@ -295,7 +298,7 @@ public fn parse_category(e: &mut Engine, g: &mut Grammar, s: &mut Stream, catego
         return cached.value;
     }
     if (g.active.contains(key) && g.active.get(key) != 0) { e.reject("left-recursive syntax requires an explicit precedence: " + category); return -1; }
-    g.active.put(key,1);
+    g.active.put(str_dup(key),1);
     var prefix = new_selection(start);
     try_literal_buckets(e,g,s,category,t,start,-1,min_bp,depth,&mut prefix);
     if (g.generic_heads.contains(category)) { try_syntax_bucket(e,g,s,g.generic_heads.get(category),start,-1,min_bp,depth,&mut prefix); }
@@ -309,7 +312,7 @@ public fn parse_category(e: &mut Engine, g: &mut Grammar, s: &mut Stream, catego
         if (next.value < 0) { s.pos = after_left; break; }
         best = e.good() ? select_syntax(e,g,&mut next,category,t,depth,true) : -1; s.pos = next.end;
     }
-    g.active.put(key,0);
+    g.active.put(str_dup(key),0);
     if (!e.good()) { return -1; }
     if (best < 0) { s.pos = start; }
     g.memo.put(key,g.results.len); g.results.push(ParseMemo { value: best, end: s.pos, farthest: g.farthest });

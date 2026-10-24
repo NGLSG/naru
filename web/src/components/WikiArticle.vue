@@ -27,6 +27,7 @@ let observer: IntersectionObserver | undefined
 function sourceUrl(reference: WikiReference) {
   if (reference.url) return reference.url
   for (const entry of catalog.entries) for (const doc of entry.documents) if (`${entry.id}/${doc.name}` === reference.file) return doc.url
+  for (const entry of catalog.entries) if (reference.file?.startsWith(`${entry.id}/`)) return entry.indexUrl
   return ''
 }
 function jump(id: string) {
@@ -104,8 +105,8 @@ const day = (date: string) => new Date(date).toLocaleDateString('zh-CN', { year:
         <section id="wiki-references" class="wiki-section wiki-references" data-wiki-section>
           <div class="wiki-section-heading"><span class="mono">S</span><h2>参考文献与考据</h2></div>
           <p class="references-intro">正文由档案馆整理撰写，文献用于核对与追溯。源程序节选和自编示例分别标注；原始资料保留各自的版本与身份。</p>
-          <ol><li v-for="reference in references" :id="`wiki-ref-${reference.number}`" :key="reference.key"><span class="mono">{{ reference.number.toString().padStart(2, '0') }}</span><div><a :href="reference.href" target="_blank" rel="noopener">{{ reference.title }}<Icon name="arrow-up-right" :size="12" /></a><p>{{ reference.locator }}</p></div></li></ol>
-          <details class="wiki-evidence"><summary>馆藏原件与原始条目卡 <span class="mono">{{ documents.length }} FILES</span></summary><div class="wiki-document-list"><a v-for="doc in documents" :key="doc.url" :href="doc.url" :download="doc.name"><Icon name="file" :size="16" /><span>{{ doc.name }}</span><small class="mono">{{ doc.format }}</small><Icon name="download" :size="13" /></a></div><p v-if="!documents.length">本条目目前只有文献引用卡，未收藏原件。</p><a v-for="edition in (entry ? [entry] : editions)" :key="edition.id" :href="edition.indexUrl" target="_blank" rel="noopener" class="original-index-link">原始记录：{{ edition.id }} ↗</a><p>原始卡片保留采集时状态；现行复原记录以本页关联的规则文件为依据。</p></details>
+          <ol><li v-for="reference in references" :id="`wiki-ref-${reference.number}`" :key="reference.key"><span class="mono">{{ reference.number.toString().padStart(2, '0') }}</span><div><a v-if="reference.href" :href="reference.href" target="_blank" rel="noopener">{{ reference.title }}<Icon name="arrow-up-right" :size="12" /></a><span v-else>{{ reference.title }}</span><p>{{ reference.locator }} {{ reference.unavailable ?? '' }}</p></div></li></ol>
+          <details class="wiki-evidence"><summary>馆藏原件与原始条目卡 <span class="mono">{{ documents.length }} FILES</span></summary><div class="wiki-document-list"><a v-for="doc in documents" :key="doc.url" :href="doc.url" :download="doc.name"><Icon name="file" :size="16" /><span>{{ doc.name }}</span><small class="mono">{{ doc.format }}</small><Icon name="download" :size="13" /></a></div><p v-if="!documents.length">{{ catalog.originalsWithheld ? '源码预览未附带史料原件，文献来源见条目卡。' : '本条目目前只有文献引用卡，未收藏原件。' }}</p><a v-for="edition in (entry ? [entry] : editions)" :key="edition.id" :href="edition.indexUrl" target="_blank" rel="noopener" class="original-index-link">原始记录：{{ edition.id }} ↗</a><p>原始卡片保留采集时状态；现行复原记录以本页关联的规则文件为依据。</p></details>
         </section>
         <section class="wiki-related"><span class="eyebrow">CONTINUE READING</span><h2>沿着这些线索，继续阅读</h2><div><a v-for="related in article.related" :key="related" :href="`#/language/${related}`"><span>{{ wiki.families[related]?.name }}</span><small>{{ wiki.families[related]?.subtitle }}</small><Icon name="arrow-right" :size="18" /></a></div></section>
         <footer class="wiki-article-footer"><span>本馆撰稿 · {{ day(wiki.editedAt) }}</span><a href="#/contribute">提供史料或修正这个条目 ↗</a></footer>

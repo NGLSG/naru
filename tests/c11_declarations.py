@@ -45,7 +45,7 @@ def main():
         'conflicting typedef types are invalid': ('typedef int Value; typedef long Value;', 'incompatible C typedef'),
         'incompatible function pointer is invalid': ('int add(int a,int b){return a+b;} int main(void){int (*f)(int)=add;return 42;}', 'incompatible C pointer conversion'),
         'generic duplicate associations are invalid': ('int main(void){return _Generic(1,int:42,int:2);}', 'duplicate compatible C generic association'),
-        'generic unselected arm still requires valid names': ('int main(void){return _Generic(1,int:42,default:unknown);}', 'unbound environment key'),
+        'generic unselected arm still requires valid names': ('int main(void){return _Generic(1,int:42,default:unknown);}', 'C identifier is not visible at this declaration point'),
         'duplicate locals remain invalid in groups': ('int main(void){int a=20,a=22;return a;}', 'duplicate C local declaration'),
         'function annotation rejects object declarations': ('__declspec(allocator) int value=42; int main(void){return value;}', 'MSVC function annotation requires a function declaration'),
         'va_start requires a variadic enclosing function': ('#include <stdarg.h>\nint main(void){va_list a;int n=0;va_start(a,n);return 42;}', 'va_start requires a variadic function'),

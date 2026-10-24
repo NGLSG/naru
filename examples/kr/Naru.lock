@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "generator": "naru",
+  "packages": [
+    {"name": "kr-examples", "version": "0.1.0", "manifest": "Naru.toml", "sha256": "f8937067fb7d13eb09f878a588fae1957263264746e2342c959da61a8095d703"},
+    {"name": "naru-stdlib", "version": "0.2.0", "manifest": "../../dialects/Naru.toml", "sha256": "17be26a55d0907a4e6bb55219cf623feaf71fc7018e4932bc7846af2b7255275"}
+  ],
+  "dependencies": [
+    {"owner": 0, "alias": "std", "target": 1}
+  ],
+  "rules": [
+    {"module": "allocation", "path": "../../dialects/allocation.stx", "sha256": "8d5cdbe987dc087efd50dfceb7dd317215dc47c775b096b597a61eb0309fe028"},
+    {"module": "base", "path": "../../dialects/base.stx", "sha256": "695120457711fe8bebd4166c4c8e29e0fef43dc54bfab60ac5735a441ce3b24a"},
+    {"module": "cfg", "path": "../../dialects/cfg.stx", "sha256": "bdf32f979934d9c80afdef1021bb90e34ca29f9beb4391f3528f1a42a203d753"},
+    {"module": "control", "path": "../../dialects/control.stx", "sha256": "11e537939d2846706f7b362ca54c6ce0cdda147e8005934ad6b46046a5e6e10b"},
+    {"module": "kr", "path": "../../dialects/kr.stx", "sha256": "2cd573419e33618a8272a095ecc72c01909d8a549bfd52f9ea724c86d7ad2dea"},
+    {"module": "numbers", "path": "../../dialects/numbers.stx", "sha256": "9cb7d661e744e9897253a94046b144abc17e70cffe71da13131070f6bd387d85"},
+    {"module": "pipeline", "path": "../../dialects/pipeline.stx", "sha256": "4110be63ae2f5c6563c97f396cb1479093f2fb994c356ea93f125bab49b3de5c"},
+    {"module": "tree", "path": "../../dialects/tree.stx", "sha256": "28f45ee250c8b6f1fa0a9c312795f6d5cc625cb8a49b8c7a643f182b2c4ec4d0"},
+    {"module": "types", "path": "../../dialects/types.stx", "sha256": "002035a34acec1a7dc674e4794d8c08c1d3b1cc18ae6a247c8b8d60fff88b05e"}
+  ]
+}

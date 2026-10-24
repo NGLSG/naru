@@ -86,6 +86,8 @@ CASES = [
          contains=("ambiguous rule symbol",)),
     Case("rules may explicitly extend an imported relation", evaluate("extension.test()", "tests/fixtures/modules/extension.stx"),
          tree="extension.Extended()"),
+    Case("guards may inspect pure paths and loaded module metadata", evaluate("path_guard.check()", "tests/fixtures/path_guard.stx"),
+         tree="42"),
     Case("different files cannot define the same module", evaluate("a.run(a.X())", "tests/fixtures/modules/a.stx", "tests/fixtures/modules/a_duplicate.stx"), False,
          contains=("duplicate rule module",)),
     Case("multiplication binds tighter than addition", source("parse", "tests/fixtures/precedence.nru", BASE),

@@ -13,6 +13,20 @@ module, builders, regions and blocks. Strings use UTF-8 and explicit byte length
 
 ## Developer build and runtime distribution
 
+Compiler-resource headers are actual installed LLVM files, supplementing the
+target SDK and CRT. `resource_include_dir` in a target profile, or
+`NARU_RESOURCE_INCLUDE_DIR`, selects their include directory. A normal deferred
+native build stages the building compiler's resource headers under
+`target/runtime/clang/include`; packaging keeps that layout. Filesystem-only
+toolchain discovery also checks this directory beside the executable/backend,
+including when PATH is empty. No compiler subprocess or replacement standard
+header is used. Header queries and `include_next` are C rule-library facilities
+over the shared resolver's retained search-chain cursor.
+
+The backend additionally registers the Complex-to-LLVM conversion interface.
+Source languages retain control of arithmetic domain and exceptional-value
+policies rather than assuming a backend algebraic expansion proves conformance.
+
 ```powershell
 python tools/mlir/bootstrap.py
 .\build.ps1 -Release
@@ -40,6 +54,12 @@ mlir-opt, mlir-translate or lld-link. Override the DLL location with
 `--backend-library` or `NARU_MLIR_BACKEND`.
 
 ## Commands and pipeline
+
+`std/coro` generates upstream `async.coro.*` operations. The Windows generator
+project selects `convert-async-to-llvm` followed by the native
+`naru-coro-msvc-allocation` pass, pairing `_aligned_malloc` with `_aligned_free`
+for coroutine frames. Scheduling and source syntax stay in the rule library;
+the target pass only adapts the allocator ABI. See [coroutine rules](../docs/coro.md).
 
 ```powershell
 .\target\naru.exe build examples\answer.nru --target exe -o target\answer.exe
@@ -159,6 +179,25 @@ plugins/passes. Device-specific optimization semantics still require their
 interfaces, rewrite patterns and passes.
 
 ## Acceptance
+
+`ir_effects.ordered` encloses one regionless LLVM-translatable operation in
+`naru_backend.ordered`, terminated by `naru_backend.yield`. Its effect model is
+conservative; parent dead-code elimination and CSE cannot treat the operation
+as pure. The verifier requires one block, no block arguments, matching results
+and LLVM-compatible types. Export translates the enclosed operation at the
+current insertion point, forwards its attribute translations and maps results;
+it introduces no wrapper function or runtime call. This is used for constrained
+floating instructions whose bundled MLIR effect declarations are too weak for
+strict exception behavior. Source and deferred C11 environment fixtures have
+been added; native build and acceptance remain deferred.
+
+Language libraries may attach `naru.llvm.function_attrs = ["noreturn", ...]`
+to `llvm.func`. The in-process LLVM translation bridge accepts only known,
+value-less LLVM enum attributes valid on functions and applies them before LLVM
+optimization. Unknown names, typed/integer attributes and non-function uses are
+errors. This facility carries backend facts and contains no C source policy.
+The 2026-10-13 implementation batch has not yet rebuilt or accepted this bridge;
+its final validation is deferred with the C11 feature batch.
 
 `python tools/mlir/test_backend.py --report backend/verification.json` covers
 constant folding, executable exit 42, affine loop fusion with temporary buffer

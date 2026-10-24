@@ -81,7 +81,7 @@ public fn naru_dirname(path: string) -> string {
 }
 
 public fn naru_join_path(directory: string, path: string) -> string {
-    if (is_absolute(path)) { return str_dup(path); }
+    if (std.fs.is_absolute(path)) { return str_dup(path); }
     if (directory.len == 0) { return str_dup(path); }
     let c = str_char_at(directory, directory.len - 1);
     return directory + (c == 47 || c == 92 ? "" : "/") + path;
@@ -94,6 +94,25 @@ public fn naru_rule_module_path(directory: string, name: string) -> string {
     let hierarchical = naru_join_path(directory, str_replace(name, ".", "/") + ".stx");
     if (fileExists(hierarchical) && !isDir(hierarchical)) { return hierarchical; }
     return naru_join_path(directory, naru_short_name(name) + ".stx");
+}
+
+// Hierarchical modules can import a shared module from their namespace root.
+// Retain local/flat resolution, and only strip a directory suffix that actually
+// matches the importer's declared namespace (no arbitrary ancestor search).
+public fn naru_import_rule_path(path: string, module_name: string, name: string) -> string {
+    let directory = naru_dirname(path);
+    let local = naru_rule_module_path(directory, name);
+    if (fileExists(local) && !isDir(local)) { return local; }
+    let namespace_name = naru_name_module(module_name);
+    if (namespace_name.len == 0) { return local; }
+    let normalized = str_replace(directory, "\\", "/");
+    let suffix = "/" + str_replace(namespace_name, ".", "/");
+    if (normalized.len > suffix.len && str_to_lower(normalized.substring(normalized.len - suffix.len, normalized.len)) == str_to_lower(suffix)) {
+        let root = normalized.substring(0, normalized.len - suffix.len);
+        let rooted = naru_rule_module_path(root, name);
+        if (fileExists(rooted) && !isDir(rooted)) { return rooted; }
+    }
+    return local;
 }
 
 public fn naru_short_name(name: string) -> string {
@@ -115,22 +134,23 @@ public fn naru_name_module(name: string) -> string {
 }
 
 public fn naru_module_index(e: &mut Engine, name: string) -> i64 {
-    var i: i64 = 0;
-    while (i < e.modules.len) {
-        if (e.modules.get(i).name == name) { return i; }
-        i = i + 1;
+    while (e.module_lookup_count < e.modules.len) {
+        let i = e.module_lookup_count;
+        let module_info = e.modules.get_ref(i);
+        if (!e.module_lookup.contains(module_info.name)) { e.module_lookup.put(str_dup(module_info.name),i); }
+        e.module_lookup_count = i + 1;
     }
-    return -1;
+    return e.module_lookup.contains(name) ? e.module_lookup.get(name) : -1;
 }
 
 public fn naru_visible(e: &mut Engine, context: string, wanted: string) -> bool {
     if (context.len == 0 || context == wanted) { return naru_module_index(e, wanted) >= 0; }
     let module_id = naru_module_index(e, context);
     if (module_id < 0) { return false; }
-    let module_info = e.modules.get(module_id);
+    let module_info = e.modules.get_ref(module_id);
     var edge = e.node(module_info.imports).first;
     while (edge >= 0) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         if (e.node(item.value).text == wanted) { return true; }
         edge = item.next;
     }
@@ -155,7 +175,7 @@ public fn load_rule_file(e: &mut Engine, path: string) -> bool {
     let prior = e.modules.len;
     if (!load_stx(e, source, absolute)) { return false; }
     let added = e.modules.get(prior);
-    let exports = e.rule_catalog.keys(); var export_index: i64 = 0;
+    let exports = naru_text_keys(&e.rule_catalog); var export_index: i64 = 0;
     while (export_index < exports.len) {
         let name = exports.get(export_index);
         if (same_path(e.rule_catalog.get(name), absolute) && name != added.name) {
@@ -203,13 +223,26 @@ public fn load_frozen_extension(e: &mut Engine, path: string) -> bool {
 }
 
 public fn naru_symbol_index(e: &mut Engine, kind: i32, module_name: string, name: string) -> i64 {
-    var i: i64 = 0;
-    while (i < e.symbols.len) {
-        let symbol = e.symbols.get(i);
-        if (symbol.kind == kind && symbol.module_name == module_name && symbol.name == name) { return i; }
-        i = i + 1;
+    while (e.symbol_lookup_count < e.symbols.len) {
+        let i = e.symbol_lookup_count;
+        let symbol = e.symbols.get_ref(i);
+        let key = naru_number(symbol.kind as i64) + ":" + symbol.module_name + "." + symbol.name;
+        if (!e.symbol_lookup.contains(key)) { e.symbol_lookup.put(key,i); }
+        e.symbol_lookup_count = i + 1;
     }
-    return -1;
+    let key = naru_number(kind as i64) + ":" + module_name + "." + name;
+    return e.symbol_lookup.contains(key) ? e.symbol_lookup.get(key) : -1;
+}
+
+fn naru_imported_symbol(e: &mut Engine, kind: i32, module_name: string, name: string, found: string) -> string {
+    let id = naru_symbol_index(e,kind,module_name,name);
+    if (id < 0) { return found; }
+    let symbol = e.symbols.get_ref(id);
+    if (found.len == 0) { return str_dup(symbol.full_name); }
+    if (found != symbol.full_name) {
+        e.reject("ambiguous rule symbol '" + name + "': " + found + " and " + symbol.full_name + "; use a qualified name");
+    }
+    return found;
 }
 
 public fn naru_add_symbol(e: &mut Engine, kind: i32, module_name: string, name: string, declared_here: bool) {
@@ -239,7 +272,7 @@ public fn naru_collect_constructors(e: &mut Engine, root: i64, module_name: stri
     }
     var edge = n.first;
     while (edge >= 0) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         naru_collect_constructors(e, item.value, module_name);
         edge = item.next;
     }
@@ -262,11 +295,11 @@ public fn naru_resolve_constructor_symbols(e: &mut Engine) -> bool {
                 let module_info = e.modules.get(naru_module_index(e, symbol.module_name));
                 var edge = e.node(module_info.imports).first;
                 while (edge >= 0) {
-                    let item = e.edges.get(edge);
+                    let item = e.edge(edge);
                     let imported_name = e.node(item.value).text;
                     let imported_id = imported_name == symbol.module_name ? -1 : naru_symbol_index(e, 0, imported_name, symbol.name);
                     if (imported_id >= 0) {
-                        let imported = e.symbols.get(imported_id);
+                        let imported = e.symbols.get_ref(imported_id);
                         if (imported.full_name.len == 0) { pending = true; }
                         else if (selected.len == 0) { selected = str_dup(imported.full_name); }
                         else if (selected != imported.full_name) {
@@ -306,18 +339,25 @@ public fn naru_resolve_name(e: &mut Engine, kind: i32, name: string, context: st
         return str_dup(e.symbols.get(id).full_name);
     }
     var found: string = "";
-    var i: i64 = 0;
-    while (i < e.symbols.len) {
-        let symbol = e.symbols.get(i);
-        if (symbol.kind == kind && symbol.name == name && naru_visible(e, context, symbol.module_name)) {
-            if (found.len == 0) { found = str_dup(symbol.full_name); }
-            else if (found != symbol.full_name) {
-                e.reject("ambiguous rule symbol '" + name + "': " + found + " and " + symbol.full_name + "; use a qualified name");
-                return "";
+    if (context.len == 0) {
+        var i: i64 = 0;
+        while (i < e.modules.len && e.good()) {
+            found = naru_imported_symbol(e,kind,e.modules.get_ref(i).name,name,found);
+            i = i + 1;
+        }
+    } else {
+        found = naru_imported_symbol(e,kind,context,name,found);
+        let module_id = naru_module_index(e,context);
+        if (module_id >= 0) {
+            var edge = e.node(e.modules.get_ref(module_id).imports).first;
+            while (edge >= 0 && e.good()) {
+                let item = e.edge(edge);
+                found = naru_imported_symbol(e,kind,e.node(item.value).text,name,found);
+                edge = item.next;
             }
         }
-        i = i + 1;
     }
+    if (!e.good()) { return ""; }
     if (found.len == 0) { e.reject("undefined rule symbol '" + name + "' in '" + context + "'"); }
     return found;
 }
@@ -329,12 +369,12 @@ public fn qualify_expression(e: &mut Engine, term: i64, context_module: string) 
     if (n.kind == 0 || n.kind == 4) {
         let qualified = naru_resolve_name(e, n.kind, n.text, context_module);
         if (!e.good()) { return false; }
-        n.text = str_dup(qualified);
+        n.text = e.intern(qualified);
         e.nodes.set(term, n);
     }
     var edge = n.first;
     while (edge >= 0) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         if (!qualify_expression(e, item.value, context_module)) { return false; }
         edge = item.next;
     }
@@ -374,11 +414,11 @@ public fn link_rules(e: &mut Engine) -> bool {
         let module_info = e.modules.get(module_id);
         var edge = e.node(module_info.imports).first;
         while (edge >= 0 && e.good()) {
-            let item = e.edges.get(edge);
+            let item = e.edge(edge);
             let imported = e.node(item.value);
             if (naru_module_index(e, imported.text) < 0) {
                 let candidate = e.rule_catalog.contains(imported.text) ? e.rule_catalog.get(imported.text)
-                    : naru_rule_module_path(naru_dirname(module_info.path), imported.text);
+                    : naru_import_rule_path(module_info.path, module_info.name, imported.text);
                 if (!load_rule_file(e, candidate)) { return false; }
                 if (naru_module_index(e, imported.text) < 0) {
                     e.at_error(module_info.path, imported.line, imported.column,
@@ -429,7 +469,7 @@ public fn link_rules(e: &mut Engine) -> bool {
         // Unqualified effect declarations introduce this module's relation;
         // qualified declarations may extend an explicitly imported relation.
         if (naru_name_module(lhs.text).len == 0) {
-            lhs.text = rule.module_name + "." + lhs.text;
+            lhs.text = e.intern(rule.module_name + "." + lhs.text);
             e.nodes.set(rule.lhs, lhs);
         }
         if (!qualify_expression(e, rule.lhs, rule.module_name)) { return false; }

@@ -86,7 +86,7 @@ include_paths = "."
 
 前端选项环境包含 `project_directory` 及 `target_configuration`。后者是与原生
 后端一致的目标 JSON，供 `target.toolchain` 查询目标事实和已安装的 SDK 路径。
-C 的完整验收目标、系统标准库来源与当前缺口见 [C11 压力测试](c11.md)。
+C 的完整验收目标、系统标准库来源与当前缺口见 [C11 方言](c11.md)。
 
 规则与解析步数、递归深度均可配置；CLI 的 `--rule-budget`、`--parse-budget`、
 `--rule-depth`、`--parse-depth` 覆盖项目值。步数默认 1000000，深度默认 256，
@@ -157,10 +157,9 @@ python tools\freeze\build.py --core target\naru.exe --project examples\ffi --loc
 .\target\specialized-externc\target\naru.exe build --project examples\ffi --locked
 ```
 
-冻结镜像固化所选规则及其导入闭包的语法和 effect 实现。项目构建只检查文件指纹，
-不重新解析 STX 或解释其 effect；规则改变或选择的组与镜像不同会要求重新冻结。
-不传 `--project` 时，冻结编译器保留原有固定方言组模式，不自动发现项目。
-冻结编译器始终拒绝显式 `--rules`。
+冻结镜像固化所选规则及导入闭包。项目构建检查已冻结模块的指纹，使用原生匹配器和 effect 实现。已冻结模块内容改变时须重新冻结。
+
+`--rules` 和项目引用可以追加动态模块，参与相同的 fallback 和冲突检查。项目须保留冻结组的依赖闭包；不传 `--project` 时使用内嵌方言组。详见 [固化说明](../tools/freeze/README.md)。
 
 ## 链接配置
 

@@ -23,6 +23,7 @@ static exact_flags_fn p_naru_exact_flags;
 typedef const char *(*target_toolchain_fn)(const char *, int64_t);
 static target_toolchain_fn p_naru_target_toolchain;
 static exact_error_fn p_naru_target_error;
+static exact_error_fn p_naru_host_clock_snapshot;
 typedef void * (*naru_mlir_create_fn)(void);
 static naru_mlir_create_fn p_naru_mlir_create;
 typedef void (*naru_mlir_destroy_fn)(void *session);
@@ -358,4 +359,17 @@ const char *naru_target_toolchain(const char *json, int64_t len) {
 }
 const char *naru_target_error(void) {
     return p_naru_target_error ? p_naru_target_error() : backend_error;
+}
+const char *naru_host_clock_snapshot(void) {
+    if (!backend_library && naru_mlir_open(NULL, 0)) return NULL;
+    if (!p_naru_host_clock_snapshot) {
+        p_naru_host_clock_snapshot = (exact_error_fn)find_symbol("naru_host_clock_snapshot");
+        p_naru_target_error = (exact_error_fn)find_symbol("naru_target_error");
+        if (!p_naru_host_clock_snapshot || !p_naru_target_error) {
+            snprintf(backend_error, sizeof(backend_error), "MLIR bridge is missing the host clock toolkit");
+            p_naru_target_error = NULL;
+            return NULL;
+        }
+    }
+    return p_naru_host_clock_snapshot();
 }

@@ -1,0 +1,440 @@
+{
+  "format": 1,
+  "target": "windows-x86_64-llp64",
+  "scope": "Deferred target packing, pointer-preserving physical layouts and stable translation-time macros; source only, no executed acceptance evidence.",
+  "full_conformance_claimed": false,
+  "cases": [
+    {
+      "id": "pack-cap-1",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nstruct S{char c;double n;};\nint main(void){struct S s={2,40.0};return sizeof(s)==9&&_Alignof(struct S)==1&&offsetof(struct S,n)==1?(int)s.n+s.c:1;}"
+    },
+    {
+      "id": "pack-cap-2",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(2)\nstruct S{char c;double n;};\nint main(void){struct S s={2,40.0};return sizeof(s)==10&&_Alignof(struct S)==2&&offsetof(struct S,n)==2?(int)s.n+s.c:1;}"
+    },
+    {
+      "id": "pack-cap-4",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(4)\nstruct S{char c;double n;};\nint main(void){struct S s={2,40.0};return sizeof(s)==12&&_Alignof(struct S)==4&&offsetof(struct S,n)==4?(int)s.n+s.c:1;}"
+    },
+    {
+      "id": "pack-cap-8",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(8)\nstruct S{char c;double n;};\nint main(void){struct S s={2,40.0};return sizeof(s)==16&&_Alignof(struct S)==8&&offsetof(struct S,n)==8?(int)s.n+s.c:1;}"
+    },
+    {
+      "id": "pack-cap-16",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(16)\nstruct S{char c;double n;};\nint main(void){struct S s={2,40.0};return sizeof(s)==16&&_Alignof(struct S)==8&&offsetof(struct S,n)==8?(int)s.n+s.c:1;}"
+    },
+    {
+      "id": "pack-push-pop-named",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(push,outer,2)\nstruct A{char c;int n;};\n#pragma pack(push,inner,1)\nstruct B{char c;int n;};\n#pragma pack(pop,outer)\nstruct C{char c;int n;};\nint main(void){return sizeof(struct A)==6&&offsetof(struct A,n)==2&&sizeof(struct B)==5&&sizeof(struct C)==8?42:1;}"
+    },
+    {
+      "id": "pack-pop-label-override",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(push,outer,2)\n#pragma pack(push,inner,1)\n#pragma pack(pop,outer,4)\nstruct S{char c;double n;};\nint main(void){return offsetof(struct S,n)==4&&sizeof(struct S)==12?42:1;}"
+    },
+    {
+      "id": "pack-pop-missing-keeps-state",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(2)\n#pragma pack(push,known,1)\n#pragma pack(pop,missing)\nstruct A{char c;int n;};\n#pragma pack(pop)\nstruct B{char c;int n;};\nint main(void){return sizeof(struct A)==5&&sizeof(struct B)==6?42:1;}"
+    },
+    {
+      "id": "pack-reset-empty",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nstruct A{char c;int n;};\n#pragma pack()\nstruct B{char c;int n;};\nint main(void){return sizeof(struct A)==5&&sizeof(struct B)==8?42:1;}"
+    },
+    {
+      "id": "pack-pop-override-empty-stack",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\n#pragma pack(pop,2)\nstruct S{char c;int n;};\nint main(void){return sizeof(struct S)==6?42:1;}"
+    },
+    {
+      "id": "pack-block-definition",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\nint main(void){\n#pragma pack(push,1)\nstruct S{char c;int n;};struct S s={2,40};\n#pragma pack(pop)\nstruct T{char c;int n;};return sizeof(s)==5&&sizeof(struct T)==8?s.c+s.n:1;}"
+    },
+    {
+      "id": "pack-include-stream-state",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#include \"begin.h\"\nstruct A{char c;int n;};\n#include \"end.h\"\nstruct B{char c;int n;};\nint main(void){return sizeof(struct A)==5&&sizeof(struct B)==8?42:1;}",
+      "files": {
+        "begin.h": "#pragma pack(push,header_frame,1)",
+        "end.h": "#pragma pack(pop,header_frame)"
+      }
+    },
+    {
+      "id": "pack-pragma-operator",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#define PRAGMA(x) _Pragma(#x)\nPRAGMA(pack(push,1))\nstruct S{char c;int n;};\nPRAGMA(pack(pop))\nint main(void){struct S s={20,22};return sizeof(s)==5?s.c+s.n:1;}"
+    },
+    {
+      "id": "pack-ms-pragma-operator",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#define CAP 2\n__pragma(pack(push,CAP))\nstruct S{char c;int n;};\n__pragma(pack(pop))\nint main(void){return sizeof(struct S)==6?42:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "__pragma is a target SDK extension, not ISO syntax."
+    },
+    {
+      "id": "pack-keyword-macro",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\n#define RECORD struct\n#define MAKE(T) T\nMAKE(RECORD) S{char c;int n;};\nint main(void){return sizeof(struct S)==5?42:1;}"
+    },
+    {
+      "id": "pack-metadata-never-stringified",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <string.h>\n#pragma pack(1)\n#define S1(x) #x\n#define S(x) S1(x)\n#define T struct\nconst char *name=S(T);\nint main(void){return strcmp(name,\"struct\")==0?42:1;}"
+    },
+    {
+      "id": "pack-metadata-never-header-spelling",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#define H1(x) <x.h>\n#define H(x) H1(x)\n#pragma pack(1)\n#include H(struct)\nint main(void){return answer;}",
+      "files": {
+        "inc/struct.h": "enum {answer=42};"
+      },
+      "include_directories": [
+        "inc"
+      ]
+    },
+    {
+      "id": "pack-forward-completed-under-current-cap",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\nstruct S;\n#pragma pack(1)\nstruct S{char c;int n;};\n#pragma pack(8)\nstruct S *p;\nint main(void){return sizeof(*p)==5?42:1;}"
+    },
+    {
+      "id": "pack-reference-does-not-repack",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\nstruct S{char c;int n;};\n#pragma pack(1)\nstruct S object;\nstruct S *p=&object;\nint main(void){return sizeof(object)==8&&offsetof(struct S,n)==4?42:1;}"
+    },
+    {
+      "id": "pack-typedef-array-stride",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(push,1)\ntypedef struct S{char c;int n;} S;\n#pragma pack(pop)\nS values[2]={{2,20},{3,22}};\nint main(void){return sizeof(values)==10&&(char*)&values[1]-(char*)&values[0]==5?values[0].n+values[1].n:1;}"
+    },
+    {
+      "id": "pack-nested-records",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nstruct A{char c;int n;};\nstruct B{char c;struct A a;double d;};\nint main(void){struct B b={1,{2,40},3};return sizeof(b)==14&&offsetof(struct B,a)==1&&offsetof(struct B,d)==6?b.a.c+b.a.n:1;}"
+    },
+    {
+      "id": "pack-explicit-member-alignment",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nstruct S{char c;_Alignas(16) int n;};\nint main(void){return _Alignof(struct S)==16&&offsetof(struct S,n)==16&&sizeof(struct S)==32?42:1;}"
+    },
+    {
+      "id": "pack-aligned-aggregate",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nstruct __declspec(align(16)) S{char c;int n;};\nint main(void){return _Alignof(struct S)==16&&offsetof(struct S,n)==1&&sizeof(struct S)==16?42:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "__declspec(align) composes with target packing."
+    },
+    {
+      "id": "pack-aligned-nested-required-alignment",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\nstruct __declspec(align(16)) A{int n;};\n#pragma pack(1)\nstruct B{char c;struct A a;};\nint main(void){return _Alignof(struct B)==16&&offsetof(struct B,a)==16&&sizeof(struct B)==32?42:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "The target retains explicitly required nested-record alignment after applying pack."
+    },
+    {
+      "id": "pack-flexible-array",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nstruct S{char c;int n;unsigned char data[];};\nint main(void){return sizeof(struct S)==5&&offsetof(struct S,data)==5?42:1;}"
+    },
+    {
+      "id": "pack-union-overlap",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nunion U{char c;double d;};\nint main(void){union U u={.d=42.0};return sizeof(u)==8&&_Alignof(union U)==1?(int)u.d:1;}"
+    },
+    {
+      "id": "pack-bitfield-plus-pointer-static",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nstruct S{unsigned int a:3,b:5;int *p;};\nint value=40;struct S s={2,3,&value};\nint main(void){s.b=7;return sizeof(s)==12&&offsetof(struct S,p)==4&&s.b==7?s.a+*s.p:1;}"
+    },
+    {
+      "id": "pack-bitfield-units",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nstruct S{char c;unsigned int a:3,b:5;short n;};\nint main(void){struct S s={1,2,3,40};s.b=7;return sizeof(s)==7&&offsetof(struct S,n)==5&&s.b==7?s.a+s.n:1;}"
+    },
+    {
+      "id": "pack-zero-width-unit",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(2)\nstruct S{char c;unsigned int a:3;unsigned int :0;short n;};\nint main(void){return sizeof(struct S)==8&&offsetof(struct S,n)==6?42:1;}"
+    },
+    {
+      "id": "union-bitfield-does-not-raise-alignment",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "union U{unsigned int a:3;unsigned char c;};\nint main(void){union U u={2};return _Alignof(union U)==1&&sizeof(u)==4&&u.a==2?42:1;}"
+    },
+    {
+      "id": "union-zero-width-after-bitfield",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "union U{unsigned char a:3;unsigned int :0;};\nint main(void){return sizeof(union U)==4&&_Alignof(union U)==1?42:1;}"
+    },
+    {
+      "id": "pack-static-pointer-relocation",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nstruct S{char c;int *p;};\nint value=40;struct S s={2,&value};\nint main(void){return sizeof(s)==9&&offsetof(struct S,p)==1?s.c+*s.p:1;}",
+      "llvm_ir_contains": [
+        "<{ i8, ptr }>"
+      ]
+    },
+    {
+      "id": "pack-static-array-of-pointer-records",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nstruct S{char c;int *p;};\nint a=20,b=22;struct S s[2]={{1,&a},{2,&b}};\nint main(void){return sizeof(s)==18?*s[0].p+*s[1].p:1;}"
+    },
+    {
+      "id": "pack-static-function-pointer-relocation",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nstruct S{char c;int (*f)(int);};\nint plus(int n){return n+22;}struct S s={20,plus};\nint main(void){return sizeof(s)==9?s.f(s.c):1;}"
+    },
+    {
+      "id": "pack-volatile-unaligned-access",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#pragma pack(1)\nstruct S{char c;int n;};volatile struct S s={2,20};\nint main(void){s.n+=20;return s.c+s.n;}"
+    },
+    {
+      "id": "pack-cross-unit-pointer-record",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#include <stddef.h>\n#include \"types.h\"\nextern struct S value;extern struct S pass(struct S);\nint main(void){struct S s=pass(value);return sizeof(s)==9?s.c+*s.p:1;}",
+      "files": {
+        "types.h": "#pragma pack(push,1)\nstruct S{char c;int *p;};\n#pragma pack(pop)"
+      },
+      "additional_sources": {
+        "provider.c": "#include \"types.h\"\nint n=40;struct S value={1,&n};struct S pass(struct S s){s.c++;return s;}"
+      }
+    },
+    {
+      "id": "pack-invalid-cap-0",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#pragma pack(0)\nint main(void){return 42;}",
+      "reject": true,
+      "reference_reject_required": false,
+      "reference_note": "Unsupported target pragma argument is a Naru diagnostic policy; no ISO-required reference rejection."
+    },
+    {
+      "id": "pack-invalid-cap-3",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#pragma pack(3)\nint main(void){return 42;}",
+      "reject": true,
+      "reference_reject_required": false,
+      "reference_note": "Unsupported target pragma argument is a Naru diagnostic policy; no ISO-required reference rejection."
+    },
+    {
+      "id": "pack-invalid-cap-32",
+      "feature": "alignment",
+      "work_item": "target-implementation-contract",
+      "clause": "6.7.2.1; 6.2.6.1; Windows MS aggregate ABI extension",
+      "source": "#pragma pack(32)\nint main(void){return 42;}",
+      "reject": true,
+      "reference_reject_required": false,
+      "reference_note": "Unsupported target pragma argument is a Naru diagnostic policy; no ISO-required reference rejection."
+    },
+    {
+      "id": "translation-clock-epoch",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.8.1; reproducible SOURCE_DATE_EPOCH extension",
+      "source": "#include <string.h>\nint main(void){return sizeof(__DATE__)==12&&sizeof(__TIME__)==9&&strcmp(__DATE__,\"Jan  1 1970\")==0&&strcmp(__TIME__,\"00:00:00\")==0?42:1;}",
+      "translation_environment": {
+        "SOURCE_DATE_EPOCH": "0"
+      }
+    },
+    {
+      "id": "translation-clock-leap",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.8.1; reproducible SOURCE_DATE_EPOCH extension",
+      "source": "#include <string.h>\nint main(void){return sizeof(__DATE__)==12&&sizeof(__TIME__)==9&&strcmp(__DATE__,\"Feb 29 2000\")==0&&strcmp(__TIME__,\"12:34:56\")==0?42:1;}",
+      "translation_environment": {
+        "SOURCE_DATE_EPOCH": "951827696"
+      }
+    },
+    {
+      "id": "translation-clock-last-second",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.8.1; reproducible SOURCE_DATE_EPOCH extension",
+      "source": "#include <string.h>\nint main(void){return sizeof(__DATE__)==12&&sizeof(__TIME__)==9&&strcmp(__DATE__,\"Dec 31 1999\")==0&&strcmp(__TIME__,\"23:59:59\")==0?42:1;}",
+      "translation_environment": {
+        "SOURCE_DATE_EPOCH": "946684799"
+      }
+    },
+    {
+      "id": "translation-clock-stable-include",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.8.1",
+      "source": "#include <string.h>\n#include \"clock.h\"\nint main(void){return strcmp(date,__DATE__)==0&&strcmp(time,__TIME__)==0?42:1;}",
+      "files": {
+        "clock.h": "const char *date=__DATE__;const char *time=__TIME__;"
+      },
+      "translation_environment": {
+        "SOURCE_DATE_EPOCH": "0"
+      }
+    },
+    {
+      "id": "translation-clock-macro-concatenation",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "6.10.8.1; 6.4.5",
+      "source": "#include <string.h>\n#define DATE __DATE__\n#define TIME __TIME__\nconst char stamp[]=DATE \" \" TIME;\nint main(void){return strcmp(stamp,\"Jan  1 1970 00:00:00\")==0?42:1;}",
+      "translation_environment": {
+        "SOURCE_DATE_EPOCH": "0"
+      }
+    },
+    {
+      "id": "translation-clock-invalid-negative",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "SOURCE_DATE_EPOCH target environment diagnostic",
+      "source": "const char *date=__DATE__;int main(void){return 42;}",
+      "translation_environment": {
+        "SOURCE_DATE_EPOCH": "-1"
+      },
+      "reject": true
+    },
+    {
+      "id": "translation-clock-invalid-empty",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "SOURCE_DATE_EPOCH target environment diagnostic",
+      "source": "const char *date=__DATE__;int main(void){return 42;}",
+      "translation_environment": {
+        "SOURCE_DATE_EPOCH": ""
+      },
+      "reject": true
+    },
+    {
+      "id": "translation-clock-invalid-trailing",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "SOURCE_DATE_EPOCH target environment diagnostic",
+      "source": "const char *date=__DATE__;int main(void){return 42;}",
+      "translation_environment": {
+        "SOURCE_DATE_EPOCH": "123x"
+      },
+      "reject": true
+    },
+    {
+      "id": "translation-clock-invalid-overflow",
+      "feature": "preprocessing",
+      "work_item": "preprocessor-completeness",
+      "clause": "SOURCE_DATE_EPOCH target environment diagnostic",
+      "source": "const char *date=__DATE__;int main(void){return 42;}",
+      "translation_environment": {
+        "SOURCE_DATE_EPOCH": "9999999999999999999999999999999999999"
+      },
+      "reject": true
+    },
+    {
+      "id": "packed-union-nested-pointer-byte-windows",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.7.9; 6.6; target packed object representation",
+      "source": "#pragma pack(push,1)\nstruct S{char c;int *p;};\n#pragma pack(pop)\nunion U{struct S s;unsigned char bytes[9];};\nint value=40;union U u={.s={2,&value}};int main(void){return sizeof(u)==9?u.s.c+*u.s.p:1;}",
+      "implementation_note": "Static physical object image path implemented in source; required regression remains unexecuted.",
+      "llvm_ir_contains": [
+        "ptr @value"
+      ]
+    },
+    {
+      "id": "packed-union-nested-pointer-cross-window",
+      "feature": "initialization",
+      "work_item": "constant-and-address-expressions",
+      "clause": "6.7.9; 6.6; target packed object representation",
+      "source": "#pragma pack(push,1)\nstruct S{char c;int *p;};\n#pragma pack(pop)\nunion U{struct S s;long long force_eight;};\nint value=40;union U u={.s={2,&value}};int main(void){return sizeof(u)==16?u.s.c+*u.s.p:1;}",
+      "implementation_note": "Static physical object image path implemented in source; required regression remains unexecuted.",
+      "llvm_ir_contains": [
+        "ptr @value"
+      ]
+    }
+  ]
+}

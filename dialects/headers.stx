@@ -7,8 +7,46 @@ effect headers.toolchain($options) => target.toolchain(headers.option($options,"
 effect headers.directories($local,$source,$options,$system) => list.concat(
     choose($local,[source.directory($source)],[]),list.concat(
         text.split(headers.option($options,"include_paths",""),"|"),$system));
+
+// A target may exclude particular provider directories for a header name.
+// Queries and actual includes pass through this same view; the retained order
+// and suffix still define include_next. No file contents are substituted.
+effect headers.header_key($header,$options) => choose(headers.option($options,"header_path_case_sensitive",1),$header,text.lower($header));
+effect headers.exclude($options,$header,$directories) => bind($table,headers.option($options,"header_exclusions",env.empty()),
+    bind($key,headers.header_key($header,$options),env.put($options,"header_exclusions",env.put($table,$key,list.concat(
+        choose(env.contains($table,$key),env.get($table,$key),[]),$directories)))));
+effect headers.directory_key($directory,$options) => bind($path,source.path(headers.option($options,"project_directory","."),$directory),
+    choose(headers.option($options,"header_path_case_sensitive",1),$path,text.lower($path)));
+effect headers.routed_directories($header,$directories,$options)
+    => bind($table,headers.option($options,"header_exclusions",env.empty()),bind($key,headers.header_key($header,$options),choose(env.contains($table,$key),
+        bind(headers.Route($out,$excluded,$policy),list.fold("headers.route_directory",$directories,
+            headers.Route([],headers.exclusion_keys(env.get($table,$key),$options),$options)),list.reverse($out)),$directories)));
+effect headers.exclusion_keys($directories,$options) => bind(headers.Route($out,$excluded,$policy),
+    list.fold("headers.exclusion_key",$directories,headers.Route([],env.empty(),$options)),$excluded);
+effect headers.exclusion_key(headers.Route($out,$excluded,$options),$directory)
+    => headers.Route($out,env.put($excluded,headers.directory_key($directory,$options),1),$options);
+effect headers.route_directory(headers.Route($out,$excluded,$options),$directory)
+    => headers.Route(choose(eq($directory,""),list.prepend($directory,$out),
+        choose(env.contains($excluded,headers.directory_key($directory,$options)),$out,list.prepend($directory,$out))),$excluded,$options);
 effect headers.find($header,$local,$source,$options,$system,$at) => headers.search($header,
-    headers.directories($local,$source,$options,$system),headers.option($options,"project_directory","."),$at);
+    headers.routed_directories($header,headers.directories($local,$source,$options,$system),$options),headers.option($options,"project_directory","."),$at);
+// A resolved header retains the unsearched suffix of its actual search chain.
+// Wrappers can resume after their origin without guessing from a #line path or
+// the included file's parent directory (which may be below an include root).
+effect headers.resolve($header,$directories,$base,$at) => bind($result,headers.try_resolve($header,$directories,$base),
+    choose(eq($result,headers.MissingHeader()),headers.missing($header,$at),$result));
+effect headers.missing($header,[$kind,$raw,$file,$line,$column,$space])
+    => source.error($file,$line,$column,concat("header not found in configured or system include paths: ",$header));
+effect headers.try_resolve($header,$directories,$base) => bind(headers.HeaderSearch($remaining,$name,$directory,$found),
+    rule.iterate("headers.search_step",headers.HeaderSearch($directories,$header,$base,headers.MissingHeader()),1000000),$found);
+effect headers.search_step(headers.HeaderSearch([],$header,$base,$found)) => [0,headers.HeaderSearch([],$header,$base,$found)];
+effect headers.search_step(headers.HeaderSearch($directories,$header,$base,$found)) when lt(0,size($directories))
+    => bind($directory,list.head($directories),choose(eq($directory,""),[1,headers.HeaderSearch(list.tail($directories),$header,$base,$found)],
+        bind($candidate,source.path($base,concat($directory,concat("/",$header))),choose(source.exists($candidate),
+            [0,headers.HeaderSearch([],$header,$base,headers.ResolvedHeader($candidate,list.tail($directories)))],
+            [1,headers.HeaderSearch(list.tail($directories),$header,$base,$found)]))));
+effect headers.resolved_path(headers.ResolvedHeader($path,$remaining)) => $path;
+effect headers.remaining(headers.ResolvedHeader($path,$remaining)) => $remaining;
 effect headers.search($header,[],$base,[$kind,$raw,$file,$line,$column,$space])
     => source.error($file,$line,$column,concat("header not found in configured or system include paths: ",$header));
 effect headers.search($header,$directories,$base,$at) when lt(0,size($directories)) => bind($directory,list.head($directories),

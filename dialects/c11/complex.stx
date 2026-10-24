@@ -1,0 +1,176 @@
+// C arithmetic domains are rule-library policy. Complex object storage,
+// transient MLIR values, and target CRT carrier types remain separate.
+mod c11.complex;
+use c11.syntax;
+use c11.types;
+use c11.sema;
+use c11.constants;
+use c11.objects;
+use c11.initializers;
+use c11.names;
+use c11.union_storage;
+use c11.abi;
+use c11.header_features;
+use base;
+use types;
+use numbers;
+use storage;
+use complex_numbers;
+
+syntax c11.builtin_word `_Complex` => "_Complex";
+effect c11.header_features.builtin("__builtin_complex") => 1;
+effect c11.syntax.builtin_words_type($words) when c11.complex.contains_complex($words)
+    => bind(ComplexWords($plain,$count),list.fold("c11.complex.word",$words,ComplexWords([],0)),
+        seq(choose(eq($count,1),1,fail("duplicate C complex type specifier")),
+            c11.complex.complex_specifier(c11.syntax.builtin_real_type(list.reverse($plain)))));
+effect c11.complex.word(ComplexWords($plain,$count),"_Complex") => ComplexWords($plain,add($count,1));
+effect c11.complex.word(ComplexWords($plain,$count),$word) when not(eq($word,"_Complex")) => ComplexWords(list.prepend($word,$plain),$count);
+effect c11.complex.contains_complex([]) => 0;
+effect c11.complex.contains_complex($words) when lt(0,size($words)) => or(eq(list.head($words),"_Complex"),c11.complex.contains_complex(list.tail($words)));
+effect c11.complex.complex_specifier(c11.types.FloatType($rank,$format)) => ComplexType(c11.types.FloatType($rank,$format));
+effect[fallback] c11.complex.complex_specifier($type) => fail("C _Complex requires float, double or long double");
+effect types.repr(ComplexType(c11.types.FloatType($rank,$format))) => complex_numbers.object_type($format);
+effect c11.types.bytes(ComplexType($real)) => mul(2,c11.types.bytes($real));
+effect c11.types.alignment(ComplexType($real)) => c11.types.alignment($real);
+effect c11.abi.is_aggregate(ComplexType($real)) => 1;
+effect c11.types.is_arithmetic(ComplexType($real)) => 1;
+effect c11.types.promotion(ComplexType($real)) => ComplexType($real);
+effect c11.types.default_argument(ComplexType($real)) => ComplexType($real);
+effect c11.sema.float_type(ComplexType($real)) => 1;
+effect c11.sema.increment_type(ComplexType($real)) => fail("C increment requires a real or pointer operand");
+effect c11.complex.is_complex(ComplexType($real)) => 1;
+effect[fallback] c11.complex.is_complex($type) => 0;
+effect c11.complex.component(ComplexType($real)) => $real;
+effect[fallback] c11.complex.component($type) => $type;
+effect c11.complex.format(c11.types.FloatType($rank,$format)) => $format;
+effect c11.types.common($a,$b) when or(c11.complex.is_complex($a),c11.complex.is_complex($b))
+    => choose(and(c11.types.is_arithmetic($a),c11.types.is_arithmetic($b)),
+        ComplexType(c11.types.usual(c11.complex.component($a),c11.complex.component($b))),fail("C complex operation requires arithmetic operands"));
+effect c11.union_storage.shape(ComplexType($real)) => storage.Aggregate(types.repr(ComplexType($real)),mul(c11.types.bytes(ComplexType($real)),8),
+    [[0,0,c11.union_storage.shape($real)],[mul(c11.types.bytes($real),8),1,c11.union_storage.shape($real)]]);
+effect c11.sema.zero(ComplexType($real)) => base.Typed(ComplexType($real),ComplexComponents(c11.sema.zero($real),c11.sema.zero($real)));
+effect base.lower(base.Typed(ComplexType($real),ComplexComponents($a,$b)),$env)
+    => complex_numbers.make(c11.complex.format($real),base.lower($a,$env),base.lower($b,$env));
+
+effect c11.sema.conversion(base.Typed($from,$value),$to) when or(c11.complex.is_complex($from),c11.complex.is_complex($to))
+    => c11.complex.complex_conversion(base.Typed($from,$value),$to);
+effect c11.complex.complex_conversion($value,c11.types.CBool()) => base.Typed(c11.types.CBool(),c11.sema.Converted(c11.sema.truth($value),"arith.extui"));
+effect c11.complex.complex_conversion($value,ComplexType($real))
+    => choose(c11.types.is_arithmetic(arg($value,0)),base.Typed(ComplexType($real),ComplexConverted($value)),fail("C complex conversion requires an arithmetic operand"));
+effect c11.complex.complex_conversion(base.Typed(ComplexType($real),$value),$to) when and(not(c11.complex.is_complex($to)),not(eq($to,c11.types.CBool())))
+    => choose(c11.types.is_arithmetic($to),c11.sema.convert(base.Typed($real,ComplexPart(base.Typed(ComplexType($real),$value),0)),$to),
+        fail("C complex conversion requires an arithmetic destination"));
+effect base.lower(base.Typed(ComplexType($real),ComplexConverted($value)),$env)
+    => bind([$a,$b],c11.complex.lowered_parts($value,$real,$env),complex_numbers.make(c11.complex.format($real),$a,$b));
+// Parts are checked expressions. Extraction lowering consumes an existing SSA
+// operand supplied by the caller, so side-effecting operands are never doubled.
+effect c11.complex.parts(base.Typed(ComplexType($source),$value),$real)
+    => ComplexComponents(c11.sema.convert(base.Typed($source,ComplexPart(base.Typed(ComplexType($source),$value),0)),$real),
+        c11.sema.convert(base.Typed($source,ComplexPart(base.Typed(ComplexType($source),$value),1)),$real));
+effect c11.complex.parts(base.Typed($type,$value),$real) when not(c11.complex.is_complex($type))
+    => ComplexComponents(c11.sema.convert(base.Typed($type,$value),$real),c11.sema.zero($real));
+effect base.lower(base.Typed($real,ComplexPart($value,$index)),$env)
+    => complex_numbers.part(c11.complex.format($real),base.lower($value,$env),$index);
+effect c11.complex.lowered_parts(base.Typed($type,$value),$real,$env) => bind($existing,base.lower(base.Typed($type,$value),$env),
+    bind(ComplexComponents($a,$b),c11.complex.parts(base.Typed($type,c11.sema.Existing($existing)),$real),[base.lower($a,$env),base.lower($b,$env)]));
+
+effect c11.sema.binary($operation,base.Typed($at,$a),base.Typed($bt,$b)) when or(c11.complex.is_complex($at),c11.complex.is_complex($bt))
+    => seq(c11.complex.arithmetic_operation($operation),bind($type,c11.types.usual($at,$bt),
+        base.Typed($type,ComplexBinary($operation,base.Typed($at,$a),base.Typed($bt,$b)))));
+effect c11.complex.arithmetic_operation($operation) => choose(text.contains(" add sub mul div ",concat(" ",concat($operation," "))),1,fail("C complex operands do not support integer or remainder operators"));
+effect base.lower(base.Typed(ComplexType($real),ComplexBinary($operation,$left,$right)),$env)
+    => bind([$a,$b],c11.complex.lowered_parts($left,$real,$env),bind([$c,$d],c11.complex.lowered_parts($right,$real,$env),
+        c11.complex.lower_binary($operation,c11.complex.format($real),$a,$b,$c,$d,c11.complex.is_complex(arg($left,0)),c11.complex.is_complex(arg($right,0)))));
+// Retain real/complex domains: inventing a zero imaginary component and then
+// multiplying it by infinity would introduce a spurious NaN.
+effect c11.complex.lower_binary("add",$f,$a,$b,$c,$d,$left,$right)
+    => choose(and($left,$right),complex_numbers.add("add",$f,complex_numbers.make($f,$a,$b),complex_numbers.make($f,$c,$d)),
+        complex_numbers.make($f,complex_numbers.fp("add",$f,$a,$c),choose($left,$b,$d)));
+effect c11.complex.lower_binary("sub",$f,$a,$b,$c,$d,$left,$right)
+    => choose(and($left,$right),complex_numbers.add("sub",$f,complex_numbers.make($f,$a,$b),complex_numbers.make($f,$c,$d)),
+        complex_numbers.make($f,complex_numbers.fp("sub",$f,$a,$c),choose($left,$b,complex_numbers.negative($f,$d))));
+effect c11.complex.lower_binary("mul",$f,$a,$b,$c,$d,$left,$right)
+    => choose(and($left,$right),complex_numbers.multiply($f,$a,$b,$c,$d),
+        complex_numbers.make($f,complex_numbers.fp("mul",$f,$a,$c),
+            choose($left,complex_numbers.fp("mul",$f,$b,$c),complex_numbers.fp("mul",$f,$a,$d))));
+effect c11.complex.lower_binary("div",$f,$a,$b,$c,$d,$left,$right)
+    => choose($right,complex_numbers.divide($f,$a,$b,$c,$d),
+        complex_numbers.make($f,complex_numbers.fp("div",$f,$a,$c),complex_numbers.fp("div",$f,$b,$c)));
+effect c11.sema.unary_promoted("-",base.Typed(ComplexType($real),$value)) => base.Typed(ComplexType($real),ComplexNegated(base.Typed(ComplexType($real),$value)));
+effect base.lower(base.Typed(ComplexType($real),ComplexNegated($value)),$env) => complex_numbers.negate(c11.complex.format($real),base.lower($value,$env));
+effect c11.sema.unary_promoted("-",base.Typed(c11.types.FloatType($rank,$format),$value))
+    => base.Typed(c11.types.FloatType($rank,$format),RealNegated(base.Typed(c11.types.FloatType($rank,$format),$value)));
+effect base.lower(base.Typed(c11.types.FloatType($rank,$format),RealNegated($value)),$env) => complex_numbers.negative($format,base.lower($value,$env));
+effect c11.sema.truth(base.Typed(ComplexType($real),$value)) => base.Typed(types.Bool(),ComplexTruth(base.Typed(ComplexType($real),$value)));
+effect base.lower(base.Typed(types.Bool(),ComplexTruth($value)),$env) => complex_numbers.truth(c11.complex.format(c11.complex.component(arg($value,0))),base.lower($value,$env));
+effect c11.sema.compare($operation,base.Typed($at,$a),base.Typed($bt,$b)) when or(c11.complex.is_complex($at),c11.complex.is_complex($bt))
+    => seq(c11.complex.equality_operation($operation),bind($type,c11.types.usual($at,$bt),
+        c11.sema.boolean_to_int(base.Typed(types.Bool(),ComplexComparison($operation,c11.sema.convert(base.Typed($at,$a),$type),c11.sema.convert(base.Typed($bt,$b),$type))))));
+effect c11.complex.equality_operation($operation) => choose(or(eq($operation,"eq"),eq($operation,"ne")),1,fail("C ordered comparison requires real or pointer operands"));
+effect base.lower(base.Typed(types.Bool(),ComplexComparison($op,$a,$b)),$env)
+    => complex_numbers.equality($op,c11.complex.format(c11.complex.component(arg($a,0))),base.lower($a,$env),base.lower($b,$env));
+
+// Compiler builtin used by real Clang headers to construct a complex value
+// without arithmetic on a zero component. It is not a new C keyword.
+effect c11.sema.named_call("__builtin_complex",[$a,$b],$env,$expected) => c11.complex.construct($a,$b,$env,$expected);
+effect c11.sema.named_call_at($frame,"__builtin_complex",[$a,$b],$env,$expected) => c11.complex.construct($a,$b,$env,$expected);
+effect c11.complex.construct($a,$b,$env,$expected) => bind($left,base.check($a,$env,base.Any()),bind($right,base.check($b,$env,base.Any()),
+    bind($type,arg($left,0),seq(c11.complex.constructor_type($type,arg($right,0)),c11.sema.contextual(base.Typed(ComplexType($type),ComplexComponents($left,$right)),$expected)))));
+effect c11.complex.constructor_type(c11.types.FloatType($rank,$format),c11.types.FloatType($rank,$format)) => 1;
+effect[fallback] c11.complex.constructor_type($a,$b) => fail("__builtin_complex requires two identical real floating types");
+syntax c11.expr[70,right] `__real__ $value:c11.expr` => ComplexProjection($value,0);
+syntax c11.expr[70,right] `__imag__ $value:c11.expr` => ComplexProjection($value,1);
+effect c11.names.syntax_identifier("__real__") => 1;
+effect c11.names.syntax_identifier("__imag__") => 1;
+effect base.check(ComplexProjection($source,$index),$env,$expected) => bind($value,base.check($source,$env,base.Any()),
+    seq(choose(c11.complex.is_complex(arg($value,0)),1,fail("complex projection requires a complex operand")),
+        c11.sema.contextual(base.Typed(c11.complex.component(arg($value,0)),ComplexPart(c11.sema.convert($value,ComplexType(c11.complex.component(arg($value,0)))),$index)),$expected)));
+
+// Static arithmetic uses the same component/domain policy, with APFloat
+// operations and existing C representability checks instead of host doubles.
+effect c11.sema.constant_convert(base.Typed($from,$value),$to) when or(c11.complex.is_complex($from),c11.complex.is_complex($to))
+    => c11.complex.constant_conversion(base.Typed($from,$value),$to);
+effect c11.complex.constant_conversion($value,ComplexType($real)) => bind(ComplexComponents($a,$b),c11.complex.constant_parts($value,$real),base.Typed(ComplexType($real),ComplexComponents($a,$b)));
+effect c11.complex.constant_conversion(base.Typed(ComplexType($real),ComplexComponents($a,$b)),c11.types.CBool())
+    => base.Typed(c11.types.CBool(),base.Integer(or(c11.constants.truth($a),c11.constants.truth($b))));
+effect c11.complex.constant_conversion(base.Typed(ComplexType($real),ComplexComponents($a,$b)),$to) when and(not(c11.complex.is_complex($to)),not(eq($to,c11.types.CBool())))
+    => c11.sema.constant_convert($a,$to);
+effect c11.complex.constant_parts(base.Typed(ComplexType($type),ComplexComponents($a,$b)),$real)
+    => ComplexComponents(c11.sema.constant_convert($a,$real),c11.sema.constant_convert($b,$real));
+effect c11.complex.constant_parts(base.Typed($type,$value),$real) when not(c11.complex.is_complex($type))
+    => ComplexComponents(c11.sema.constant_convert(base.Typed($type,$value),$real),c11.sema.zero($real));
+effect c11.constants.truth(base.Typed(ComplexType($real),ComplexComponents($a,$b))) => or(c11.constants.truth($a),c11.constants.truth($b));
+effect c11.constants.negate(base.Typed(ComplexType($real),ComplexComponents($a,$b)))
+    => base.Typed(ComplexType($real),ComplexComponents(c11.constants.negate($a),c11.constants.negate($b)));
+effect c11.constants.arithmetic_domain($op,$left,$right) when or(c11.complex.is_complex(arg($left,0)),c11.complex.is_complex(arg($right,0)))
+    => seq(c11.complex.arithmetic_operation($op),bind($real,c11.complex.component(c11.types.usual(arg($left,0),arg($right,0))),
+        bind(ComplexComponents($a,$b),c11.complex.constant_parts($left,$real),bind(ComplexComponents($c,$d),c11.complex.constant_parts($right,$real),
+            base.Typed(ComplexType($real),c11.complex.constant_binary($op,$a,$b,$c,$d,c11.complex.is_complex(arg($left,0)),c11.complex.is_complex(arg($right,0))))))));
+effect c11.complex.cf($op,$a,$b) => c11.constants.arithmetic_typed($op,$a,$b);
+effect c11.complex.constant_binary("add",$a,$b,$c,$d,$left,$right) => ComplexComponents(c11.complex.cf("add",$a,$c),choose(and($left,$right),c11.complex.cf("add",$b,$d),choose($left,$b,$d)));
+effect c11.complex.constant_binary("sub",$a,$b,$c,$d,$left,$right) => ComplexComponents(c11.complex.cf("sub",$a,$c),choose(and($left,$right),c11.complex.cf("sub",$b,$d),choose($left,$b,c11.constants.negate($d))));
+effect c11.complex.constant_binary("mul",$a,$b,$c,$d,$left,$right) => choose(and($left,$right),
+    c11.complex.wide_constant_binary("mul",$a,$b,$c,$d),
+    ComplexComponents(c11.complex.cf("mul",$a,$c),choose($left,c11.complex.cf("mul",$b,$c),c11.complex.cf("mul",$a,$d))));
+effect c11.complex.constant_binary("div",$a,$b,$c,$d,$left,0) => ComplexComponents(c11.complex.cf("div",$a,$c),c11.complex.cf("div",$b,$c));
+effect c11.complex.constant_binary("div",$a,$b,$c,$d,$left,1) => c11.complex.wide_constant_binary("div",$a,$b,$c,$d);
+// C static evaluation may retain excess precision. Widen finite target f32/
+// f64 components to APFloat binary128 for products and the denominator, then
+// round each final component to its declared type. No host float is involved.
+effect c11.complex.widen_constant($value) => c11.sema.constant_convert($value,c11.types.FloatType(4,"f128"));
+effect c11.complex.wide_constant_binary($op,$a,$b,$c,$d)
+    => bind(ComplexComponents($real,$imaginary),c11.complex.wide_formula($op,c11.complex.widen_constant($a),c11.complex.widen_constant($b),c11.complex.widen_constant($c),c11.complex.widen_constant($d)),
+        ComplexComponents(c11.sema.constant_convert($real,arg($a,0)),c11.sema.constant_convert($imaginary,arg($a,0))));
+effect c11.complex.wide_formula("mul",$a,$b,$c,$d) => ComplexComponents(c11.complex.cf("sub",c11.complex.cf("mul",$a,$c),c11.complex.cf("mul",$b,$d)),c11.complex.cf("add",c11.complex.cf("mul",$a,$d),c11.complex.cf("mul",$b,$c)));
+effect c11.complex.wide_formula("div",$a,$b,$c,$d) => bind($den,c11.complex.cf("add",c11.complex.cf("mul",$c,$c),c11.complex.cf("mul",$d,$d)),
+    ComplexComponents(c11.complex.cf("div",c11.complex.cf("add",c11.complex.cf("mul",$a,$c),c11.complex.cf("mul",$b,$d)),$den),c11.complex.cf("div",c11.complex.cf("sub",c11.complex.cf("mul",$b,$c),c11.complex.cf("mul",$a,$d)),$den)));
+effect c11.constants.comparison_domain($op,$left,$right) when or(c11.complex.is_complex(arg($left,0)),c11.complex.is_complex(arg($right,0)))
+    => seq(c11.complex.equality_operation($op),bind($real,c11.complex.component(c11.types.usual(arg($left,0),arg($right,0))),
+        bind(ComplexComponents($a,$b),c11.complex.constant_parts($left,$real),bind(ComplexComponents($c,$d),c11.complex.constant_parts($right,$real),
+            base.Typed(c11.types.integer("int"),base.Integer(choose(eq($op,"eq"),
+                and(c11.constants.compare_typed("eq",$a,$c),c11.constants.compare_typed("eq",$b,$d)),
+                or(c11.constants.compare_typed("ne",$a,$c),c11.constants.compare_typed("ne",$b,$d)))))))));
+effect c11.sema.constant(ComplexProjection($source,$index)) => bind(base.Typed($type,ComplexComponents($a,$b)),c11.sema.constant($source),choose(eq($index,0),$a,$b));
+effect c11.sema.constant(c11.syntax.Call("__builtin_complex",[$a,$b])) => c11.complex.constant_construct(c11.sema.constant($a),c11.sema.constant($b));
+effect c11.sema.constant(c11.names.CallAt($frame,"__builtin_complex",[$a,$b])) => c11.complex.constant_construct(c11.sema.constant($a),c11.sema.constant($b));
+effect c11.complex.constant_construct($a,$b) => seq(c11.complex.constructor_type(arg($a,0),arg($b,0)),base.Typed(ComplexType(arg($a,0)),ComplexComponents($a,$b)));

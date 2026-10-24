@@ -1,0 +1,110 @@
+// Format-parametric complex arithmetic. Object storage is a pair of IEEE
+// components; transient arithmetic may use MLIR's complex dialect. No source
+// language, C type, CRT symbol or operator spelling belongs to this module.
+mod complex_numbers;
+use numbers;
+use types;
+use storage;
+use floating;
+
+effect complex_numbers.object_type($format) => concat("!llvm.struct<(",concat($format,concat(", ",concat($format,")>"))));
+effect complex_numbers.value_type($format) => concat("complex<",concat($format,">"));
+effect complex_numbers.make($format,$real,$imaginary) => bind($zero,mlir.op("llvm.mlir.zero",[],[complex_numbers.object_type($format)],[],[]),
+    mlir.op("llvm.insertvalue",[mlir.op("llvm.insertvalue",[$zero,$real],[complex_numbers.object_type($format)],[storage.position(0)],[]),$imaginary],
+        [complex_numbers.object_type($format)],[storage.position(1)],[]));
+effect complex_numbers.part($format,$value,$index) => mlir.op("llvm.extractvalue",[$value],[$format],[storage.position($index)],[]);
+effect complex_numbers.constant($format,$spelling) => mlir.op("arith.constant",[],[$format],[Attr("value",numbers.real($spelling,types.Real($format)))],[]);
+effect complex_numbers.integer($value) => mlir.op("arith.constant",[],["i32"],[Attr("value",$value,"i32")],[]);
+effect complex_numbers.flag($operation,$a,$b) => mlir.op(concat("arith.",$operation),[$a,$b],["i1"],[],[]);
+// Component arithmetic preserves the calling thread's environment. Clients
+// using this library attach strictfp to their containing functions.
+effect complex_numbers.fp($operation,$format,$a,$b) => floating.intrinsic(concat("f",$operation),[$a,$b],$format,floating.Policy(7,2),1);
+effect complex_numbers.negative($format,$value) => mlir.op("arith.negf",[$value],[$format],[],[]);
+effect complex_numbers.compare($predicate,$a,$b) => floating.compare($predicate,$a,$b,floating.Policy(7,2));
+effect complex_numbers.classify($value,$mask) => mlir.op("llvm.intr.is.fpclass",[$value],["i1"],[Attr("bit",$mask,"i32")],[]);
+effect complex_numbers.nan($value) => complex_numbers.classify($value,3);
+effect complex_numbers.infinite($value) => complex_numbers.classify($value,516);
+effect complex_numbers.finite($value) => complex_numbers.classify($value,504);
+effect complex_numbers.copy_sign($format,$magnitude,$sign) => mlir.op("llvm.intr.copysign",[$magnitude,$sign],[$format],[],[]);
+effect complex_numbers.select($condition,$yes,$no,$format) => mlir.op("arith.select",[$condition,$yes,$no],[$format],[],[]);
+effect complex_numbers.signed_zero($format,$value) => complex_numbers.copy_sign($format,complex_numbers.constant($format,"0.0"),$value);
+effect complex_numbers.inf_unit($format,$value) => complex_numbers.copy_sign($format,complex_numbers.select(complex_numbers.infinite($value),complex_numbers.constant($format,"1.0"),complex_numbers.constant($format,"0.0"),$format),$value);
+effect complex_numbers.without_nan($format,$value) => complex_numbers.select(complex_numbers.nan($value),complex_numbers.signed_zero($format,$value),$value,$format);
+effect complex_numbers.native($format,$value) => mlir.op("complex.create",[complex_numbers.part($format,$value,0),complex_numbers.part($format,$value,1)],[complex_numbers.value_type($format)],[],[]);
+effect complex_numbers.stored($format,$value) => complex_numbers.make($format,mlir.op("complex.re",[$value],[$format],[],[]),mlir.op("complex.im",[$value],[$format],[],[]));
+effect complex_numbers.add($operation,$format,$a,$b) => complex_numbers.make($format,
+    complex_numbers.fp($operation,$format,complex_numbers.part($format,$a,0),complex_numbers.part($format,$b,0)),
+    complex_numbers.fp($operation,$format,complex_numbers.part($format,$a,1),complex_numbers.part($format,$b,1)));
+effect complex_numbers.negate($format,$value) => complex_numbers.stored($format,mlir.op("complex.neg",[complex_numbers.native($format,$value)],[complex_numbers.value_type($format)],[],[]));
+effect complex_numbers.equality($operation,$format,$a,$b) => complex_numbers.flag(choose(eq($operation,"eq"),"andi","ori"),
+    complex_numbers.compare(choose(eq($operation,"eq"),1,13),complex_numbers.part($format,$a,0),complex_numbers.part($format,$b,0)),
+    complex_numbers.compare(choose(eq($operation,"eq"),1,13),complex_numbers.part($format,$a,1),complex_numbers.part($format,$b,1)));
+effect complex_numbers.truth($format,$value) => complex_numbers.flag("ori",complex_numbers.compare(13,complex_numbers.part($format,$value,0),complex_numbers.constant($format,"0.0")),complex_numbers.compare(13,complex_numbers.part($format,$value,1),complex_numbers.constant($format,"0.0")));
+
+// Evaluate operands once. Component products remain available for recovery
+// when infinities or an overflowing intermediate produce two NaNs. Recovery
+// runs in a region, so it does not add exceptions to the ordinary result path.
+effect complex_numbers.multiply($format,$a,$b,$c,$d) => bind($ac,complex_numbers.fp("mul",$format,$a,$c),bind($bd,complex_numbers.fp("mul",$format,$b,$d),
+    bind($ad,complex_numbers.fp("mul",$format,$a,$d),bind($bc,complex_numbers.fp("mul",$format,$b,$c),
+    bind($real,complex_numbers.fp("sub",$format,$ac,$bd),bind($imaginary,complex_numbers.fp("add",$format,$ad,$bc),
+        mlir.op("scf.if",[complex_numbers.flag("andi",complex_numbers.nan($real),complex_numbers.nan($imaginary))],[complex_numbers.object_type($format)],[],[
+            mlir.region(mlir.op("scf.yield",[complex_numbers.recover_product($format,$a,$b,$c,$d,$ac,$bd,$ad,$bc,$real,$imaginary)],[],[],[])),
+            mlir.region(mlir.op("scf.yield",[complex_numbers.make($format,$real,$imaginary)],[],[],[]))])))))));
+effect complex_numbers.recover_product($format,$a,$b,$c,$d,$ac,$bd,$ad,$bc,$real,$imaginary)
+    => bind($left_inf,complex_numbers.flag("ori",complex_numbers.infinite($a),complex_numbers.infinite($b)),bind($right_inf,complex_numbers.flag("ori",complex_numbers.infinite($c),complex_numbers.infinite($d)),
+        bind($product_inf,complex_numbers.flag("ori",complex_numbers.flag("ori",complex_numbers.infinite($ac),complex_numbers.infinite($bd)),complex_numbers.flag("ori",complex_numbers.infinite($ad),complex_numbers.infinite($bc))),
+        mlir.op("scf.if",[complex_numbers.flag("ori",complex_numbers.flag("ori",$left_inf,$right_inf),$product_inf)],[complex_numbers.object_type($format)],[],[
+            mlir.region(bind($aa,complex_numbers.select($left_inf,complex_numbers.inf_unit($format,$a),complex_numbers.without_nan($format,$a),$format),
+                bind($bb,complex_numbers.select($left_inf,complex_numbers.inf_unit($format,$b),complex_numbers.without_nan($format,$b),$format),
+                bind($cc,complex_numbers.select($right_inf,complex_numbers.inf_unit($format,$c),complex_numbers.without_nan($format,$c),$format),
+                bind($dd,complex_numbers.select($right_inf,complex_numbers.inf_unit($format,$d),complex_numbers.without_nan($format,$d),$format),
+                mlir.op("scf.yield",[complex_numbers.make($format,complex_numbers.fp("mul",$format,complex_numbers.constant($format,"inf"),complex_numbers.fp("sub",$format,complex_numbers.fp("mul",$format,$aa,$cc),complex_numbers.fp("mul",$format,$bb,$dd))),
+                    complex_numbers.fp("mul",$format,complex_numbers.constant($format,"inf"),complex_numbers.fp("add",$format,complex_numbers.fp("mul",$format,$aa,$dd),complex_numbers.fp("mul",$format,$bb,$cc))))],[],[],[])))))),
+            mlir.region(mlir.op("scf.yield",[complex_numbers.make($format,$real,$imaginary)],[],[],[]))]))));
+
+// Scale numerator and denominator independently by powers of two. This keeps
+// finite intermediates bounded even when both pairs are near the largest or
+// smallest representable magnitude. ldexp/frexp are LLVM intrinsics; target
+// lowering may resolve them through the actual target math runtime.
+effect complex_numbers.magnitude($format,$a,$b) => floating.intrinsic("maximum",[mlir.op("math.absf",[$a],[$format],[],[]),mlir.op("math.absf",[$b],[$format],[],[])],$format,floating.Policy(7,2),0);
+effect complex_numbers.exponent($format,$a,$b) => arg(mlir.op("llvm.intr.frexp",[complex_numbers.magnitude($format,$a,$b)],[$format,"i32"],[],[]),1);
+effect complex_numbers.power($format,$value,$exponent) => floating.intrinsic("ldexp",[$value,$exponent],$format,floating.Policy(7,2),1);
+effect complex_numbers.opposite($exponent) => mlir.op("arith.subi",[complex_numbers.integer(0),$exponent],["i32"],[],[]);
+effect complex_numbers.divide($format,$a,$b,$c,$d) => bind($den_finite,complex_numbers.flag("andi",complex_numbers.finite($c),complex_numbers.finite($d)),
+    bind($num_finite,complex_numbers.flag("andi",complex_numbers.finite($a),complex_numbers.finite($b)),
+    bind($den_zero,complex_numbers.flag("andi",complex_numbers.compare(1,$c,complex_numbers.constant($format,"0.0")),complex_numbers.compare(1,$d,complex_numbers.constant($format,"0.0"))),
+    mlir.op("scf.if",[complex_numbers.flag("andi",complex_numbers.flag("andi",$den_finite,$num_finite),mlir.op("arith.xori",[$den_zero,mlir.op("arith.constant",[],["i1"],[Attr("value",1,"i1")],[])],["i1"],[],[]))],[complex_numbers.object_type($format)],[],[
+        mlir.region(mlir.op("scf.yield",[complex_numbers.finite_divide($format,$a,$b,$c,$d)],[],[],[])),
+        mlir.region(mlir.op("scf.yield",[complex_numbers.exceptional_divide($format,$a,$b,$c,$d,$den_finite,$num_finite,$den_zero)],[],[],[]))]))));
+effect complex_numbers.finite_divide($format,$a,$b,$c,$d) => mlir.op("scf.if",[complex_numbers.compare(1,$d,complex_numbers.constant($format,"0.0"))],[complex_numbers.object_type($format)],[],[
+    mlir.region(mlir.op("scf.yield",[complex_numbers.make($format,complex_numbers.fp("div",$format,$a,$c),complex_numbers.fp("div",$format,$b,$c))],[],[],[])),
+    mlir.region(mlir.op("scf.yield",[complex_numbers.imaginary_divide($format,$a,$b,$c,$d)],[],[],[]))]);
+effect complex_numbers.imaginary_divide($format,$a,$b,$c,$d) => mlir.op("scf.if",[complex_numbers.compare(1,$c,complex_numbers.constant($format,"0.0"))],[complex_numbers.object_type($format)],[],[
+    mlir.region(mlir.op("scf.yield",[complex_numbers.make($format,complex_numbers.fp("div",$format,$b,$d),complex_numbers.negative($format,complex_numbers.fp("div",$format,$a,$d)))],[],[],[])),
+    mlir.region(mlir.op("scf.yield",[complex_numbers.scaled_divide($format,$a,$b,$c,$d)],[],[],[]))]);
+effect complex_numbers.scaled_divide($format,$a,$b,$c,$d) => bind($ne,complex_numbers.exponent($format,$a,$b),bind($de,complex_numbers.exponent($format,$c,$d),
+    bind($aa,complex_numbers.power($format,$a,complex_numbers.opposite($ne)),bind($bb,complex_numbers.power($format,$b,complex_numbers.opposite($ne)),
+    bind($cc,complex_numbers.power($format,$c,complex_numbers.opposite($de)),bind($dd,complex_numbers.power($format,$d,complex_numbers.opposite($de)),
+    bind($den,complex_numbers.fp("add",$format,complex_numbers.fp("mul",$format,$cc,$cc),complex_numbers.fp("mul",$format,$dd,$dd)),
+    bind($scale,mlir.op("arith.subi",[$ne,$de],["i32"],[],[]),
+        complex_numbers.make($format,complex_numbers.power($format,complex_numbers.fp("div",$format,complex_numbers.fp("add",$format,complex_numbers.fp("mul",$format,$aa,$cc),complex_numbers.fp("mul",$format,$bb,$dd)),$den),$scale),
+            complex_numbers.power($format,complex_numbers.fp("div",$format,complex_numbers.fp("sub",$format,complex_numbers.fp("mul",$format,$bb,$cc),complex_numbers.fp("mul",$format,$aa,$dd)),$den),$scale))))))))));
+effect complex_numbers.exceptional_divide($format,$a,$b,$c,$d,$den_finite,$num_finite,$den_zero)
+    => mlir.op("scf.if",[$den_zero],[complex_numbers.object_type($format)],[],[
+        mlir.region(bind($inf,complex_numbers.copy_sign($format,complex_numbers.constant($format,"inf"),$c),mlir.op("scf.yield",[complex_numbers.make($format,complex_numbers.fp("mul",$format,$inf,$a),complex_numbers.fp("mul",$format,$inf,$b))],[],[],[]))),
+        mlir.region(mlir.op("scf.yield",[complex_numbers.infinite_divide($format,$a,$b,$c,$d,$den_finite,$num_finite)],[],[],[]))]);
+effect complex_numbers.infinite_divide($format,$a,$b,$c,$d,$den_finite,$num_finite)
+    => mlir.op("scf.if",[complex_numbers.flag("andi",$den_finite,complex_numbers.flag("ori",complex_numbers.infinite($a),complex_numbers.infinite($b)))],[complex_numbers.object_type($format)],[],[
+        mlir.region(bind($de,complex_numbers.exponent($format,$c,$d),bind($cc,complex_numbers.power($format,$c,complex_numbers.opposite($de)),bind($dd,complex_numbers.power($format,$d,complex_numbers.opposite($de)),
+            bind($aa,complex_numbers.inf_unit($format,$a),bind($bb,complex_numbers.inf_unit($format,$b),mlir.op("scf.yield",[complex_numbers.make($format,
+                complex_numbers.fp("mul",$format,complex_numbers.constant($format,"inf"),complex_numbers.fp("add",$format,complex_numbers.fp("mul",$format,$aa,$cc),complex_numbers.fp("mul",$format,$bb,$dd))),
+                complex_numbers.fp("mul",$format,complex_numbers.constant($format,"inf"),complex_numbers.fp("sub",$format,complex_numbers.fp("mul",$format,$bb,$cc),complex_numbers.fp("mul",$format,$aa,$dd))))],[],[],[]))))))),
+        mlir.region(mlir.op("scf.yield",[complex_numbers.infinite_denominator($format,$a,$b,$c,$d,$num_finite)],[],[],[]))]);
+effect complex_numbers.infinite_denominator($format,$a,$b,$c,$d,$num_finite)
+    => mlir.op("scf.if",[complex_numbers.flag("andi",$num_finite,complex_numbers.flag("ori",complex_numbers.infinite($c),complex_numbers.infinite($d)))],[complex_numbers.object_type($format)],[],[
+        mlir.region(bind($ne,complex_numbers.exponent($format,$a,$b),bind($aa,complex_numbers.power($format,$a,complex_numbers.opposite($ne)),bind($bb,complex_numbers.power($format,$b,complex_numbers.opposite($ne)),
+            bind($cc,complex_numbers.inf_unit($format,$c),bind($dd,complex_numbers.inf_unit($format,$d),mlir.op("scf.yield",[complex_numbers.make($format,
+                complex_numbers.fp("mul",$format,complex_numbers.constant($format,"0.0"),complex_numbers.fp("add",$format,complex_numbers.fp("mul",$format,$aa,$cc),complex_numbers.fp("mul",$format,$bb,$dd))),
+                complex_numbers.fp("mul",$format,complex_numbers.constant($format,"0.0"),complex_numbers.fp("sub",$format,complex_numbers.fp("mul",$format,$bb,$cc),complex_numbers.fp("mul",$format,$aa,$dd))))],[],[],[]))))))),
+        mlir.region(mlir.op("scf.yield",[complex_numbers.stored($format,mlir.op("complex.div",[mlir.op("complex.create",[$a,$b],[complex_numbers.value_type($format)],[],[]),
+            mlir.op("complex.create",[$c,$d],[complex_numbers.value_type($format)],[],[])],[complex_numbers.value_type($format)],[],[]))],[],[],[]))]);

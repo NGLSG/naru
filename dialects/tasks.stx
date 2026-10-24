@@ -1,0 +1,469 @@
+// Async tasks use the same upstream coroutine frame operations as generators.
+// Await is lifted into source CFG before defer/affine checks; no blocking wait
+// is emitted inside a coroutine. Scheduling is an independently linked runtime.
+mod tasks;
+use coro;
+use base;
+use types;
+use control;
+use tree;
+use pipeline;
+use defer;
+use affine;
+use records;
+use allocation;
+use generics;
+use functions;
+use arrays;
+use closures;
+use externc;
+
+syntax typename `task<$element:typename>` => tasks.Task($element);
+syntax typename `promise<$element:typename>` => tasks.Promise($element);
+syntax expr `promise<$element:typename>()` => tasks.NewPromise($element);
+syntax expr `future($promise:expr)` => tasks.Future($promise);
+syntax expr `resolve($promise:expr,$value:expr)` => tasks.Resolve($promise,$value);
+syntax expr `resolve($promise:expr)` => tasks.Resolve($promise,coro.Unit());
+syntax expr `reject($promise:expr,$code:expr)` => tasks.Reject($promise,$code);
+syntax item `async fn $name:ident() -> $element:typename $body:block` => tasks.Function($name,[],$element,$body);
+syntax item `async fn $name:ident($params:parameters) -> $element:typename $body:block` => tasks.Function($name,$params,$element,$body);
+syntax expr `async fn [$captures:capture_names]($params:parameters) -> $result:typename $body:block`
+    => tasks.Lambda($captures,$params,$result,$body);
+syntax expr `async fn [$captures:capture_names]() -> $result:typename $body:block`
+    => tasks.Lambda($captures,[],$result,$body);
+syntax expr `async fn []($params:parameters) -> $result:typename $body:block`
+    => tasks.Lambda([],$params,$result,$body);
+syntax expr `async fn []() -> $result:typename $body:block`
+    => tasks.Lambda([],[],$result,$body);
+syntax item `async fn $name:ident<$variables:type_parameters>($params:parameters) -> $element:typename $body:block`
+    => generics.Template($name,$variables,$params,tasks.Task($element),tasks.GenericBody($body),[]);
+syntax item `async fn $name:ident<$variables:type_parameters>() -> $element:typename $body:block`
+    => generics.Template($name,$variables,[],tasks.Task($element),tasks.GenericBody($body),[]);
+effect generics.specialize_item($name,$params,tasks.Task($element),tasks.GenericBody($body)) => tasks.Function($name,$params,$element,$body);
+syntax expr[70,right] `await $value:expr` => tasks.Await($value);
+syntax expr `spawn($value:expr)` => tasks.Spawn($value);
+syntax expr `block_on($value:expr)` => tasks.Await($value);
+syntax expr `done($value:expr)` => tasks.State($value,"done");
+syntax expr `failed($value:expr)` => tasks.State($value,"failed");
+syntax expr `cancelled($value:expr)` => tasks.State($value,"cancelled");
+syntax expr `error($value:expr)` => tasks.Error($value);
+syntax expr `steps($value:expr)` => tasks.Steps($value);
+syntax expr `cancel($value:expr)` => tasks.Cancel($value);
+syntax expr `sleep($milliseconds:expr)` => tasks.Delay($milliseconds);
+syntax expr `live_tasks()` => tasks.Live();
+syntax statement `suspend;` => tasks.PauseStatement();
+syntax statement `fail($code:expr);` => tasks.FailStatement($code);
+effect base.continue(tasks.PauseStatement(),$next) => tasks.Pause($next);
+effect base.continue(tasks.FailStatement($code),$next) => tasks.Fail($code);
+effect control.append(tasks.Pause($next),$suffix) => tasks.Pause(control.append($next,$suffix));
+effect control.append(tasks.Fail($code),$suffix) => tasks.Fail($code);
+effect control.range_continues(tasks.Pause($next),$increment) => tasks.Pause(control.range_continues($next,$increment));
+effect base.signature_params(tasks.Signature($params,$element)) => $params;
+effect base.signature_result(tasks.Signature($params,$element)) => tasks.Task($element);
+effect functions.callable(tasks.Signature($params,$element)) => functions.Callable($params,tasks.Task($element));
+effect functions.capture_target($name,tasks.Signature($params,$element)) => [functions.Callable($params,tasks.Task($element)),functions.Reference($name)];
+effect base.declare(tasks.Function($name,$params,$element,$body),$rest,$env)
+    => seq(coro.payload($element),base.declaration($name,tasks.Signature(list.map("base.param_type",$params),$element),$rest,$env));
+effect base.call_checked($name,$args,tasks.Signature($params,$element),$env,$expected)
+    => base.expect(base.Typed(tasks.Task($element),tasks.Start($name,base.check_arguments($args,$params,$env))),$expected);
+effect types.repr(tasks.Task($element)) => "!llvm.ptr";
+effect types.repr(tasks.Promise($element)) => "!llvm.ptr";
+effect coro.payload(tasks.Task($element)) => "!llvm.ptr";
+effect coro.payload(tasks.Promise($element)) => "!llvm.ptr";
+effect externc.c_abi_type(tasks.Promise($element)) => tasks.Promise($element);
+effect externc.c_abi_type(tasks.Task($element)) => tasks.Task($element);
+effect base.storage_alloc(tasks.Promise($element)) => base.storage_alloc(tasks.Task($element));
+effect base.storage_load(tasks.Promise($element),$slot) => base.storage_load(tasks.Task($element),$slot);
+effect base.storage_store(base.Typed(tasks.Promise($element),$value),$slot,$env) => coro.store(base.lower(base.Typed(tasks.Promise($element),$value),$env),$slot);
+effect base.storage_alloc(tasks.Task($element)) => base.storage_alloc(coro.Generator($element));
+effect base.storage_load(tasks.Task($element),$slot) => base.storage_load(coro.Generator($element),$slot);
+effect base.storage_store(base.Typed(tasks.Task($element),$value),$slot,$env) => coro.store(base.lower(base.Typed(tasks.Task($element),$value),$env),$slot);
+effect tasks.element(tasks.Task($element)) => $element;
+effect[fallback] tasks.element($type) => fail("async operation requires a task");
+// A dialect can expose another awaitable type by providing its element fact
+// and converting its checked value to the task ABI. The core sees neither.
+effect tasks.awaitable(base.Typed(tasks.Task($element),$value)) => base.Typed(tasks.Task($element),$value);
+effect tasks.awaitable(base.Typed(affine.Owned(tasks.Task($element)),$value)) => base.Typed(tasks.Task($element),tasks.OwnerView(base.Typed(affine.Owned(tasks.Task($element)),$value)));
+effect tasks.element(affine.Owned(tasks.Task($element))) => $element;
+effect[fallback] tasks.awaitable($checked) => fail("awaitable requires a task conversion contract");
+effect base.hint(tasks.Await($value),$env) => tasks.element(base.hint($value,$env));
+effect base.hint(tasks.Spawn($value),$env) => base.hint($value,$env);
+effect base.hint(tasks.State($value,$kind),$env) => types.Bool();
+effect base.hint(tasks.Error($value),$env) => types.Signed(64);
+effect base.hint(tasks.Steps($value),$env) => types.Signed(64);
+effect base.hint(tasks.Cancel($value),$env) => control.Void();
+effect base.hint(tasks.Delay($value),$env) => tasks.Task(control.Void());
+effect base.hint(tasks.Live(),$env) => types.Signed(64);
+effect base.hint(tasks.NewPromise($type),$env) => tasks.Promise($type);
+effect base.hint(tasks.Future($value),$env) => tasks.Task(tasks.promise_element(base.hint($value,$env)));
+effect base.hint(tasks.Resolve($promise,$value),$env) => types.Bool();
+effect base.hint(tasks.Reject($promise,$code),$env) => types.Bool();
+effect tasks.promise_element(tasks.Promise($element)) => $element;
+effect[fallback] tasks.promise_element($type) => fail("completion operation requires a promise");
+effect base.check(tasks.NewPromise($type),$env,$expected) => seq(coro.payload($type),base.expect(base.Typed(tasks.Promise($type),tasks.NewPromise($type)),$expected));
+effect base.check(tasks.Future($value),$env,$expected) => bind($checked,base.check($value,$env,base.Any()),
+    base.expect(base.Typed(tasks.Task(tasks.promise_element(arg($checked,0))),tasks.FutureValue($checked)),$expected));
+effect base.check(tasks.Resolve($value,$result),$env,$expected) => bind($checked,base.check($value,$env,base.Any()),
+    base.expect(base.Typed(types.Bool(),tasks.Resolved($checked,base.check($result,$env,tasks.promise_element(arg($checked,0))),symbol("promise.result.slot"))),$expected));
+effect base.check(tasks.Reject($value,$code),$env,$expected) => bind($checked,base.check($value,$env,base.Any()),
+    seq(tasks.promise_element(arg($checked,0)),base.expect(base.Typed(types.Bool(),tasks.Rejected($checked,base.check($code,$env,types.Signed(64)))),$expected)));
+effect base.check(tasks.Live(),$env,$expected) => base.expect(base.Typed(types.Signed(64),tasks.Live()),$expected);
+effect base.lower(base.Typed(types.Signed(64),tasks.Live()),$env) => coro.native_call("naru_task_live",[],["i64"]);
+effect base.check(tasks.Delay($value),$env,$expected) => base.expect(base.Typed(tasks.Task(control.Void()),tasks.Delayed(base.check($value,$env,types.Signed(64)))),$expected);
+effect base.check(tasks.Await($value),$env,$expected) => bind($checked,tasks.awaitable(base.check($value,$env,base.Any())),
+    base.expect(base.Typed(tasks.element(arg($checked,0)),tasks.BlockingAwait($checked,symbol("task.result.slot"),tasks.fresh($value,$env))),$expected));
+effect base.check(tasks.Spawn($value),$env,$expected) => bind($checked,tasks.awaitable(base.check($value,$env,base.Any())),
+    seq(tasks.element(arg($checked,0)),base.expect(base.Typed(arg($checked,0),tasks.Spawned($checked)),$expected)));
+effect base.check(tasks.State($value,$kind),$env,$expected) => tasks.checked_operation($value,$env,$expected,types.Bool(),$kind);
+effect base.check(tasks.Error($value),$env,$expected) => tasks.checked_operation($value,$env,$expected,types.Signed(64),"error");
+effect base.check(tasks.Steps($value),$env,$expected) => tasks.checked_operation($value,$env,$expected,types.Signed(64),"steps");
+effect base.check(tasks.Cancel($value),$env,$expected) => tasks.checked_operation($value,$env,$expected,control.Void(),"cancel");
+effect tasks.checked_operation($value,$env,$expected,$result,$kind) => bind($checked,base.check($value,$env,base.Any()),
+    seq(tasks.element(arg($checked,0)),base.expect(base.Typed($result,tasks.Operation($kind,$checked)),$expected)));
+// coro.Destroy's generic checker dispatches through this open handle protocol.
+effect coro.destroy_element(tasks.Task($element)) => $element;
+effect coro.destroy_element(tasks.Promise($element)) => $element;
+effect coro.destroy_element(affine.Owned(tasks.Task($element))) => $element;
+effect coro.destroy_element(affine.Owned(tasks.Promise($element))) => $element;
+effect base.lower(base.Typed(tasks.Task($element),tasks.OwnerView($value)),$env) => base.lower($value,$env);
+effect base.lower(base.Typed(control.Void(),coro.DestroyValue(base.Typed(affine.Owned(tasks.Task($element)),$value))),$env)
+    => coro.native_call("naru_task_destroy",[base.lower(base.Typed(affine.Owned(tasks.Task($element)),$value),$env)],[]);
+effect base.lower(base.Typed(control.Void(),coro.DestroyValue(base.Typed(affine.Owned(tasks.Promise($element)),$value))),$env)
+    => coro.native_call("naru_task_destroy",[base.lower(base.Typed(affine.Owned(tasks.Promise($element)),$value),$env)],[]);
+
+effect pipeline.steps() => pipeline.Step("async-await",["generics","records","closures"],["defer","affine"],"tasks.prepare");
+effect closures.lift_item(tasks.Function($name,$params,$element,$body),$env,$lifted)
+    => bind([$rewritten,$next],closures.lift_body($body,closures.param_scope($params,$env),$lifted),[tasks.Function($name,$params,$element,$rewritten),$next]);
+effect closures.lift_body(tasks.Pause($next),$env,$lifted)
+    => bind([$tail,$last],closures.lift_body($next,$env,$lifted),[tasks.Pause($tail),$last]);
+effect closures.lift_body(tasks.Fail($value),$env,$lifted)
+    => bind([$checked,$more],closures.lift_expr($value,$env,$lifted),[tasks.Fail($checked),$more]);
+effect closures.lift_expr(tasks.Lambda($captures,$params,$result,$body),$env,$lifted)
+    => bind($name,concat("_naru_async_closure_",text(symbol("code"))),bind($fields,closures.capture_fields($captures,$env,env.empty()),
+        bind($record,records.Record($name,$fields),bind($slot,text(symbol("closure.environment")),
+            [closures.ClosureValue(closures.Closure($name,list.map("base.param_type",$params),tasks.Task($result),$fields),closures.capture_values($captures)),
+                list.concat($lifted,[tasks.Function($name,list.prepend(base.Param($slot,$record),$params),$result,closures.capture_body($fields,$slot,$body))])]))));
+effect tasks.prepare($items) => list.map("tasks.normalize_function",$items);
+effect tasks.normalize_function(tasks.Function($name,$params,$element,$body)) => tasks.Function($name,$params,$element,tasks.body(tasks.contextualize($body,$element,base.Any())));
+effect tasks.normalize_function(coro.Coroutine($name,$params,$element,$body)) => coro.Coroutine($name,$params,$element,tasks.body(tasks.contextualize($body,control.Void(),$element)));
+effect[fallback] tasks.normalize_function($item) => $item;
+// Preserve source expected types while splitting expressions into suspension
+// steps. Delayed argument types are resolved only once the lexical scope exists.
+effect tasks.contextualize($body,$result,$yield) => tree.rewrite($body,"tasks.expected_node",tasks.ResultContext($result,$yield));
+effect tasks.expected_node(base.Let($name,$type,$value,$next),$context) => base.Let($name,$type,tasks.Contextual($value,$type),$next);
+effect tasks.expected_node(base.Var($name,$type,$value,$next),$context) => base.Var($name,$type,tasks.Contextual($value,$type),$next);
+effect tasks.expected_node(base.Set($name,$value,$next),$context) => base.Set($name,tasks.Contextual($value,tasks.SlotType($name)),$next);
+effect tasks.expected_node(arrays.ArrayStore($name,$index,$value,$next),$context)
+    => arrays.ArrayStore($name,$index,tasks.Contextual($value,tasks.ArrayElementType(tasks.SlotType($name))),$next);
+effect tasks.expected_node(affine.Write($reference,$value,$next),$context)
+    => affine.Write($reference,tasks.Contextual($value,tasks.ReferentType($reference)),$next);
+effect tasks.expected_node(base.Return($value),tasks.ResultContext($result,$yield)) => base.Return(tasks.Contextual($value,$result));
+effect tasks.expected_node(coro.Yield($value,$next),tasks.ResultContext($result,$yield)) => coro.Yield(tasks.Contextual($value,$yield),$next);
+effect[fallback] tasks.expected_node($node,$context) => $node;
+effect tasks.body(base.Let($name,$type,$value,$next)) => tasks.bind_expression($value,tasks.LetTail($name,$type,tasks.body($next)));
+effect tasks.body(base.Var($name,$type,$value,$next)) => tasks.bind_expression($value,tasks.VarTail($name,$type,tasks.body($next)));
+effect tasks.body(base.Set($name,$value,$next)) => tasks.bind_expression($value,tasks.SetTail($name,tasks.body($next)));
+effect tasks.body(control.Evaluate($value,$next)) => tasks.bind_expression($value,tasks.EvalTail(tasks.body($next)));
+effect tasks.body(base.Return($value)) => tasks.bind_expression($value,tasks.ReturnTail());
+effect tasks.body(base.If($condition,$yes,$no,$next)) => tasks.bind_expression($condition,tasks.IfTail(tasks.body($yes),tasks.body($no),tasks.body($next)));
+effect tasks.body(base.While($condition,$loop,$next)) => bind([$value,$steps],tasks.expression($condition),
+    choose(eq(size($steps),0),base.While($value,tasks.body($loop),tasks.body($next)),
+        base.While(base.Boolean(1),tasks.wrap($steps,base.If($value,tasks.body($loop),control.Break(),base.End())),tasks.body($next))));
+effect tasks.body(coro.Yield($value,$next)) => tasks.bind_expression($value,tasks.YieldTail(tasks.body($next)));
+effect tasks.body(defer.Deferred($call,$next)) => tasks.bind_expression($call,tasks.DeferTail(tasks.body($next)));
+effect tasks.body(arrays.ArrayStore($name,$index,$value,$next)) => bind([$values,$steps],tasks.expressions([$index,$value]),
+    tasks.wrap($steps,arrays.ArrayStore($name,list.head($values),arg($values,1),tasks.body($next))));
+effect tasks.body(affine.Write($reference,$value,$next)) => bind([$values,$steps],tasks.expressions([$reference,$value]),
+    tasks.wrap($steps,affine.Write(list.head($values),arg($values,1),tasks.body($next))));
+effect tasks.body(affine.Release($name,$next)) => affine.Release($name,tasks.body($next));
+effect tasks.body(tasks.Pause($next)) => tasks.Pause(tasks.body($next));
+effect tasks.body(tasks.Fail($value)) => tasks.bind_expression($value,tasks.FailTail());
+effect[fallback] tasks.body($body) => choose(tasks.contains_await($body),fail("statement with await requires a traversal contract"),$body);
+effect tasks.bind_expression($expr,$tail) => bind([$value,$steps],tasks.expression($expr),tasks.wrap($steps,tasks.tail($tail,$value)));
+effect tasks.tail(tasks.LetTail($name,$type,$next),$value) => base.Let($name,$type,$value,$next);
+effect tasks.tail(tasks.VarTail($name,$type,$next),$value) => base.Var($name,$type,$value,$next);
+effect tasks.tail(tasks.SetTail($name,$next),$value) => base.Set($name,$value,$next);
+effect tasks.tail(tasks.EvalTail($next),$value) => control.Evaluate($value,$next);
+effect tasks.tail(tasks.ReturnTail(),$value) => base.Return($value);
+effect tasks.tail(tasks.IfTail($yes,$no,$next),$value) => base.If($value,$yes,$no,$next);
+effect tasks.tail(tasks.YieldTail($next),$value) => coro.Yield($value,$next);
+effect tasks.tail(tasks.FailTail(),$value) => tasks.Fail($value);
+effect tasks.tail(tasks.DeferTail($next),$value) => defer.Deferred($value,$next);
+effect tasks.wrap([],$body) => $body;
+effect tasks.wrap($steps,$body) when lt(0,size($steps)) => tasks.wrap_step(list.head($steps),tasks.wrap(list.tail($steps),$body));
+effect tasks.wrap_step(tasks.AwaitStep($name,$value),$next) => tasks.AwaitLet($name,$value,$next);
+effect tasks.wrap_step(tasks.LetStep($name,$value),$next) => base.Let($name,base.Any(),$value,$next);
+effect tasks.wrap_step(tasks.TypedLetStep($name,$type,$value),$next) => base.Let($name,$type,$value,$next);
+effect defer.binding_type(tasks.ArgumentType($callee,$index),$env) => arg(base.signature_params(env.get($env,$callee)),$index);
+effect defer.binding_type(tasks.ValueArgumentType($callee,$index),$env) => arg(tasks.value_parameters(base.hint($callee,$env)),$index);
+effect defer.binding_type(tasks.SlotType($name),$env) => base.slot_type(env.get($env,$name));
+effect defer.binding_type(tasks.ReferentType($reference),$env) => affine.referent(base.hint($reference,$env));
+effect defer.binding_type(tasks.ArrayElementType($type),$env) => tasks.array_element(defer.binding_type($type,$env));
+effect tasks.array_element(arrays.Array($count,$element)) => $element;
+effect[fallback] tasks.array_element($type) => base.Any();
+effect tasks.value_parameters(functions.Callable($params,$result)) => $params;
+effect tasks.value_parameters(closures.Closure($name,$params,$result,$captures)) => $params;
+effect base.hint(tasks.CapturedOperand($name),$env) => base.slot_type(env.get($env,$name));
+effect base.check(tasks.CapturedOperand($name),$env,$expected) => base.check(base.Name($name),$env,$expected);
+effect affine.expression(tasks.CapturedOperand($name),$state)
+    => affine.expression(defer.captured_argument($name,base.slot_type(env.get(affine.type_environment($state),$name))),$state);
+effect tasks.wrap_step(tasks.LogicStep($name,$op,$left,$right,$steps),$next)
+    => base.Var($name,types.Bool(),$left,base.If(choose(eq($op,"and"),base.Name($name),control.Not(base.Name($name))),
+        tasks.wrap($steps,base.Set($name,$right,base.End())),base.End(),$next));
+effect tasks.expression(tasks.Await($value)) => bind([$task,$steps],tasks.expression($value),bind($name,text(symbol("await.value")),
+    [base.Name($name),list.concat($steps,[choose(eq(tag($task),tag(base.Name(0))),tasks.AwaitStep($name,$task),
+        tasks.TemporaryAwaitStep($name,text(symbol("await.task")),$task))])]));
+effect tasks.wrap_step(tasks.TemporaryAwaitStep($name,$handle,$value),$next) => tasks.CapturedAwait($name,$handle,$value,$next);
+effect defer.expand(tasks.CapturedAwait($name,$handle,$value,$next),$context,$env,$result)
+    => bind($capture,tasks.capture_await_value(base.hint($value,$env),$value),bind($type,base.hint($capture,$env),base.Let($handle,$type,$capture,
+        defer.expand(choose(tasks.fresh($value,$env),defer.Deferred(coro.Destroy(base.Name($handle)),tasks.AwaitLet($name,base.Name($handle),$next)),
+            tasks.AwaitLet($name,base.Name($handle),$next)),$context,env.put($env,$handle,base.preparation_slot($type,symbol($handle))),$result))));
+// A consuming await moves the owner once, then keeps a private task ABI view
+// under the generated cleanup. This view is never an ordinary user copy.
+effect tasks.capture_await_value(affine.Owned(tasks.Task($element)),$value) => tasks.Consume($value);
+effect[fallback] tasks.capture_await_value($type,$value) => $value;
+effect base.hint(tasks.Consume($value),$env) => tasks.Task(tasks.element(base.hint($value,$env)));
+effect base.check(tasks.Consume($value),$env,$expected) => base.expect(tasks.awaitable(base.check($value,$env,base.Any())),$expected);
+// Allocation provenance is a library fact, not a syntactic non-Name guess.
+effect tasks.fresh(tasks.Delay($value),$env) => 1;
+effect tasks.fresh(tasks.Spawn($value),$env) => tasks.fresh($value,$env);
+effect tasks.fresh(affine.Move($name),$env) => tasks.consuming_owner(base.slot_type(env.get($env,$name)));
+effect tasks.fresh(affine.Own($value),$env) => tasks.consuming_owner(base.hint(affine.Own($value),$env));
+effect tasks.consuming_owner(affine.Owned(tasks.Task($element))) => 1;
+effect[fallback] tasks.consuming_owner($type) => 0;
+effect tasks.fresh(base.Call($name,$arguments),$env) => tasks.fresh_signature(env.get($env,$name),$env);
+effect tasks.fresh(functions.ValueCall(functions.Reference($name),$arguments),$env) => tasks.allocating_signature(env.get($env,$name));
+effect[fallback] tasks.fresh(functions.ValueCall($callee,$arguments),$env) => tasks.fresh_type(base.hint($callee,$env),$env);
+effect tasks.fresh_signature(base.Slot($type,$identity),$env) => tasks.fresh_type($type,$env);
+effect tasks.fresh_signature(base.Mutable($type,$identity),$env) => tasks.fresh_type($type,$env);
+effect[fallback] tasks.fresh_signature($signature,$env) => tasks.allocating_signature($signature);
+effect tasks.fresh_type(closures.Closure($name,$params,$result,$captures),$env) => tasks.allocating_signature(env.get($env,$name));
+effect[fallback] tasks.fresh_type($type,$env) => 0;
+effect tasks.allocating_signature(tasks.Signature($params,$result)) => 1;
+effect[fallback] tasks.allocating_signature($signature) => 0;
+effect[fallback] tasks.fresh($value,$env) => 0;
+effect tasks.expression(tasks.Contextual($value,$type)) => tasks.expression_typed($value,$type);
+effect tasks.expression_typed(arrays.ArrayLiteral($values),$type)
+    => bind([$elements,$steps],tasks.expressions_typed($values,tasks.repeat_type(tasks.ArrayElementType($type),size($values))),[arrays.ArrayLiteral($elements),$steps]);
+effect[fallback] tasks.expression_typed($value,$type) => tasks.expression($value);
+effect tasks.repeat_type($type,0) => [];
+effect tasks.repeat_type($type,$count) when lt(0,$count) => list.prepend($type,tasks.repeat_type($type,sub($count,1)));
+effect tasks.expression(control.Logical($op,$left,$right)) => bind([$a,$as],tasks.expression($left),bind([$b,$bs],tasks.expression($right),
+    choose(eq(size($bs),0),[control.Logical($op,$a,$b),$as],bind($name,text(symbol("await.logic")),
+        [base.Name($name),list.concat($as,[tasks.LogicStep($name,$op,$a,$b,$bs)])]))));
+effect tasks.expression(base.Call($name,$args)) => bind([$values,$steps],tasks.expressions_typed($args,tasks.argument_types($name,size($args),0)),[base.Call($name,$values),$steps]);
+effect tasks.expression(functions.ValueCall($callee,$args)) => bind([$target,$before],tasks.expression($callee),bind($name,text(symbol("await.callee")),
+    bind([$values,$steps],tasks.expressions_typed($args,tasks.value_argument_types(base.Name($name),size($args),0)),
+        choose(eq(size($steps),0),[functions.ValueCall($target,$values),$before],
+            [functions.ValueCall(base.Name($name),$values),list.concat($before,list.prepend(tasks.LetStep($name,$target),$steps))]))));
+effect tasks.value_argument_types($callee,$count,$index) when eq($count,$index) => [];
+effect tasks.value_argument_types($callee,$count,$index) when lt($index,$count) => list.prepend(tasks.ValueArgumentType($callee,$index),tasks.value_argument_types($callee,$count,add($index,1)));
+effect tasks.argument_types($name,$count,$index) when eq($count,$index) => [];
+effect tasks.argument_types($name,$count,$index) when lt($index,$count) => list.prepend(tasks.ArgumentType($name,$index),tasks.argument_types($name,$count,add($index,1)));
+effect tasks.expression(base.Cast($value,$type)) => bind([$inner,$steps],tasks.expression($value),[base.Cast($inner,$type),$steps]);
+effect tasks.expression(records.Get($value,$field)) => bind([$inner,$steps],tasks.expression($value),[records.Get($inner,$field),$steps]);
+effect tasks.expression(records.Construction(records.Record($name,$fields),$values))
+    => seq(choose(eq(size($fields),size($values)),1,fail("record initializer field count mismatch")),
+        bind([$expressions,$steps],tasks.expressions_typed(tasks.field_expressions($fields,records.value_map($values,env.empty())),list.map("records.member_type",$fields)),
+            [records.Construction(records.Record($name,$fields),tasks.record_values($fields,$expressions)),$steps]));
+effect tasks.field_expressions([],$values) => [];
+effect tasks.field_expressions($fields,$values) when lt(0,size($fields)) => bind(records.Field($name,$type),list.head($fields),
+    list.prepend(env.get($values,$name),tasks.field_expressions(list.tail($fields),$values)));
+effect tasks.record_values([],$values) => [];
+effect tasks.record_values($fields,$values) when lt(0,size($fields)) => bind(records.Field($name,$type),list.head($fields),
+    list.prepend(records.Value($name,list.head($values)),tasks.record_values(list.tail($fields),list.tail($values))));
+effect[fallback] tasks.expression($value) => choose(tasks.contains_await($value),
+    bind([$children,$steps],tasks.expressions(term.children($value)),[term.rebuild($value,$children),$steps]),[$value,[]]);
+effect tasks.contains_await($value) => tree.fold($value,"tasks.await_found",0);
+effect tasks.await_found($found,tasks.Await($value)) => 1;
+effect[fallback] tasks.await_found($found,$value) => $found;
+// If a later operand suspends, evaluate earlier operands exactly once before
+// it. Literals/constructor metadata do not need an SSA capture.
+effect tasks.expressions([]) => [[],[]];
+effect tasks.expressions($values) when lt(0,size($values)) => bind([$value,$steps],tasks.expression(list.head($values)),
+    bind([$tail,$rest],tasks.expressions(list.tail($values)),choose(and(lt(0,size($rest)),tasks.capture_operand($value)),
+        bind($name,text(symbol("await.operand")),[list.prepend(base.Name($name),$tail),list.concat($steps,list.prepend(tasks.LetStep($name,$value),$rest))]),
+        [list.prepend($value,$tail),list.concat($steps,$rest)])));
+effect tasks.expressions_typed([],$types) => [[],[]];
+effect tasks.expressions_typed($values,$types) when lt(0,size($values)) => bind([$value,$steps],tasks.expression_typed(list.head($values),list.head($types)),
+    bind([$tail,$rest],tasks.expressions_typed(list.tail($values),list.tail($types)),choose(and(lt(0,size($rest)),tasks.capture_operand($value)),
+        bind($name,text(symbol("await.operand")),[list.prepend(tasks.CapturedOperand($name),$tail),
+            list.concat($steps,list.prepend(tasks.TypedLetStep($name,list.head($types),$value),$rest))]),
+        [list.prepend($value,$tail),list.concat($steps,$rest)])));
+effect tasks.capture_operand($value) => and(eq(term.kind($value),0),not(or(eq(tag($value),tag(base.Int(0))),eq(tag($value),tag(base.Boolean(0))))));
+
+effect defer.function(tasks.Function($name,$params,$element,$body),$env) => tasks.Function($name,$params,$element,
+    defer.expand(tree.rewrite($body,"tasks.return_node",[]),defer.Context([],[],defer.NoLoop()),defer.defer_scope($params,$env),$element));
+effect tasks.return_node(base.Return($value),$context) => tasks.Complete($value);
+effect tasks.return_node(control.ReturnVoid(),$context) => tasks.Complete(coro.Unit());
+effect[fallback] tasks.return_node($node,$context) => $node;
+effect defer.expand(tasks.Complete($value),defer.Context($returns,$scope,$loop),$env,$result)
+    => bind($name,text(symbol("task.result")),base.Let($name,$result,$value,defer.cleanup_calls($returns,tasks.Complete(base.Name($name)))));
+effect defer.expand(tasks.Fail($code),defer.Context($returns,$scope,$loop),$env,$result)
+    => bind($name,text(symbol("task.error")),base.Let($name,types.Signed(64),$code,defer.cleanup_calls($returns,tasks.Fail(base.Name($name)))));
+effect defer.expand(tasks.AwaitLet($name,$value,$next),defer.Context($returns,$scope,$loop),$env,$result)
+    => bind($type,tasks.element(base.hint($value,$env)),tasks.CleanupAwait($name,$value,defer.cleanup_calls($returns,base.End()),
+        defer.expand($next,defer.Context($returns,$scope,$loop),env.put($env,$name,base.Slot($type,symbol($name))),$result)));
+effect defer.expand(tasks.Pause($next),defer.Context($returns,$scope,$loop),$env,$result)
+    => tasks.CleanupPause(defer.cleanup_calls($returns,base.End()),defer.expand($next,defer.Context($returns,$scope,$loop),$env,$result));
+effect affine.function(tasks.Function($name,$params,$element,$body),$env)
+    => bind($state,affine.parameters($params,affine.State($env,env.empty(),env.empty(),env.empty(),[])),
+        bind([$rewritten,$last],affine.body($body,$state),tasks.Function($name,$params,$element,affine.parameter_storage($params,$rewritten))));
+effect affine.body(tasks.Complete($value),$state) => bind([$checked,$after],affine.expression($value,$state),[tasks.Complete($checked),$after]);
+effect affine.body(tasks.Fail($code),$state) => bind([$checked,$after],affine.expression($code,$state),[tasks.Fail($checked),$after]);
+effect affine.body(tasks.CleanupPause($cleanup,$next),$state) => seq(coro.suspend_safe($state),
+    bind([$cancel,$ignored],affine.body($cleanup,$state),bind([$tail,$last],affine.body($next,$state),[tasks.CleanupPause($cancel,$tail),$last])));
+effect affine.body(tasks.CleanupAwait($name,$value,$cleanup,$next),$state)
+    => bind([$checked,$after],affine.expression($value,$state),seq(coro.suspend_safe($after),bind($type,tasks.element(base.hint($checked,affine.type_environment($after))),
+        bind([$cancel,$ignored],affine.body($cleanup,$after),bind([$tail,$last],affine.body($next,affine.bind_local($name,$type,$after)),
+            [tasks.CleanupAwait($name,$checked,$cancel,$tail),$last])))));
+
+effect base.prepare(tasks.Function($name,$params,$element,$body),$env) => bind([$bound,$scope],base.bind_params($params,$env,env.empty()),
+    seq(list.map("coro.parameter_safe",$params),bind($checked,base.check_body($body,env.put($scope,tasks.TaskResultKey(),$element),control.Void()),
+        seq(choose(or(eq($element,control.Void()),base.flow_terminal($checked)),1,fail("async function can finish without a result")),
+            bind($data,symbol("task.data"),tasks.CheckedTask($name,$bound,$element,$data,$checked))))));
+effect base.check_body(tasks.Complete($value),$env,$result) => choose(env.contains($env,tasks.TaskResultKey()),
+    tasks.Complete(base.check($value,$env,env.get($env,tasks.TaskResultKey()))),fail("task return outside async fn"));
+effect base.check_body(tasks.Fail($code),$env,$result) => choose(env.contains($env,tasks.TaskResultKey()),tasks.Fail(base.check($code,$env,types.Signed(64))),fail("fail outside async fn"));
+effect base.check_body(tasks.CleanupPause($cleanup,$next),$env,$result) => choose(env.contains($env,tasks.TaskResultKey()),
+    tasks.CleanupPause(base.check_body($cleanup,$env,control.Void()),base.check_body($next,$env,$result)),fail("suspend outside async fn"));
+effect base.check_body(tasks.CleanupAwait($name,$value,$cleanup,$next),$env,$result) => choose(env.contains($env,tasks.TaskResultKey()),
+    bind($checked,tasks.awaitable(base.check($value,$env,base.Any())),bind($type,tasks.element(arg($checked,0)),bind($identity,symbol($name),
+        tasks.CheckedAwait($identity,$checked,base.check_body($cleanup,$env,control.Void()),
+            base.check_body($next,env.put($env,$name,base.Slot($type,$identity)),$result))))),fail("suspending await requires async fn"));
+effect base.prepare_storage(tasks.Complete($value),$entry,$env) => $env;
+effect base.prepare_storage(tasks.Fail($code),$entry,$env) => $env;
+effect base.prepare_storage(tasks.CleanupPause($cleanup,$next),$entry,$env) => base.prepare_storage($next,$entry,$env);
+effect base.prepare_storage(tasks.CheckedAwait($identity,base.Typed(tasks.Task($element),$value),$cleanup,$next),$entry,$env)
+    => bind($slot,mlir.with_block($entry,tasks.result_slot($element)),base.prepare_storage($next,$entry,env.put($env,tasks.ResultSlotKey($identity),$slot)));
+effect allocation.site(base.Typed($type,tasks.BlockingAwait($value,$identity,$temporary)))
+    => allocation.Site($identity,"tasks.result_slot",[$type]);
+effect allocation.site(base.Typed($type,tasks.Resolved($promise,base.Typed($element,$value),$identity)))
+    => allocation.Site($identity,"tasks.result_slot",[$element]);
+effect tasks.result_slot(control.Void()) => mlir.op("llvm.mlir.zero",[],["!llvm.ptr"],[],[]);
+effect[fallback] tasks.result_slot($type) => mlir.op("llvm.alloca",[coro.integer(1)],["!llvm.ptr"],[RawAttr("elem_type",coro.payload($type))],[]);
+effect tasks.result_size(control.Void()) => coro.integer(0);
+effect[fallback] tasks.result_size($type) => mlir.op("llvm.ptrtoint",[mlir.op("llvm.getelementptr",[mlir.op("llvm.mlir.zero",[],["!llvm.ptr"],[],[])],["!llvm.ptr"],
+    [RawAttr("elem_type",coro.payload($type)),RawAttr("rawConstantIndices","array<i32: 1>")],[])],["i64"],[],[]);
+effect base.flow_terminal(tasks.Complete($value)) => 1;
+effect base.flow_terminal(tasks.Fail($code)) => 1;
+effect base.flow_terminal(tasks.CleanupPause($cleanup,$next)) => base.flow_terminal($next);
+effect base.flow_terminal(tasks.CheckedAwait($identity,$value,$cleanup,$next)) => base.flow_terminal($next);
+effect allocation.children(tasks.CheckedTask($name,$params,$element,$data,$body)) => [];
+
+effect tasks.runtime() => [
+    coro.external("naru_task_attach","!llvm.func<void (ptr, ptr, ptr, ptr)>"),
+    coro.external("naru_task_delay","!llvm.func<void (ptr, ptr, ptr, i64)>"),
+    coro.external("naru_task_steps","!llvm.func<i64 (ptr)>"),
+    coro.external("naru_task_live","!llvm.func<i64 ()>"),
+    coro.external("naru_async_generator_attach","!llvm.func<void (ptr, ptr, ptr, ptr, ptr, i64)>"),
+    coro.external("naru_async_generator_next","!llvm.func<void (ptr, ptr, ptr, ptr, ptr)>"),
+    coro.external("naru_async_generator_current","!llvm.func<void (ptr, ptr, i64)>"),
+    coro.external("naru_task_promise","!llvm.func<void (ptr, ptr, ptr, ptr, i64)>"),
+    coro.external("naru_task_resolve","!llvm.func<i32 (ptr, ptr, i64)>"),
+    coro.external("naru_task_reject","!llvm.func<i32 (ptr, i64)>"),
+    coro.external("naru_task_spawn","!llvm.func<void (ptr)>"),
+    coro.external("naru_task_prepare","!llvm.func<i32 (ptr, ptr)>"),
+    coro.external("naru_task_pause","!llvm.func<void (ptr)>"),
+    coro.external("naru_task_wait","!llvm.func<i32 (ptr)>"),
+    coro.external("naru_task_wait_result","!llvm.func<i32 (ptr, ptr, ptr, i64, i32)>"),
+    coro.external("naru_task_await_status","!llvm.func<i32 (ptr)>"),
+    coro.external("naru_task_await_error","!llvm.func<i64 (ptr)>"),
+    coro.external("naru_task_await_result","!llvm.func<void (ptr, ptr, ptr, i64)>"),
+    coro.external("naru_task_status","!llvm.func<i32 (ptr)>"),
+    coro.external("naru_task_error","!llvm.func<i64 (ptr)>"),
+    coro.external("naru_task_cancel","!llvm.func<void (ptr)>"),
+    coro.external("naru_task_destroy","!llvm.func<void (ptr)>")];
+effect base.lower(base.Typed(tasks.Task(control.Void()),tasks.Delayed($value)),$env) => bind($data,tasks.allocate_void(),
+    seq(coro.native_call("naru_task_delay",[$data,coro.address($data,control.Void(),1),coro.address($data,control.Void(),3),base.lower($value,$env)],[]),$data));
+effect tasks.allocate_void() => bind($size,mlir.op("llvm.ptrtoint",[mlir.op("llvm.getelementptr",[mlir.op("llvm.mlir.zero",[],["!llvm.ptr"],[],[])],["!llvm.ptr"],
+    [RawAttr("elem_type",coro.data_type(control.Void())),RawAttr("rawConstantIndices","array<i32: 1>")],[])],["i64"],[],[]),
+    bind($data,coro.native_call("malloc",[$size],["!llvm.ptr"]),seq(coro.require(coro.nonnull($data)),seq(
+        coro.set_status($data,control.Void(),0),seq(coro.store(coro.integer(0),coro.address($data,control.Void(),3)),$data)))));
+effect coro.runtime_extra($items) => choose(tree.fold($items,"tasks.needed",0),tasks.runtime(),[]);
+effect tasks.needed($found,tasks.Task($element)) => 1;
+effect tasks.needed($found,tasks.Promise($element)) => 1;
+effect tasks.needed($found,tasks.CheckedTask($name,$params,$element,$data,$body)) => 1;
+effect[fallback] tasks.needed($found,$node) => $found;
+effect coro.runtime_needed($found,tasks.Task($element)) => 1;
+effect coro.runtime_needed($found,tasks.Promise($element)) => 1;
+effect coro.runtime_needed($found,tasks.CheckedTask($name,$params,$element,$data,$body)) => 1;
+effect base.lower(base.Typed(tasks.Task($element),tasks.Start($name,$arguments)),$env)
+    => bind($data,base.lower(base.Typed(coro.Generator($element),coro.Start($name,$arguments)),$env),
+        seq(coro.store(coro.integer(0),coro.address($data,$element,3)),seq(coro.native_call("naru_task_attach",[$data,
+            coro.load(coro.address($data,$element,0),"!llvm.ptr"),coro.address($data,$element,1),coro.address($data,$element,3)],[]),$data)));
+effect base.lower(base.Typed(tasks.Task($element),tasks.Spawned($value)),$env) => bind($data,base.lower($value,$env),seq(coro.native_call("naru_task_spawn",[$data],[]),$data));
+effect base.lower(base.Typed($element,tasks.BlockingAwait($value,$identity,$temporary)),$env) => bind($data,base.lower($value,$env),
+    bind($slot,allocation.lookup($env,$identity),seq(coro.require(tasks.equal(coro.native_call("naru_task_wait_result",[$data,
+        coro.address($data,$element,2),$slot,tasks.result_size($element),base.lower(base.Typed(types.Signed(32),base.Integer($temporary)),env.empty())],["i32"]),2)),
+            tasks.load_result($slot,$element))));
+effect tasks.load_result($slot,control.Void()) => [];
+effect[fallback] tasks.load_result($slot,$element) => coro.load($slot,coro.payload($element));
+effect tasks.result($data,control.Void()) => [];
+effect[fallback] tasks.result($data,$element) => coro.load(coro.address($data,$element,2),coro.payload($element));
+effect tasks.equal($value,$number) => mlir.op("arith.cmpi",[$value,base.lower(base.Typed(types.Signed(32),base.Integer($number)),env.empty())],["i1"],[tasks.Attr("predicate",0,"i64")],[]);
+effect base.lower(base.Typed($result,tasks.Operation($kind,base.Typed(tasks.Task($element),$value))),$env)
+    => tasks.operation($kind,base.lower(base.Typed(tasks.Task($element),$value),$env));
+effect tasks.operation("done",$data) => mlir.op("arith.cmpi",[coro.native_call("naru_task_status",[$data],["i32"]),base.lower(base.Typed(types.Signed(32),base.Integer(2)),env.empty())],["i1"],[tasks.Attr("predicate",5,"i64")],[]);
+effect tasks.operation("failed",$data) => tasks.equal(coro.native_call("naru_task_status",[$data],["i32"]),3);
+effect tasks.operation("cancelled",$data) => tasks.equal(coro.native_call("naru_task_status",[$data],["i32"]),4);
+effect tasks.operation("error",$data) => coro.native_call("naru_task_error",[$data],["i64"]);
+effect tasks.operation("steps",$data) => coro.native_call("naru_task_steps",[$data],["i64"]);
+effect tasks.operation("cancel",$data) => coro.native_call("naru_task_cancel",[$data],[]);
+effect base.lower(base.Typed(control.Void(),coro.DestroyValue(base.Typed(tasks.Task($element),$value))),$env)
+    => coro.native_call("naru_task_destroy",[base.lower(base.Typed(tasks.Task($element),$value),$env)],[]);
+effect base.lower(base.Typed(control.Void(),coro.DestroyValue(base.Typed(tasks.Promise($element),$value))),$env)
+    => coro.native_call("naru_task_destroy",[base.lower(base.Typed(tasks.Promise($element),$value),$env)],[]);
+effect base.lower(base.Typed(tasks.Promise($element),tasks.NewPromise($element)),$env) => bind($data,tasks.allocate($element),
+    seq(coro.native_call("naru_task_promise",[$data,coro.address($data,$element,1),coro.address($data,$element,3),
+        coro.address($data,$element,2),tasks.result_size($element)],[]),$data));
+effect base.lower(base.Typed(tasks.Task($element),tasks.FutureValue($promise)),$env) => base.lower($promise,$env);
+effect base.lower(base.Typed(types.Bool(),tasks.Resolved($promise,base.Typed($element,$value),$identity)),$env)
+    => bind($data,base.lower($promise,$env),bind($slot,allocation.lookup($env,$identity),seq(
+        choose(eq($element,control.Void()),[],coro.store(base.lower(base.Typed($element,$value),$env),$slot)),
+        tasks.equal(coro.native_call("naru_task_resolve",[$data,$slot,tasks.result_size($element)],["i32"]),1))));
+effect base.lower(base.Typed(types.Bool(),tasks.Rejected($promise,$code)),$env)
+    => tasks.equal(coro.native_call("naru_task_reject",[base.lower($promise,$env),base.lower($code,$env)],["i32"]),1);
+effect tasks.allocate($element) => bind($size,mlir.op("llvm.ptrtoint",[mlir.op("llvm.getelementptr",[mlir.op("llvm.mlir.zero",[],["!llvm.ptr"],[],[])],["!llvm.ptr"],
+    [RawAttr("elem_type",coro.data_type($element)),RawAttr("rawConstantIndices","array<i32: 1>")],[])],["i64"],[],[]),
+    bind($data,coro.native_call("malloc",[$size],["!llvm.ptr"]),seq(coro.require(coro.nonnull($data)),seq(
+        coro.set_status($data,$element,0),seq(coro.store(coro.integer(0),coro.address($data,$element,3)),$data)))));
+effect base.lower_function(tasks.CheckedTask($name,$params,$element,$data,$body)) => seq(mlir.op("func.func",[],[],[
+    tasks.Attr("sym_name",coro.body_symbol($name)),Attr("sym_visibility","private"),tasks.RawAttr("llvm.passthrough","[\"presplitcoroutine\"]"),tasks.RawAttr("function_type",
+    concat("(",concat(types.join(list.concat(list.map("base.bound_type",$params),["!llvm.ptr"])),") -> !async.coro.handle")))],
+    [coro.region(list.concat($params,[base.BoundParam(coro.DataPointer(),$data)]),$body,$element,$data)]),
+    coro.wrapper($name,$params,tasks.Task($element),tasks.Start($name,list.map("coro.bound_read",$params))));
+effect base.lower_flow(tasks.Complete($value),$env,$block,$continuation) => seq(mlir.in_block($block,
+    seq(choose(eq(arg($value,0),control.Void()),[],coro.store(base.lower($value,$env),coro.address(env.get($env,coro.DataKey()),env.get($env,coro.ElementKey()),2))),
+        seq(coro.set_status(env.get($env,coro.DataKey()),env.get($env,coro.ElementKey()),2),coro.suspend($env,env.get($env,coro.SuspendKey()))))),[$block]);
+effect base.lower_flow(tasks.Fail($code),$env,$block,$continuation) => seq(mlir.in_block($block,tasks.finish_error(base.lower($code,$env),$env)),[$block]);
+effect tasks.finish_error($code,$env) => seq(coro.store($code,coro.address(env.get($env,coro.DataKey()),env.get($env,coro.ElementKey()),3)),
+    seq(coro.set_status(env.get($env,coro.DataKey()),env.get($env,coro.ElementKey()),3),coro.suspend($env,env.get($env,coro.SuspendKey()))));
+effect base.lower_flow(tasks.CleanupPause($cleanup,$next),$env,$block,$continuation)
+    => bind($resume,mlir.block([]),bind([$cancel,$blocks],coro.cleanup_edge($cleanup,$env),
+        seq(mlir.in_block($block,seq(coro.native_call("naru_task_pause",[env.get($env,coro.DataKey())],[]),
+            coro.suspend(env.put($env,coro.CleanupKey(),$cancel),$resume))),list.concat([$block],list.concat($blocks,base.lower_flow($next,$env,$resume,$continuation))))));
+effect base.lower_flow(tasks.CheckedAwait($identity,base.Typed(tasks.Task($element),$value),$cleanup,$next),$env,$block,$continuation)
+    => bind($child,mlir.with_block($block,base.lower(base.Typed(tasks.Task($element),$value),$env)),bind($ready,mlir.block([]),bind($wait,mlir.block([]),
+        bind($failed,mlir.block([]),bind($success,mlir.block([]),bind([$cancel,$cancel_blocks],coro.cleanup_edge($cleanup,$env),
+        bind($code,mlir.with_block($block,coro.native_call("naru_task_prepare",[env.get($env,coro.DataKey()),$child],["i32"])),
+            tasks.await_blocks($identity,$child,$element,$cleanup,$next,$env,$block,$continuation,$ready,$wait,$failed,$success,$cancel,$cancel_blocks,$code))))))));
+effect tasks.await_blocks($identity,$child,$element,$cleanup,$next,$env,$block,$continuation,$ready,$wait,$failed,$success,$cancel,$cancel_blocks,$code)
+    => bind($cycle,mlir.block([]),bind($choose,mlir.block([]),bind($failed_end,mlir.block([]),
+        bind($error,mlir.with_block($failed,mlir.op("arith.select",[tasks.equal($code,-1),coro.integer(-2),
+            coro.native_call("naru_task_await_error",[env.get($env,coro.DataKey())],["i64"])],["i64"],[],[])),seq([
+            mlir.in_block($block,tasks.branch(tasks.equal($code,-1),$cycle,$choose)),
+            mlir.in_block($choose,tasks.branch(tasks.equal($code,1),$wait,$ready)),
+            mlir.in_block($wait,coro.suspend(env.put($env,coro.CleanupKey(),$cancel),$ready)),
+            mlir.in_block($ready,tasks.branch(tasks.equal(coro.native_call("naru_task_await_status",[env.get($env,coro.DataKey())],["i32"]),2),$success,$failed)),
+            mlir.in_block($cycle,base.jump($failed)),
+            mlir.in_block($failed_end,tasks.finish_error($error,$env))],
+        list.concat([$block,$choose,$cycle,$wait,$ready],list.concat($cancel_blocks,list.concat(
+            base.lower_flow($cleanup,$env,$failed,$failed_end),list.concat([$failed_end],
+            bind($value,mlir.with_block($success,seq(coro.native_call("naru_task_await_result",[env.get($env,coro.DataKey()),
+                coro.address($child,$element,2),env.get($env,tasks.ResultSlotKey($identity)),tasks.result_size($element)],[]),
+                    tasks.load_result(env.get($env,tasks.ResultSlotKey($identity)),$element))),
+                seq(mlir.in_block($success,coro.native_call("naru_task_pause",[env.get($env,coro.DataKey())],[])),
+                    base.lower_flow($next,env.put($env,$identity,$value),$success,$continuation))))))))))));
+effect tasks.branch($condition,$yes,$no) => mlir.op("cf.cond_br",[$condition],[],
+    [RawAttr("operandSegmentSizes","array<i32: 1, 0, 0>")],[],[$yes,$no]);

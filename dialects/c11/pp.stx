@@ -3,24 +3,60 @@ use c11.lex;
 use c11.types;
 use base;
 use headers;
+use c11.pp_macros;
+
+// Public preprocessing interfaces delegate to the marked-token implementation.
+// A qualified extension cannot introduce an undeclared relation in its owner.
+effect c11.pp.object_replacement($body,$at,$hide) => c11.pp_macros.object_replacement($body,$at,$hide);
+effect c11.pp.marked_arguments($work,$at) => c11.pp_macros.marked_arguments($work,$at);
+effect c11.pp.marked_bindings($params,$variadic,$args,$at) => c11.pp_macros.marked_bindings($params,$variadic,$args,$at);
+effect c11.pp.marked_substitution($body,$bindings,$macros,$at,$depth,$hide) => c11.pp_macros.marked_substitution($body,$bindings,$macros,$at,$depth,$hide);
+effect c11.pp.hide_union($left,$right) => c11.pp_macros.hide_union($left,$right);
+effect c11.pp.hide_intersection($left,$right) => c11.pp_macros.hide_intersection($left,$right);
 
 // The macro table, conditional stack, include stack and expansion hide sets
 // are ordinary terms. No C directive is implemented in the compiler core.
 effect c11.pp.option($options,$key,$default) => choose(env.contains($options,$key),env.get($options,$key),$default);
-effect c11.pp.initial() => list.fold("c11.pp.predefine",[["__STDC__","1"],["__STDC_VERSION__","201112L"],
+effect c11.pp.initial() => c11.pp.capability_macros(list.fold("c11.pp.predefine",[["__STDC__","1"],["__STDC_VERSION__","201112L"],
     ["__STDC_HOSTED__","1"],["__STDC_NO_ATOMICS__","1"],["__STDC_NO_THREADS__","1"],
-    ["__STDC_NO_COMPLEX__","1"],["__STDC_NO_VLA__","1"]],env.empty());
+    ["__STDC_NO_COMPLEX__","1"],["__STDC_NO_VLA__","1"]],env.empty()));
+effect[fallback] c11.pp.capability_macros($macros)
+    => arg(list.fold("c11.pp.apply_macro_provider",collect("c11.pp.capability_provider",[]),[$macros,env.empty()]),0);
+effect[fallback] c11.pp.capability_provider() => NoMacroProvider();
+effect c11.pp.apply_macro_provider([$macros,$seen],NoMacroProvider()) => [$macros,$seen];
+effect c11.pp.apply_macro_provider([$macros,$seen],MacroProvider($name,$relation))
+    => choose(env.contains($seen,$name),fail(concat("duplicate C capability macro provider: ",$name)),
+        [apply($relation,[$macros]),env.put($seen,$name,1)]);
 effect c11.pp.predefine($macros,[$name,$value]) => env.put($macros,$name,c11.pp.Object(c11.lex.tokens($value,"<predefined>")));
+// Parse a compiler-supplied macro contract through the normal definition
+// validator without entering a synthetic file or replacing include context.
+effect c11.pp.define_source($source,$macros) => bind($tokens,c11.lex.tokens($source,"<compiler macro contract>"),
+    choose(eq(size($tokens),0),fail("empty compiler macro definition"),
+        arg(c11.pp.define($tokens,c11.pp.State([],$macros,[],[]),list.head($tokens)),1)));
 effect c11.pp.preprocess($source,$path,$options) => bind($configured,c11.pp.configure($options),
-    bind([$tokens,$macros],c11.pp.file($source,$path,c11.pp.platform_macros($configured),$configured,[],0),$tokens));
+    bind([$tokens,$macros],c11.pp.file($source,$path,c11.pp.platform_macros($configured),$configured,[],0),
+        list.concat($tokens,list.flatten(collect("c11.pp.output_tokens",[$macros,$configured])))));
+// Module metadata recorded by independent directive rules is appended only
+// after preprocessing. Pragmas inside a body need not become executable code.
+effect[fallback] c11.pp.output_tokens($macros,$options) => [];
 effect c11.pp.configure($options) => bind($target,headers.toolchain($options),seq(
-    choose(and(text.starts(env.get($target,"os"),"windows"),eq(env.get($target,"architecture"),"x86_64")),1,
-        fail("C ABI rule profile currently supports only x86_64 Windows; select a matching target profile")),
-    env.put(env.put($options,"target_facts",$target),"system_include_paths",choose(env.contains($options,"system_include_paths"),
-        text.split(env.get($options,"system_include_paths"),"|"),env.get($target,"include_paths")))));
+    choose(and(and(text.starts(env.get($target,"os"),"windows"),eq(env.get($target,"architecture"),"x86_64")),
+        text.starts(env.get($target,"environment"),"msvc")),1,
+        fail("C ABI rule profile requires x86_64 Windows MSVC; select a matching C ABI profile")),
+    c11.pp.configure_options(env.put(env.put($options,"target_facts",$target),"system_include_paths",choose(env.contains($options,"system_include_paths"),
+        text.split(env.get($options,"system_include_paths"),"|"),env.get($target,"include_paths"))))));
+effect c11.pp.configure_options($options) => arg(list.fold("c11.pp.apply_option_provider",collect("c11.pp.option_provider",[]),[$options,env.empty()]),0);
+effect[fallback] c11.pp.option_provider() => NoOptionProvider();
+effect c11.pp.apply_option_provider([$options,$seen],NoOptionProvider()) => [$options,$seen];
+effect c11.pp.apply_option_provider([$options,$seen],OptionProvider($name,$relation))
+    => choose(env.contains($seen,$name),fail(concat("duplicate C target option provider: ",$name)),[apply($relation,[$options]),env.put($seen,$name,1)]);
+effect c11.pp.finish_header($header,$path,$macros,$options)
+    => arg(list.fold("c11.pp.apply_macro_provider",collect("c11.pp.header_macro_provider",[$header,$path,$options]),[$macros,env.empty()]),0);
+effect[fallback] c11.pp.header_macro_provider($header,$path,$options) => NoMacroProvider();
 // Platform compatibility facts are C rule policy, never Naru keywords.
 effect c11.pp.platform_macros($options) => choose(env.contains($options,"target_facts"),
-    c11.pp.target_macros(c11.pp.initial(),env.get($options,"target_facts")),c11.pp.initial());
+    c11.pp.translation_macros(c11.pp.target_macros(c11.pp.initial(),env.get($options,"target_facts")),$options),c11.pp.translation_macros(c11.pp.initial(),$options));
+effect[fallback] c11.pp.translation_macros($macros,$options) => $macros;
 effect c11.pp.target_macros($macros,$target) => choose(and(text.starts(env.get($target,"os"),"windows"),eq(env.get($target,"architecture"),"x86_64")),
     list.fold("c11.pp.predefine",[["_WIN32","1"],["_WIN64","1"],["_M_X64","100"],["_M_AMD64","100"],
         ["_INTEGRAL_MAX_BITS","64"]],$macros),$macros);
@@ -34,7 +70,8 @@ effect c11.pp.file($source,$path,$macros,$options,$stack,$depth) when lt($depth,
             c11.pp.State([],env.put(c11.pp.context($macros,$path,$options,list.prepend($path,$stack),$depth),c11.pp.LineMapKey(),c11.pp.LineMap($path,0)),[],[])),
             c11.pp.finish_file($result,$final,$conditions,$pending,$path,$options,$stack,$depth)));
 effect c11.pp.finish_file($result,$macros,[],$pending,$path,$options,$stack,$depth)
-    => [list.flatten(list.reverse(list.prepend(c11.pp.expand(c11.pp.pending_tokens($pending),$macros,env.empty(),0),$result))),$macros];
+    => bind(c11.pp.State($chunks,$final,$conditions,$empty),c11.pp.flush(c11.pp.State($result,$macros,[],$pending)),
+        [list.flatten(list.reverse($chunks)),$final]);
 effect c11.pp.finish_file($result,$macros,$conditions,$pending,$path,$options,$stack,$depth) when lt(0,size($conditions))
     => source.error($path,1,1,"unterminated C conditional directive");
 
@@ -56,8 +93,13 @@ effect[fallback] c11.pp.remap_one(c11.pp.Mapping($out,c11.pp.LineMap($file,$offs
     => c11.pp.Mapping(list.prepend([$kind,$raw,$file,add($line,$offset),$column,$space],$out),c11.pp.LineMap($file,$offset));
 effect c11.pp.mapped_line(c11.pp.State($output,$macros,$conditions,$pending),$line)
     => choose(eq(c11.lex.spelling(list.head($line)),"#"),
-        c11.pp.directive(c11.pp.State(list.prepend(c11.pp.expand(c11.pp.pending_tokens($pending),$macros,env.empty(),0),$output),$macros,$conditions,[]),list.tail($line),list.head($line)),
+        c11.pp.directive(c11.pp.flush(c11.pp.State($output,$macros,$conditions,$pending)),list.tail($line),list.head($line)),
         choose(c11.pp.active($conditions),c11.pp.State($output,$macros,$conditions,list.prepend($line,$pending)),c11.pp.State($output,$macros,$conditions,$pending)));
+effect c11.pp.flush(c11.pp.State($out,$macros,$conditions,$pending))
+    => bind(c11.pp.Marked($input,$unused),c11.pp.mark(c11.pp.pending_tokens($pending),env.empty()),
+        bind([$marked,$final],c11.pp.expand_marked_result($input,$macros,0),
+            c11.pp.State(list.prepend(list.flatten(list.map("c11.pp.final_token",$marked)),$out),$final,$conditions,[])));
+effect[fallback] c11.pp.final_token(c11.pp.MarkedToken($token,$hide)) => [$token];
 effect c11.pp.pending_tokens($chunks) => list.flatten(list.reverse($chunks));
 effect c11.pp.directive($state,[],$at) => $state;
 effect c11.pp.directive($state,$tokens,$at) when lt(0,size($tokens)) => c11.pp.command(c11.lex.spelling(list.head($tokens)),list.tail($tokens),$state,$at);
@@ -66,18 +108,19 @@ effect c11.pp.command("if",$tokens,c11.pp.State($out,$macros,$conditions,$pendin
 effect c11.pp.command("ifdef",$tokens,$state,$at) => c11.pp.defined_condition($tokens,$state,$at,0);
 effect c11.pp.command("ifndef",$tokens,$state,$at) => c11.pp.defined_condition($tokens,$state,$at,1);
 effect c11.pp.defined_condition([$name],c11.pp.State($out,$macros,$conditions,$pending),$at,$invert)
-    => bind($value,choose($invert,not(c11.pp.defined($macros,c11.lex.spelling($name))),c11.pp.defined($macros,c11.lex.spelling($name))),
-        c11.pp.State($out,$macros,list.prepend(c11.pp.Conditional(c11.pp.active($conditions),$value,and(c11.pp.active($conditions),$value),0),$conditions),$pending));
+    => seq(choose(eq(c11.lex.kind($name),1),1,c11.lex.error($at,"ifdef/ifndef requires one identifier")),
+        bind($value,choose($invert,not(c11.pp.defined($macros,c11.lex.macro_key($name))),c11.pp.defined($macros,c11.lex.macro_key($name))),
+            c11.pp.State($out,$macros,list.prepend(c11.pp.Conditional(c11.pp.active($conditions),$value,and(c11.pp.active($conditions),$value),0),$conditions),$pending)));
 effect[fallback] c11.pp.defined_condition($tokens,$state,$at,$invert) => c11.lex.error($at,"ifdef/ifndef requires one identifier");
 effect c11.pp.push_condition($tokens,c11.pp.State($out,$macros,$conditions,$pending),$at)
-    => bind($parent,c11.pp.active($conditions),bind($value,choose($parent,c11.pp.condition($tokens,$macros),0),
-        c11.pp.State($out,$macros,list.prepend(c11.pp.Conditional($parent,$value,and($parent,$value),0),$conditions),$pending)));
+    => bind($parent,c11.pp.active($conditions),bind([$value,$final],choose($parent,c11.pp.condition_result($tokens,$macros),[0,$macros]),
+        c11.pp.State($out,$final,list.prepend(c11.pp.Conditional($parent,$value,and($parent,$value),0),$conditions),$pending)));
 effect c11.pp.command("elif",$tokens,c11.pp.State($out,$macros,$conditions,$pending),$at)
     => choose(eq(size($conditions),0),c11.lex.error($at,"elif without if"),
         c11.pp.elif($tokens,$out,$macros,list.head($conditions),list.tail($conditions),$at));
 effect c11.pp.elif($tokens,$out,$macros,c11.pp.Conditional($parent,$taken,$active,0),$rest,$at)
-    => bind($value,choose(and($parent,not($taken)),c11.pp.condition($tokens,$macros),0),
-        c11.pp.State($out,$macros,list.prepend(c11.pp.Conditional($parent,or($taken,$value),$value,0),$rest),[]));
+    => bind([$value,$final],choose(and($parent,not($taken)),c11.pp.condition_result($tokens,$macros),[0,$macros]),
+        c11.pp.State($out,$final,list.prepend(c11.pp.Conditional($parent,or($taken,$value),$value,0),$rest),[]));
 effect c11.pp.elif($tokens,$out,$macros,c11.pp.Conditional($parent,$taken,$active,1),$rest,$at) => c11.lex.error($at,"elif after else");
 effect c11.pp.command("else",[],c11.pp.State($out,$macros,$conditions,$pending),$at)
     => choose(eq(size($conditions),0),c11.lex.error($at,"else without if"),
@@ -91,33 +134,60 @@ effect[fallback] c11.pp.command($name,$tokens,c11.pp.State($out,$macros,$conditi
     => choose(c11.pp.active($conditions),c11.pp.enabled($name,$tokens,c11.pp.State($out,$macros,$conditions,$pending),$at),c11.pp.State($out,$macros,$conditions,$pending));
 effect c11.pp.enabled("define",$tokens,$state,$at) => c11.pp.define($tokens,$state,$at);
 effect c11.pp.enabled("undef",[$name],c11.pp.State($out,$macros,$conditions,$pending),$at)
-    => c11.pp.State($out,env.put($macros,c11.lex.spelling($name),c11.pp.Undefined()),$conditions,$pending);
+    => seq(choose(eq(c11.lex.kind($name),1),1,c11.lex.error($at,"undef requires an identifier")),
+        c11.pp.State($out,env.put($macros,c11.lex.macro_key($name),c11.pp.Undefined()),$conditions,$pending));
 effect c11.pp.enabled("include",$tokens,c11.pp.State($out,$macros,$conditions,$pending),$at)
+    => c11.pp.include_at($tokens,c11.pp.State($out,$macros,$conditions,$pending),$at,0);
+effect c11.pp.enabled("include_next",$tokens,$state,$at) => c11.pp.include_at($tokens,$state,$at,1);
+effect c11.pp.include_at($tokens,c11.pp.State($out,$macros,$conditions,$pending),$at,$next)
+    => bind([$expanded,$final],c11.pp.include_result($tokens,$macros),
+        c11.pp.include_expanded($expanded,c11.pp.State($out,$final,$conditions,$pending),$at,$next));
+effect c11.pp.include_expanded($tokens,c11.pp.State($out,$macros,$conditions,$pending),$at,$next)
     => bind(c11.pp.Context($path,$options,$stack,$depth),env.get($macros,c11.pp.ContextKey()),
-        bind($line_map,env.get($macros,c11.pp.LineMapKey()),bind([$header,$local],c11.pp.header(c11.pp.include_tokens($tokens,$macros),$at),
-            bind($found,c11.pp.find_header($header,$local,$path,$options,$at),
-                bind([$items,$final],c11.pp.file(source.read($found),$found,$macros,$options,$stack,add($depth,1)),
-                    c11.pp.State(list.prepend($items,$out),env.put(c11.pp.context($final,$path,$options,$stack,$depth),c11.pp.LineMapKey(),$line_map),$conditions,[]))))));
-effect c11.pp.include_tokens([],$macros) => [];
-effect c11.pp.include_tokens($tokens,$macros) when lt(0,size($tokens)) => choose(or(eq(c11.lex.kind(list.head($tokens)),3),eq(c11.lex.spelling(list.head($tokens)),"<")),
-    $tokens,c11.pp.expand($tokens,$macros,env.empty(),0));
+        bind($line_map,env.get($macros,c11.pp.LineMapKey()),bind([$header,$local],c11.pp.header($tokens,$at),
+            bind($cursor,c11.pp.header_cursor($macros),bind($resolved,headers.resolve($header,
+                headers.routed_directories($header,c11.pp.search_directories($local,$next,$path,$options,$cursor,$at),$options),headers.option($options,"project_directory","."),$at),
+                bind($found,headers.resolved_path($resolved),bind([$items,$final],c11.pp.file(source.read($found),$found,
+                    env.put($macros,c11.pp.HeaderCursorKey(),c11.pp.HeaderCursor(headers.remaining($resolved))),$options,$stack,add($depth,1)),
+                    c11.pp.State(list.prepend($items,$out),env.put(env.put(c11.pp.context(c11.pp.finish_header($header,$found,$final,$options),$path,$options,$stack,$depth),
+                        c11.pp.HeaderCursorKey(),$cursor),c11.pp.LineMapKey(),$line_map),$conditions,[]))))))));
+effect c11.pp.header_cursor($macros) => choose(env.contains($macros,c11.pp.HeaderCursorKey()),env.get($macros,c11.pp.HeaderCursorKey()),c11.pp.NoHeaderCursor());
+effect c11.pp.search_directories($local,0,$path,$options,$cursor,$at) => headers.directories($local,$path,$options,env.get($options,"system_include_paths"));
+effect c11.pp.search_directories($local,1,$path,$options,c11.pp.HeaderCursor($remaining),$at) => $remaining;
+effect c11.pp.search_directories($local,1,$path,$options,c11.pp.NoHeaderCursor(),$at) => c11.lex.error($at,"include_next requires a header found through an include search chain");
+effect c11.pp.include_tokens($tokens,$macros) => arg(c11.pp.include_result($tokens,$macros),0);
+effect c11.pp.include_result([],$macros) => [[],$macros];
+effect c11.pp.include_result($tokens,$macros) when lt(0,size($tokens)) => choose(or(eq(c11.lex.kind(list.head($tokens)),3),eq(c11.lex.spelling(list.head($tokens)),"<")),
+    [$tokens,$macros],c11.pp.expand_result($tokens,$macros,env.empty(),0));
 effect c11.pp.enabled("error",$tokens,$state,$at) => c11.lex.error($at,concat("#error ",text.join(list.map("c11.lex.spelling",$tokens)," ")));
 // Unknown pragmas may be ignored by the implementation.
 effect c11.pp.enabled("pragma",[$token],c11.pp.State($out,$macros,$conditions,$pending),$at) when eq(c11.lex.spelling($token),"once")
     => bind(c11.pp.Context($path,$options,$stack,$depth),env.get($macros,c11.pp.ContextKey()),c11.pp.State($out,env.put($macros,c11.pp.Once(text.lower($path)),1),$conditions,$pending));
 effect[fallback] c11.pp.enabled("pragma",$tokens,$state,$at) => $state;
-effect c11.pp.enabled("line",$tokens,$state,$at) => c11.pp.line_control(c11.pp.expand($tokens,c11.pp.state_macros($state),env.empty(),0),$state,$at);
+effect c11.pp.enabled("line",$tokens,c11.pp.State($out,$macros,$conditions,$pending),$at)
+    => bind([$expanded,$final],c11.pp.expand_result($tokens,$macros,env.empty(),0),
+        c11.pp.line_control($expanded,c11.pp.State($out,$final,$conditions,$pending),$at));
 effect c11.pp.state_macros(c11.pp.State($out,$macros,$conditions,$pending)) => $macros;
 effect c11.pp.line_control([$number],c11.pp.State($out,$macros,$conditions,$pending),$at)
     => bind(c11.pp.LineMap($file,$offset),env.get($macros,c11.pp.LineMapKey()),c11.pp.line_mapping($number,$file,$offset,$out,$macros,$conditions,$pending,$at));
 effect c11.pp.line_control([$number,$file],c11.pp.State($out,$macros,$conditions,$pending),$at)
     => bind(c11.pp.LineMap($old_file,$offset),env.get($macros,c11.pp.LineMapKey()),
-        c11.pp.line_mapping($number,text.unquote(c11.lex.spelling($file)),$offset,$out,$macros,$conditions,$pending,$at));
+        seq(choose(and(eq(c11.lex.kind($file),3),text.starts(c11.lex.spelling($file),"\"")),1,c11.lex.error($at,"line filename requires an ordinary string literal")),
+            c11.pp.line_mapping($number,text.unquote(c11.lex.spelling($file)),$offset,$out,$macros,$conditions,$pending,$at)));
 effect[fallback] c11.pp.line_control($tokens,$state,$at) => c11.lex.error($at,"line requires a line number and optional quoted filename");
 effect c11.pp.line_mapping($number,$file,$offset,$out,$macros,$conditions,$pending,$at)
-    => bind($line,int.parse(c11.lex.spelling($number)),choose(and(lt(0,$line),not(lt(2147483647,$line))),
+    => bind($line,c11.pp.line_number($number,$at),choose(and(lt(0,$line),not(lt(2147483647,$line))),
         c11.pp.State($out,env.put($macros,c11.pp.LineMapKey(),c11.pp.LineMap($file,add($offset,sub($line,add(arg($at,3),1))))),$conditions,$pending),
         c11.lex.error($at,"line number outside C11's valid range")));
+effect c11.pp.line_number($number,$at) => seq(choose(eq(c11.lex.kind($number),2),1,c11.lex.error($at,"line requires a decimal digit sequence")),
+    bind($raw,c11.lex.spelling($number),bind(c11.pp.LineDigits($source,$index,$value,$origin),rule.iterate("c11.pp.line_digit_step",
+        c11.pp.LineDigits($raw,0,0,$at),1000000),$value)));
+effect c11.pp.line_digit_step(c11.pp.LineDigits($source,$index,$value,$at)) when eq($index,text.len($source))
+    => [0,c11.pp.LineDigits($source,$index,$value,$at)];
+effect c11.pp.line_digit_step(c11.pp.LineDigits($source,$index,$value,$at)) when lt($index,text.len($source))
+    => bind($digit,sub(text.byte($source,$index),48),seq(choose(and(not(lt($digit,0)),lt($digit,10)),1,c11.lex.error($at,"line requires a decimal digit sequence")),
+        bind($next,add(mul($value,10),$digit),choose(lt(2147483647,$next),c11.lex.error($at,"line number outside C11's valid range"),
+            [1,c11.pp.LineDigits($source,add($index,1),$next,$at)]))));
 effect[fallback] c11.pp.enabled($name,$tokens,$state,$at) when not(eq($name,"pragma")) => c11.lex.error($at,concat("unknown preprocessing directive: ",$name));
 
 effect c11.pp.header([$token],$at) when eq(c11.lex.kind($token),3) => [text.unquote(c11.lex.spelling($token)),1];
@@ -128,23 +198,23 @@ effect[fallback] c11.pp.header($tokens,$at) => c11.lex.error($at,"include requir
 effect c11.pp.find_header($header,$local,$path,$options,$at)
     => headers.find($header,$local,$path,$options,env.get($options,"system_include_paths"),$at);
 
-effect c11.pp.defined($macros,$name) => choose(env.contains($macros,$name),not(eq(env.get($macros,$name),c11.pp.Undefined())),0);
+effect[fallback] c11.pp.defined($macros,$name) => choose(env.contains($macros,$name),not(eq(env.get($macros,$name),c11.pp.Undefined())),0);
 effect c11.pp.define($tokens,c11.pp.State($out,$macros,$conditions,$pending),$at) => choose(eq(size($tokens),0),c11.lex.error($at,"define requires a macro name"),
     bind($name,list.head($tokens),choose(eq(c11.lex.kind($name),1),
-        c11.pp.macro_definition(c11.lex.spelling($name),list.tail($tokens),$out,$macros,$conditions,$at),c11.lex.error($at,"invalid macro name"))));
+        c11.pp.macro_definition(c11.lex.macro_key($name),list.tail($tokens),$out,$macros,$conditions,$at),c11.lex.error($at,"invalid macro name"))));
 effect c11.pp.macro_definition($name,[],$out,$macros,$conditions,$at) => c11.pp.install($name,c11.pp.Object([]),$out,$macros,$conditions,$at);
 effect c11.pp.macro_definition($name,$tokens,$out,$macros,$conditions,$at) when lt(0,size($tokens))
     => choose(and(eq(c11.lex.spelling(list.head($tokens)),"("),not(c11.lex.space(list.head($tokens)))),
         bind([$params,$variadic,$body],c11.pp.parameters(list.tail($tokens),[],0,$at),c11.pp.install($name,c11.pp.Function($params,$variadic,$body),$out,$macros,$conditions,$at)),
         c11.pp.install($name,c11.pp.Object($tokens),$out,$macros,$conditions,$at));
-effect c11.pp.install($name,$macro,$out,$macros,$conditions,$at) => choose(c11.pp.defined($macros,$name),
+effect c11.pp.install($name,$macro,$out,$macros,$conditions,$at) => seq(c11.pp_macros.validate($macro,$at),choose(c11.pp.defined($macros,$name),
     choose(eq(c11.pp.shape(env.get($macros,$name)),c11.pp.shape($macro)),c11.pp.State($out,env.put($macros,$name,$macro),$conditions,[]),c11.lex.error($at,"incompatible macro redefinition")),
-    c11.pp.State($out,env.put($macros,$name,$macro),$conditions,[]));
-effect c11.pp.shape(c11.pp.Object($body)) => c11.pp.Object(list.map("c11.lex.spelling",$body));
-effect c11.pp.shape(c11.pp.Function($params,$variadic,$body)) => c11.pp.Function($params,$variadic,list.map("c11.lex.spelling",$body));
+    c11.pp.State($out,env.put($macros,$name,$macro),$conditions,[])));
+effect c11.pp.shape(c11.pp.Object($body)) => c11.pp.Object(list.map("c11.lex.macro_key",$body));
+effect c11.pp.shape(c11.pp.Function($params,$variadic,$body)) => c11.pp.Function($params,$variadic,list.map("c11.lex.macro_key",$body));
 effect c11.pp.parameters([],$params,$variadic,$at) => c11.lex.error($at,"unterminated macro parameter list");
 effect c11.pp.parameters($tokens,$params,$variadic,$at) when lt(0,size($tokens))
-    => bind($head,c11.lex.spelling(list.head($tokens)),choose(eq($head,")"),[$params,$variadic,list.tail($tokens)],
+    => bind($head,c11.lex.macro_key(list.head($tokens)),choose(eq($head,")"),[$params,$variadic,list.tail($tokens)],
         choose(eq($head,"..."),c11.pp.variadic_parameter(list.tail($tokens),$params,$at),
             choose(eq(c11.lex.kind(list.head($tokens)),1),
                 choose(c11.pp.member($head,$params),c11.lex.error($at,"duplicate macro parameter"),c11.pp.parameter_tail(list.tail($tokens),list.concat($params,[$head]),$at)),
@@ -160,7 +230,9 @@ effect c11.pp.member($value,$list) when lt(0,size($list)) => choose(eq($value,li
 
 // Expansion uses per-token hide sets. Replacement tokens and the remaining
 // input are rescanned together, so aliases may become function-like macros.
-effect c11.pp.expand($tokens,$macros,$hide,$depth) => c11.pp.unmark(c11.pp.expand_mark(c11.pp.mark($tokens,$hide),$macros,$depth));
+effect c11.pp.expand($tokens,$macros,$hide,$depth) => arg(c11.pp.expand_result($tokens,$macros,$hide,$depth),0);
+effect c11.pp.expand_result($tokens,$macros,$hide,$depth) => bind(c11.pp.Marked($marked,$unused),c11.pp.mark($tokens,$hide),
+    bind([$expanded,$final],c11.pp.expand_marked_result($marked,$macros,$depth),[c11.pp.unmark($expanded),$final]));
 effect c11.pp.mark($tokens,$hide) when eq(term.kind($tokens),5)
     => c11.pp.Marked(list.unfold("c11.pp.mark_step",c11.pp.Marking(list.cursor($tokens),$hide),1000000),$hide);
 effect c11.pp.mark_step(c11.pp.Marking($cursor,$hide)) => choose(list.cursor.empty($cursor),[0,c11.pp.Marking($cursor,$hide),[]],
@@ -176,28 +248,39 @@ effect c11.pp.work_head(c11.pp.CursorWork($cursor,$tail)) => list.cursor.head($c
 effect c11.pp.work_next(c11.pp.CursorWork($cursor,$tail)) => bind($next,list.cursor.tail($cursor),
     choose(list.cursor.empty($next),$tail,c11.pp.CursorWork($next,$tail)));
 effect c11.pp.expand_items($tokens,$macros,$depth) => choose(lt(64,$depth),fail("C macro argument expansion nesting exceeds 64"),
-    list.unfold("c11.pp.expansion_step",c11.pp.Expansion(c11.pp.work($tokens,c11.pp.EmptyWork()),$macros,$depth),1000000));
+    arg(c11.pp.expand_marked_result($tokens,$macros,$depth),0));
+// Explicit terminal state retains pragma metadata and other open expansion
+// effects. Persistent work cursors and output chunks avoid suffix copying.
+effect c11.pp.expand_marked_result($tokens,$macros,$depth) => choose(lt(64,$depth),fail("C macro argument expansion nesting exceeds 64"),
+    bind(c11.pp.Emission(c11.pp.Expansion($rest,$final,$level),$chunks),rule.iterate("c11.pp.emit_expansion_step",
+        c11.pp.Emission(c11.pp.Expansion(c11.pp.work($tokens,c11.pp.EmptyWork()),$macros,$depth),[]),1000000),
+        [list.flatten(list.reverse($chunks)),$final]));
+effect c11.pp.emit_expansion_step(c11.pp.Emission($state,$chunks))
+    => bind([$more,$next,$output],c11.pp.expansion_step($state),[$more,c11.pp.Emission($next,
+        choose(eq(size($output),0),$chunks,list.prepend($output,$chunks)))]);
 effect c11.pp.expansion_step(c11.pp.Expansion(c11.pp.EmptyWork(),$macros,$depth)) => [0,c11.pp.Expansion(c11.pp.EmptyWork(),$macros,$depth),[]];
 effect c11.pp.expansion_step(c11.pp.Expansion(c11.pp.CursorWork($cursor,$tail),$macros,$depth))
     => bind($work,c11.pp.CursorWork($cursor,$tail),bind(c11.pp.MarkedToken($token,$hide),c11.pp.work_head($work),
-        choose(and(eq(c11.lex.kind($token),1),and(c11.pp.defined($macros,c11.lex.spelling($token)),not(env.contains($hide,c11.lex.spelling($token))))),
-            c11.pp.replace_macro(env.get($macros,c11.lex.spelling($token)),$token,$hide,c11.pp.work_next($work),$macros,$depth),
-            [1,c11.pp.Expansion(c11.pp.work_next($work),$macros,$depth),[c11.pp.MarkedToken(c11.pp.builtin($token),$hide)]])));
+        c11.pp.expand_token($token,$hide,c11.pp.work_next($work),$macros,$depth)));
+effect[fallback] c11.pp.expand_token($token,$hide,$rest,$macros,$depth)
+    => choose(and(eq(c11.lex.kind($token),1),and(c11.pp.defined($macros,c11.lex.macro_key($token)),not(env.contains($hide,c11.lex.macro_key($token))))),
+            c11.pp.replace_macro(env.get($macros,c11.lex.macro_key($token)),$token,$hide,$rest,$macros,$depth),
+            [1,c11.pp.Expansion($rest,$macros,$depth),[c11.pp.MarkedToken(c11.pp.builtin($token),$hide)]]);
 effect c11.pp.builtin($token) when eq(c11.lex.spelling($token),"__LINE__") => c11.lex.made(2,text(arg($token,3)),$token);
 effect c11.pp.builtin($token) when eq(c11.lex.spelling($token),"__FILE__") => c11.lex.made(3,text.quote(arg($token,2)),$token);
 effect[fallback] c11.pp.builtin($token) => $token;
 effect c11.pp.replace_macro(c11.pp.Object($body),$at,$hide,$rest,$macros,$depth)
-    => bind(c11.pp.Marked($replacement,$new_hide),c11.pp.mark(c11.pp.relocate($body,$at),env.put($hide,c11.lex.spelling($at),1)),
+    => bind($replacement,c11.pp.object_replacement($body,$at,env.put($hide,c11.lex.macro_key($at),1)),
         [1,c11.pp.Expansion(c11.pp.work($replacement,$rest),$macros,$depth),[]]);
 effect c11.pp.replace_macro(c11.pp.Function($params,$variadic,$body),$at,$hide,c11.pp.EmptyWork(),$macros,$depth)
     => [1,c11.pp.Expansion(c11.pp.EmptyWork(),$macros,$depth),[c11.pp.MarkedToken($at,$hide)]];
 effect c11.pp.replace_macro(c11.pp.Function($params,$variadic,$body),$at,$hide,c11.pp.CursorWork($cursor,$remaining),$macros,$depth)
     => bind($rest,c11.pp.CursorWork($cursor,$remaining),bind(c11.pp.MarkedToken($next,$next_hide),c11.pp.work_head($rest),choose(eq(c11.lex.spelling($next),"("),
-        bind([$arguments,$tail],c11.pp.arguments(c11.pp.work_next($rest),[],[],0,$at),
-            bind($bindings,c11.pp.bind_arguments($params,$variadic,$arguments,$at),
-                bind($replacement,c11.pp.substitute($body,$bindings,$macros,$at,$depth),
-                    bind(c11.pp.Marked($marked,$new_hide),c11.pp.mark(c11.pp.relocate($replacement,$at),env.put($hide,c11.lex.spelling($at),1)),
-                        [1,c11.pp.Expansion(c11.pp.work($marked,$tail),$macros,$depth),[]])))),
+        bind([$arguments,$tail,$close_hide],c11.pp.marked_arguments(c11.pp.work_next($rest),$at),
+            bind($bindings,c11.pp.marked_bindings($params,$variadic,$arguments,$at),
+                bind([$marked,$final],c11.pp.marked_substitution($body,$bindings,$macros,$at,$depth,
+                    env.put(c11.pp.hide_intersection($hide,$close_hide),c11.lex.macro_key($at),1)),
+                    [1,c11.pp.Expansion(c11.pp.work($marked,$tail),$final,$depth),[]]))),
         [1,c11.pp.Expansion($rest,$macros,$depth),[c11.pp.MarkedToken($at,$hide)]])));
 effect c11.pp.relocate($tokens,$at) => bind(c11.pp.Located($reversed,$origin),list.fold("c11.pp.relocate_one",$tokens,c11.pp.Located([],$at)),c11.pp.Located(list.reverse($reversed),$origin));
 effect c11.pp.relocate_one(c11.pp.Located($tokens,$at),$token) => c11.pp.Located(list.prepend(c11.lex.made(c11.lex.kind($token),c11.lex.spelling($token),$at),$tokens),$at);
@@ -213,50 +296,18 @@ effect c11.pp.argument_step(c11.pp.Arguments(c11.pp.CursorWork($cursor,$tail),$d
             choose(and(eq($raw,","),eq($nesting,0)),[1,c11.pp.Arguments(c11.pp.work_next($work),list.prepend(list.reverse($current),$done),[],0,$at)],
                 [1,c11.pp.Arguments(c11.pp.work_next($work),$done,list.prepend($token,$current),
                     add($nesting,choose(eq($raw,"("),1,choose(eq($raw,")"),-1,0))),$at)])))));
-effect c11.pp.bind_arguments([] ,0,[[]],$at) => env.empty();
-effect[fallback] c11.pp.bind_arguments($params,$variadic,$arguments,$at) => choose(
-    choose($variadic,not(lt(size($arguments),size($params))),eq(size($arguments),size($params))),
-    bind($env,c11.pp.bind_fixed($params,$arguments,env.empty()),choose($variadic,
-        env.put($env,"__VA_ARGS__",c11.pp.join_arguments(list.slice($arguments,size($params),size($arguments)),$at)),$env)),
-    c11.lex.error($at,"macro argument count mismatch"));
 effect c11.pp.bind_fixed([],$arguments,$env) => $env;
 effect c11.pp.bind_fixed($params,$arguments,$env) when lt(0,size($params))
     => c11.pp.bind_fixed(list.tail($params),list.tail($arguments),env.put($env,list.head($params),list.head($arguments)));
-effect c11.pp.join_arguments([],$at) => [];
-effect c11.pp.join_arguments([$argument],$at) => $argument;
-effect c11.pp.join_arguments($arguments,$at) when lt(1,size($arguments))
-    => list.concat(list.head($arguments),list.prepend(c11.lex.made(5,",",$at),c11.pp.join_arguments(list.tail($arguments),$at)));
-
-effect c11.pp.substitute($body,$bindings,$macros,$at,$depth) => c11.pp.paste(c11.pp.substitute_tokens($body,$bindings,$macros,$at,$depth,0),$at);
-effect c11.pp.substitute_tokens($body,$bindings,$macros,$at,$depth,$previous_paste) => list.unfold("c11.pp.substitution_step",
-    c11.pp.Substitution($body,$bindings,$macros,$at,$depth,$previous_paste),1000000);
-effect c11.pp.substitution_step(c11.pp.Substitution([],$bindings,$macros,$at,$depth,$previous_paste))
-    => [0,c11.pp.Substitution([],$bindings,$macros,$at,$depth,$previous_paste),[]];
-effect c11.pp.substitution_step(c11.pp.Substitution($body,$bindings,$macros,$at,$depth,$previous_paste)) when lt(0,size($body))
-    => bind($token,list.head($body),choose(eq(c11.lex.spelling($token),"#"),
-        c11.pp.stringification_step(list.tail($body),$bindings,$macros,$at,$depth),
-        [1,c11.pp.Substitution(list.tail($body),$bindings,$macros,$at,$depth,eq(c11.lex.spelling($token),"##")),
-            c11.pp.parameter_value($token,$body,$bindings,$macros,$depth,$previous_paste)]));
-effect c11.pp.stringification_step([],$bindings,$macros,$at,$depth) => c11.lex.error($at,"stringification requires a macro parameter");
-effect c11.pp.stringification_step($tokens,$bindings,$macros,$at,$depth) when lt(0,size($tokens))
-    => bind($name,c11.lex.spelling(list.head($tokens)),choose(env.contains($bindings,$name),
-        [1,c11.pp.Substitution(list.tail($tokens),$bindings,$macros,$at,$depth,0),
-            [c11.lex.made(3,text.quote(c11.pp.stringify(env.get($bindings,$name))),$at)]],
-        c11.lex.error($at,"stringification requires a macro parameter")));
 effect c11.pp.stringify($tokens) => text.trim(text.join(list.reverse(list.fold("c11.pp.stringify_one",$tokens,[])),""));
 effect c11.pp.stringify_one($out,$token) => list.prepend(concat(choose(and(lt(0,size($out)),c11.lex.space($token))," ",""),c11.lex.spelling($token)),$out);
-effect c11.pp.parameter_value($token,$body,$bindings,$macros,$depth,$previous_paste) => choose(env.contains($bindings,c11.lex.spelling($token)),
-    // ## operands must use the unexpanded argument. The paste pass rescans it.
-    choose(or($previous_paste,choose(lt(1,size($body)),eq(c11.lex.spelling(arg($body,1)),"##"),0)),
-        c11.pp.paste_argument(env.get($bindings,c11.lex.spelling($token)),$token),
-        c11.pp.expand(env.get($bindings,c11.lex.spelling($token)),$macros,env.empty(),add($depth,1))),[$token]);
-effect c11.pp.paste_argument([],$at) => [c11.lex.made(8,"",$at)];
-effect c11.pp.paste_argument($tokens,$at) when lt(0,size($tokens)) => $tokens;
-effect c11.pp.paste($tokens,$at) => bind($reversed,list.fold("c11.pp.paste_one",$tokens,c11.pp.Pasting([],0,$at)),c11.pp.paste_finish($reversed));
-effect c11.pp.paste_one(c11.pp.Pasting($out,0,$at),$token) => choose(eq(c11.lex.spelling($token),"##"),
-    choose(eq(size($out),0),c11.lex.error($at,"token paste has no left operand"),c11.pp.Pasting($out,1,$at)),c11.pp.Pasting(list.prepend($token,$out),0,$at));
-effect c11.pp.paste_one(c11.pp.Pasting($out,1,$at),$token)
-    => c11.pp.Pasting(list.prepend(c11.pp.paste_pair(list.head($out),$token,$at),list.tail($out)),0,$at);
+// Only quotes/backslashes within character and string tokens are escaped by
+// #. A UCN in an identifier retains its raw spelling and becomes a UCN in the
+// resulting literal, instead of manufacturing a literal backslash-u sequence.
+effect c11.pp.stringified($tokens) => concat("\"",concat(text.join(list.reverse(list.fold("c11.pp.stringify_escaped",$tokens,[])),""),"\""));
+effect c11.pp.stringify_escaped($out,$token) => bind($raw,c11.lex.spelling($token),
+    bind($escaped,choose(eq(c11.lex.kind($token),3),bind($quoted,text.quote($raw),text.slice($quoted,1,sub(text.len($quoted),1))),$raw),
+        list.prepend(concat(choose(and(lt(0,size($out)),c11.lex.space($token))," ",""),$escaped),$out)));
 // Empty arguments are placemarkers, including when both operands are empty.
 effect c11.pp.paste_pair($left,$right,$at) when eq(c11.lex.kind($left),8) => $right;
 effect c11.pp.paste_pair($left,$right,$at) when and(not(eq(c11.lex.kind($left),8)),eq(c11.lex.kind($right),8)) => $left;
@@ -264,22 +315,22 @@ effect c11.pp.paste_pair($left,$right,$at) when and(not(eq(c11.lex.kind($left),8
     => bind($joined,c11.lex.tokens(concat(c11.lex.spelling($left),c11.lex.spelling($right)),arg($at,2)),
         choose(eq(size($joined),1),c11.lex.made(c11.lex.kind(list.head($joined)),c11.lex.spelling(list.head($joined)),$at),
             c11.lex.error($at,"token paste does not form one preprocessing token")));
-effect c11.pp.paste_finish(c11.pp.Pasting($out,0,$at)) => bind($tokens,list.fold("c11.pp.remove_placeholder",list.reverse($out),[]),list.reverse($tokens));
-effect c11.pp.remove_placeholder($out,$token) => choose(eq(c11.lex.kind($token),8),$out,list.prepend($token,$out));
-effect c11.pp.paste_finish(c11.pp.Pasting($out,1,$at)) => c11.lex.error($at,"token paste has no right operand");
-
 // #if uses a separate constant-expression grammar and short-circuit evaluator.
-effect c11.pp.condition($tokens,$macros) => c11.pp.truth(c11.pp.evaluate(source.parse_expression(
-    c11.pp.undefined_zero(c11.pp.expand(c11.pp.defined_tokens($tokens,$macros),$macros,env.empty(),0)),"c11.pp_expr")));
+effect c11.pp.condition($tokens,$macros) => arg(c11.pp.condition_result($tokens,$macros),0);
+effect c11.pp.condition_result($tokens,$macros)
+    => bind([$expanded,$final],c11.pp.expand_result(c11.pp.defined_tokens($tokens,$macros),$macros,env.empty(),0),
+        [c11.pp.truth(c11.pp.evaluate(source.parse_expression(c11.pp.undefined_zero($expanded),"c11.pp_expr"))),$final]);
 effect c11.pp.defined_tokens([],$macros) => [];
 effect c11.pp.defined_tokens($tokens,$macros) when lt(0,size($tokens))
     => choose(eq(c11.lex.spelling(list.head($tokens)),"defined"),c11.pp.defined_operand(list.tail($tokens),$macros,list.head($tokens)),
         list.prepend(list.head($tokens),c11.pp.defined_tokens(list.tail($tokens),$macros)));
 effect c11.pp.defined_operand($tokens,$macros,$at) => choose(eq(size($tokens),0),c11.lex.error($at,"defined requires an identifier"),
     choose(eq(c11.lex.spelling(list.head($tokens)),"("),c11.pp.defined_parentheses($tokens,$macros,$at),
-        list.prepend(c11.lex.made(2,text(c11.pp.defined($macros,c11.lex.spelling(list.head($tokens)))),$at),c11.pp.defined_tokens(list.tail($tokens),$macros))));
+        seq(choose(eq(c11.lex.kind(list.head($tokens)),1),1,c11.lex.error($at,"defined requires an identifier")),
+            list.prepend(c11.lex.made(2,text(c11.pp.defined($macros,c11.lex.macro_key(list.head($tokens)))),$at),c11.pp.defined_tokens(list.tail($tokens),$macros)))));
 effect c11.pp.defined_parentheses($tokens,$macros,$at) => choose(choose(not(lt(size($tokens),3)),eq(c11.lex.spelling(arg($tokens,2)),")"),0),
-    list.prepend(c11.lex.made(2,text(c11.pp.defined($macros,c11.lex.spelling(arg($tokens,1)))),$at),c11.pp.defined_tokens(list.slice($tokens,3,size($tokens)),$macros)),
+    seq(choose(eq(c11.lex.kind(arg($tokens,1)),1),1,c11.lex.error($at,"defined requires an identifier")),
+        list.prepend(c11.lex.made(2,text(c11.pp.defined($macros,c11.lex.macro_key(arg($tokens,1)))),$at),c11.pp.defined_tokens(list.slice($tokens,3,size($tokens)),$macros))),
     c11.lex.error($at,"malformed defined operator"));
 effect c11.pp.undefined_zero($tokens) => list.map("c11.pp.zero_identifier",$tokens);
 effect c11.pp.zero_identifier($token) => choose(eq(c11.lex.kind($token),1),c11.lex.made(2,"0",$token),$token);
@@ -313,8 +364,9 @@ syntax c11.pp_expr[10,right] `$a:c11.pp_expr ? $b:c11.pp_expr : $c:c11.pp_expr` 
 // Preprocessing integer types use the selected intmax_t/uintmax_t policy.
 effect c11.pp.number($raw) => bind(base.Typed(c11.types.IntType($rank,$width,$unsigned),base.Integer($value)),c11.types.literal($raw),c11.pp.PPInt($value,$unsigned));
 effect c11.pp.evaluate(c11.pp.Number($raw)) => c11.pp.number($raw);
-effect c11.pp.evaluate(c11.pp.Character($raw)) => choose(text.starts($raw,"'"),
-    bind(base.Typed($type,base.Integer($value)),c11.types.character($raw),c11.pp.PPInt($value,0)),fail("string literal in C preprocessing expression"));
+effect[fallback] c11.pp.is_character($raw) => text.starts($raw,"'");
+effect c11.pp.evaluate(c11.pp.Character($raw)) => choose(c11.pp.is_character($raw),
+    bind(base.Typed(c11.types.IntType($rank,$width,$unsigned),base.Integer($value)),c11.types.character($raw),c11.pp.PPInt($value,$unsigned)),fail("string literal in C preprocessing expression"));
 effect c11.pp.evaluate(c11.pp.Unary("!",$value)) => c11.pp.PPInt(not(c11.pp.truth(c11.pp.evaluate($value))),0);
 effect c11.pp.evaluate(c11.pp.Unary("~",$value)) => bind(c11.pp.PPInt($integer,$unsigned),c11.pp.evaluate($value),c11.pp.checked(int.xor($integer,-1),$unsigned));
 effect c11.pp.evaluate(c11.pp.Unary("-",$value)) => bind(c11.pp.PPInt($integer,$unsigned),c11.pp.evaluate($value),c11.pp.checked(int.neg($integer),$unsigned));
@@ -327,7 +379,7 @@ effect c11.pp.checked($value,1) => c11.pp.PPInt(int.and($value,sub(int.shl(1,64)
 effect c11.pp.checked($value,0) => choose(int.fits($value,64,1),c11.pp.PPInt($value,0),fail("signed overflow in C preprocessing expression"));
 effect c11.pp.convert(c11.pp.PPInt($value,$from),$to) => c11.pp.checked($value,$to);
 effect c11.pp.signedness(c11.pp.Number($raw)) => arg(c11.pp.number($raw),1);
-effect c11.pp.signedness(c11.pp.Character($raw)) => 0;
+effect c11.pp.signedness(c11.pp.Character($raw)) => arg(c11.pp.evaluate(c11.pp.Character($raw)),1);
 effect c11.pp.signedness(c11.pp.Unary("!",$value)) => 0;
 effect c11.pp.signedness(c11.pp.Unary($operator,$value)) when not(eq($operator,"!")) => c11.pp.signedness($value);
 effect c11.pp.signedness(c11.pp.Binary($operator,$a,$b)) => choose(c11.pp.comparison($operator),0,

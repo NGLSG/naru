@@ -1,0 +1,639 @@
+{
+  "format": 1,
+  "target": "windows-x86_64-llp64",
+  "scope": "Deferred source-only VM, bit-field and aligned-member batch. No case has been executed for this implementation.",
+  "full_conformance_claimed": false,
+  "cases": [
+    {
+      "id": "vla-bound-evaluated-once",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;int a[n++];a[2]=42;return n==4 && sizeof a==12 ? a[2]:1;}"
+    },
+    {
+      "id": "vla-length-snapshot",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;int a[n];n=9;return sizeof a==12?42:1;}"
+    },
+    {
+      "id": "vla-multidimensional-stride",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=2,m=3;int a[n][m];n=8;m=9;a[1][2]=42;return sizeof a==24 && sizeof a[0]==12 && a[1]-a[0]==3?a[1][2]:1;}"
+    },
+    {
+      "id": "vla-typedef-captured-once",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;typedef int Row[n++];Row a; n=10;Row b;a[2]=20;b[2]=22;return sizeof a==12 && sizeof b==12 && n==10?a[2]+b[2]:1;}"
+    },
+    {
+      "id": "vla-array-of-typedef",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;typedef int Row[n];Row a[2];a[1][2]=42;return sizeof a==24 && sizeof a[0]==12?a[1][2]:1;}"
+    },
+    {
+      "id": "vla-prototype-star",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int f(int n,int a[*]);int f(int n,int a[n]){return a[n-1];}int main(void){int a[3]={1,2,42};return f(3,a);}"
+    },
+    {
+      "id": "vla-prototype-qualified-star",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int f(int n,int a[const *]);int f(int n,int a[const n]){return a[n-1];}int main(void){int a[3]={1,2,42};return f(3,a);}"
+    },
+    {
+      "id": "vla-parameter-row-stride",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int f(int n,int m,int a[n][m]){return sizeof a[0]==12?a[1][2]:1;}int main(void){int a[2][3]={{1,2,3},{4,5,42}};return f(2,3,a);}"
+    },
+    {
+      "id": "vla-static-parameter-bound-effects",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int f(int n,int a[static ++n]){return n==4?a[3]:1;}int main(void){int a[4]={0,0,0,42};return f(3,a);}"
+    },
+    {
+      "id": "vla-outer-parameter-bound-effects",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int f(int n,int a[n++]){return n==4?a[2]:1;}int main(void){int a[3]={0,0,42};return f(3,a);}"
+    },
+    {
+      "id": "vla-oldstyle-parameter-bounds",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int f(n,a) int n;int a[2][n];{return sizeof a[0]==12?a[1][2]:1;}int main(void){int a[2][3]={{0},{0,0,42}};return f(3,a);}"
+    },
+    {
+      "id": "vla-sizeof-evaluates-array-operand",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;int a[2][n];int (*p)[n]=a;unsigned long long s=sizeof *(p++);return s==12 && p==a+1?42:1;}"
+    },
+    {
+      "id": "vla-sizeof-pointer-unevaluated",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;int a[n];int (*p)[n]=&a;unsigned long long s=sizeof(p++);return s==8 && p==&a?42:1;}"
+    },
+    {
+      "id": "vla-sizeof-type-captures-new-length",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;unsigned long long s=sizeof(int[n++]);return s==12 && n==4?42:1;}"
+    },
+    {
+      "id": "vla-block-static-pointer",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;int a[n];static int (*p)[n++];p=&a;(*p)[2]=42;return n==4 && sizeof *p==12?(*p)[2]:1;}"
+    },
+    {
+      "id": "vla-register-sizeof",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;register int a[n];return sizeof a==12?42:1;}"
+    },
+    {
+      "id": "vla-loop-continue-break-cleanup",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int sum=0;for(int i=1;i<10;i++){int a[i];a[0]=i;if(i<3)continue;sum+=a[0];if(i==4)break;}return sum==7?42:1;}"
+    },
+    {
+      "id": "vla-nested-loop-cleanup",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int result=0;for(int i=1;i<4;i++){int a[i];a[0]=i;for(int j=1;j<4;j++){int b[j];b[0]=j;if(j==2)continue;result+=a[0]+b[0];}}return result==24?42:1;}"
+    },
+    {
+      "id": "vla-return-evaluates-before-release",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int f(int n){int a[n];a[n-1]=42;return a[n-1];}int main(void){return f(3);}"
+    },
+    {
+      "id": "vla-goto-exits-scope",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int value=0;{int n=3;int a[n];a[2]=42;value=a[2];goto done;}done:return value;}"
+    },
+    {
+      "id": "vla-backward-goto-recaptures",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=2,k=0;again:;int a[n++];a[0]=42;if(++k<3)goto again;return sizeof a==16 && n==5?a[0]:1;}"
+    },
+    {
+      "id": "vm-typedef-backward-goto",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=2,k=0;again:;typedef int T[n++];T a;a[0]=42;if(++k<3)goto again;return sizeof a==16?a[0]:1;}"
+    },
+    {
+      "id": "vla-nested-shadowed-bounds",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=2;int a[n];{int n=3;int b[n];b[2]=42;a[1]=b[2];}return sizeof a==8?a[1]:1;}"
+    },
+    {
+      "id": "vla-const-array-typedef-parameter",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int f(int n){typedef int Row[n];const Row a={0};return 42;}int main(void){return f(2);}",
+      "reject": "variable length array cannot have an initializer"
+    },
+    {
+      "id": "vm-pointer-generic-rejected",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;return _Generic((int*)0,int (*)[n]:42,default:1);}",
+      "reject": "generic association type cannot be variably modified"
+    },
+    {
+      "id": "vla-goto-enters-declaration",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;goto inside;int a[n];inside:return 42;}",
+      "reject": "goto enters the scope of a variably modified identifier"
+    },
+    {
+      "id": "vm-goto-enters-typedef",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;goto inside;typedef int T[n];inside:return 42;}",
+      "reject": "goto enters the scope of a variably modified identifier"
+    },
+    {
+      "id": "vla-switch-enters-declaration",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;switch(1){int a[n];case 1:return 42;}return 1;}",
+      "reject": "switch dispatch enters the scope of a variably modified identifier"
+    },
+    {
+      "id": "vm-switch-enters-pointer",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;switch(1){int (*p)[n];case 1:return 42;}return 1;}",
+      "reject": "switch dispatch enters the scope of a variably modified identifier"
+    },
+    {
+      "id": "vla-switch-case-scoped",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;switch(1){case 1:{int a[n];a[2]=42;return a[2];}default:return 1;}}"
+    },
+    {
+      "id": "vla-file-array-rejected",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int n=3;int a[n];int main(void){return 42;}",
+      "reject": "variably modified object cannot have file scope"
+    },
+    {
+      "id": "vm-file-pointer-rejected",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int n=3;int (*p)[n];int main(void){return 42;}",
+      "reject": "variably modified object cannot have file scope"
+    },
+    {
+      "id": "vm-linked-pointer-rejected",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;extern int (*p)[n];return 42;}",
+      "reject": "variably modified identifier cannot have linkage"
+    },
+    {
+      "id": "vla-static-array-rejected",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;static int a[n];return 42;}",
+      "reject": "VLA objects require automatic storage"
+    },
+    {
+      "id": "vla-initializer-rejected",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){int n=3;int a[n]={1,2,42};return a[2];}",
+      "reject": "variable length array cannot have an initializer"
+    },
+    {
+      "id": "vla-floating-bound-rejected",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int main(void){float n=3;int a[n];return 42;}",
+      "reject": "VLA bound must have integer type"
+    },
+    {
+      "id": "vla-definition-star-rejected",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int f(int n,int a[*]){return 42;}int main(void){return 42;}",
+      "reject": "function definition cannot use prototype [*] arrays"
+    },
+    {
+      "id": "vla-nested-static-bound-rejected",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int f(int n,int a[2][static n]);int main(void){return 42;}",
+      "reject": "outermost array derivation of a function parameter"
+    },
+    {
+      "id": "vla-nested-qualified-bound-rejected",
+      "feature": "vla",
+      "work_item": "vla-and-vm-types",
+      "clause": "6.7.6.2; 6.7.6.3; 6.2.4",
+      "source": "int f(int n,int a[2][const n]);int main(void){return 42;}",
+      "reject": "outermost array derivation of a function parameter"
+    },
+    {
+      "id": "bits-shared-unit",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned a:3,b:5,c:7;};int main(void){struct S s={5,17,20};return s.a==5 && s.b==17 && s.c==20?42:1;}"
+    },
+    {
+      "id": "bits-signed-extension",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{signed int a:4,b:4;};int main(void){struct S s={-3,-7};return s.a==-3 && s.b==-7?42:1;}"
+    },
+    {
+      "id": "bits-unsigned-promotion",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned x:3;};int main(void){struct S s={7};return s.x-8==-1?42:1;}"
+    },
+    {
+      "id": "bits-bool-truth-conversion",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{_Bool x:1,y:1;};int main(void){struct S s={2,0};s.y=9;return s.x==1 && s.y==1?42:1;}"
+    },
+    {
+      "id": "bits-floating-assignment",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned x:6;};int main(void){struct S s={0};s.x=42.75;return s.x;}"
+    },
+    {
+      "id": "bits-unnamed-initializer-skipped",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned a:3;unsigned :4;unsigned b:6;};int main(void){struct S s={5,42};return s.a==5?s.b:1;}"
+    },
+    {
+      "id": "bits-zero-width-boundary",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned a:3;unsigned :0;unsigned b:6;};int main(void){struct S s={5,42};return sizeof s==8 && s.a==5?s.b:1;}"
+    },
+    {
+      "id": "bits-leading-zero-width-ignored",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "#include <stddef.h>\nstruct S{unsigned :0;char x;};int main(void){return sizeof(struct S)==1 && _Alignof(struct S)==1 && offsetof(struct S,x)==0?42:1;}"
+    },
+    {
+      "id": "bits-ordinary-member-offsets",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "#include <stddef.h>\nstruct S{char x;unsigned a:3,b:5;char y;};int main(void){struct S s={'x',3,4,'y'};return sizeof s==12 && offsetof(struct S,y)==8 && s.x=='x' && s.y=='y'?42:1;}"
+    },
+    {
+      "id": "bits-write-preserves-neighbors",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned a:3,b:6;};int main(void){struct S s={5,42};s.a=1;return s.a==1?s.b:1;}"
+    },
+    {
+      "id": "bits-rhs-mutates-adjacent-field",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned a:3,b:6;};int change(struct S *s){s->b=42;return 3;}int main(void){struct S s={1,2};s.a=change(&s);return s.a==3?s.b:1;}"
+    },
+    {
+      "id": "bits-compound-and-increments",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned a:4,b:6;};int main(void){struct S s={2,42};int old=s.a++;int next=++s.a;s.a+=3;return old==2 && next==4 && s.a==7?s.b:1;}"
+    },
+    {
+      "id": "bits-assignment-result-truncated",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned a:3;};int main(void){struct S s={0};int n=(s.a=10);return n==2 && s.a==2?42:1;}"
+    },
+    {
+      "id": "bits-designated-overlays",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned a:3,b:6;};int main(void){struct S s={.a=2,.b=42,.a=5};return s.a==5?s.b:1;}"
+    },
+    {
+      "id": "bits-static-initializer",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned a:3,b:6;};static struct S s={.a=5,.b=42};int main(void){return s.a==5?s.b:1;}"
+    },
+    {
+      "id": "bits-nested-anonymous-members",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{int x;union {struct {unsigned a:3,b:6;};unsigned raw;};};int main(void){struct S s={.x=9,.b=42,.a=3};return s.x==9 && s.a==3?s.b:1;}"
+    },
+    {
+      "id": "bits-union-selected-member",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "union U{unsigned a:6;unsigned raw;};int main(void){union U u={.a=42};return u.a;}"
+    },
+    {
+      "id": "bits-pointer-relocation",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "#include <stddef.h>\nint value=42;struct S{unsigned a:3;int *p;unsigned b:3;};struct S s={.a=5,.p=&value,.b=2};int main(void){return offsetof(struct S,p)==8 && s.a==5 && s.b==2?*s.p:1;}"
+    },
+    {
+      "id": "bits-struct-copy",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned a:3,b:6;};int main(void){struct S a={3,42},b={0};b=a;a.b=1;return b.a==3?b.b:1;}"
+    },
+    {
+      "id": "bits-width-overflow-rejected",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{unsigned x:33;};int main(void){return 42;}",
+      "reject": "width within its representation"
+    },
+    {
+      "id": "bits-negative-width-rejected",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{int x:-1;};int main(void){return 42;}",
+      "reject": "width within its representation"
+    },
+    {
+      "id": "bits-named-zero-rejected",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{int x:0;};int main(void){return 42;}",
+      "reject": "named C bit-field cannot have zero width"
+    },
+    {
+      "id": "bits-floating-type-rejected",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{float x:3;};int main(void){return 42;}",
+      "reject": "integer type and a width"
+    },
+    {
+      "id": "bits-nonconstant-width-rejected",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "int n=3;struct S{int x:n;};int main(void){return 42;}",
+      "reject": "integer constant expression"
+    },
+    {
+      "id": "bits-sizeof-rejected",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{int x:3;};int main(void){struct S s;return sizeof s.x;}",
+      "reject": "sizeof cannot be applied to a C bit-field"
+    },
+    {
+      "id": "bits-address-rejected",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "struct S{int x:3;};int main(void){struct S s;return *(&s.x);}",
+      "reject": "cannot take the address of a C bit-field"
+    },
+    {
+      "id": "bits-offsetof-rejected",
+      "feature": "declarations",
+      "work_item": "bit-fields",
+      "clause": "6.7.2.1; 6.3.1.1; 6.5.3.2",
+      "source": "#include <stddef.h>\nstruct S{int x:3;};int main(void){return offsetof(struct S,x);}",
+      "reject": "offsetof cannot select a C bit-field"
+    },
+    {
+      "id": "member-alignas-offset-and-size",
+      "feature": "alignment",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.7.5; 6.2.8",
+      "source": "#include <stddef.h>\nstruct S{char a;_Alignas(16) int b;char c;};int main(void){struct S s={.a=1,.b=42,.c=2};return offsetof(struct S,b)==16 && offsetof(struct S,c)==20 && sizeof s==32 && _Alignof(struct S)==16?s.b:1;}"
+    },
+    {
+      "id": "member-alignas-array-stride",
+      "feature": "alignment",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.7.5; 6.2.8",
+      "source": "#include <stdint.h>\nstruct S{_Alignas(32) int x;};int main(void){struct S a[2]={{1},{42}};return sizeof a==64 && (uintptr_t)&a[1]-(uintptr_t)&a[0]==32 && (uintptr_t)a%32==0?a[1].x:1;}"
+    },
+    {
+      "id": "member-alignas-global-relocation",
+      "feature": "alignment",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.7.5; 6.2.8",
+      "source": "#include <stdint.h>\nint value=42;struct S{_Alignas(32) int *p;char x;};struct S s={.p=&value,.x=3};int main(void){return sizeof s==32 && (uintptr_t)&s%32==0 && s.x==3?*s.p:1;}"
+    },
+    {
+      "id": "member-alignas-nested-storage",
+      "feature": "alignment",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.7.5; 6.2.8",
+      "source": "#include <stddef.h>\nstruct Inner{_Alignas(32) int x;};struct Outer{char c;struct Inner i;char d;};int main(void){struct Outer s={.c=1,.i={42},.d=2};return sizeof s==96 && offsetof(struct Outer,i)==32 && offsetof(struct Outer,d)==64?s.i.x:1;}"
+    },
+    {
+      "id": "member-alignas-bitfield-combination",
+      "feature": "alignment",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.7.5; 6.2.8",
+      "source": "#include <stddef.h>\nstruct S{unsigned a:3;_Alignas(16) int x;unsigned b:3;};int main(void){struct S s={.a=2,.x=42,.b=3};return offsetof(struct S,x)==16 && sizeof s==32 && s.a==2 && s.b==3?s.x:1;}"
+    },
+    {
+      "id": "member-alignas-zero-no-op",
+      "feature": "alignment",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.7.5; 6.2.8",
+      "source": "struct S{_Alignas(0) int x;};int main(void){struct S s={42};return sizeof s==4?s.x:1;}"
+    },
+    {
+      "id": "member-alignas-type-operand",
+      "feature": "alignment",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.7.5; 6.2.8",
+      "source": "struct S{char a;_Alignas(double) int x;};int main(void){struct S s={1,42};return sizeof s==16 && _Alignof(struct S)==8?s.x:1;}"
+    },
+    {
+      "id": "member-alignas-bitfield-rejected",
+      "feature": "alignment",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.7.5; 6.2.8",
+      "source": "struct S{_Alignas(16) unsigned x:3;};int main(void){return 42;}",
+      "reject": "alignment specifier cannot apply to a bit-field"
+    },
+    {
+      "id": "member-alignas-weaker-rejected",
+      "feature": "alignment",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.7.5; 6.2.8",
+      "source": "struct S{_Alignas(1) int x;};int main(void){return 42;}",
+      "reject": "weakens the natural member alignment"
+    },
+    {
+      "id": "member-storage-class-rejected",
+      "feature": "alignment",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.7.5; 6.2.8",
+      "source": "struct S{static int x;};int main(void){return 42;}",
+      "reject": "member declaration cannot have a storage class or function specifier"
+    },
+    {
+      "id": "array-void-parameter-element-rejected",
+      "feature": "declarations", "work_item": "compatibility-and-composite-types", "clause": "6.7.6.2p1",
+      "source": "void f(void a[4]);int main(void){return 42;}",
+      "reject": "C array element must be a complete object type"
+    },
+    {
+      "id": "array-incomplete-parameter-element-rejected",
+      "feature": "declarations", "work_item": "compatibility-and-composite-types", "clause": "6.7.6.2p1",
+      "source": "struct S;void f(struct S a[4]);int main(void){return 42;}",
+      "reject": "C array element must be a complete object type"
+    },
+    {
+      "id": "array-incomplete-inner-element-rejected",
+      "feature": "declarations", "work_item": "compatibility-and-composite-types", "clause": "6.7.6.2p1",
+      "source": "typedef int Row[];Row a[2];int main(void){return 42;}",
+      "reject": "C array element must be a complete object type"
+    },
+    {
+      "id": "array-function-element-rejected",
+      "feature": "declarations", "work_item": "compatibility-and-composite-types", "clause": "6.7.6.2p1",
+      "source": "typedef int F(void);F a[2];int main(void){return 42;}",
+      "reject": "C array element must be a complete object type"
+    },
+    {
+      "id": "function-array-result-rejected",
+      "feature": "declarations", "work_item": "compatibility-and-composite-types", "clause": "6.7.6.3p1",
+      "source": "typedef int Row[2];Row f(void);int main(void){return 42;}",
+      "reject": "C function cannot return an array or function type"
+    },
+    {
+      "id": "function-function-result-rejected",
+      "feature": "declarations", "work_item": "compatibility-and-composite-types", "clause": "6.7.6.3p1",
+      "source": "typedef int F(void);F f(void);int main(void){return 42;}",
+      "reject": "C function cannot return an array or function type"
+    },
+    {
+      "id": "array-incomplete-pointed-type-allowed",
+      "feature": "declarations", "work_item": "compatibility-and-composite-types", "clause": "6.7.6.2p1",
+      "source": "struct S;struct S *a[2]={0,0};int main(void){return a[0]==0&&a[1]==0?42:1;}"
+    },
+    {
+      "id": "flexible-record-in-union-allowed",
+      "feature": "types", "work_item": "aggregate-calling-abi", "clause": "6.7.2.1p3",
+      "source": "struct S{int n;int a[];};union U{struct S s;int n;};union U u={.n=42};int main(void){return u.n;}"
+    },
+    {
+      "id": "flexible-containing-array-rejected",
+      "feature": "types", "work_item": "aggregate-calling-abi", "clause": "6.7.2.1p3",
+      "source": "struct S{int n;int a[];};union U{struct S s;int n;};union U a[2];int main(void){return 42;}",
+      "reject": "C array element cannot contain a flexible array member"
+    },
+    {
+      "id": "flexible-containing-struct-rejected",
+      "feature": "types", "work_item": "aggregate-calling-abi", "clause": "6.7.2.1p3",
+      "source": "struct S{int n;int a[];};union U{struct S s;int n;};struct T{union U u;};int main(void){return 42;}",
+      "reject": "C struct member cannot contain a flexible array member"
+    },
+    {
+      "id": "rounded-float-subnormal-literal",
+      "feature": "literals", "work_item": "target-implementation-contract", "clause": "6.4.4.2;5.2.4.2.2",
+      "source": "float x=1.0e-40f;int main(void){return x>0.0f&&x<1.0e-30f?42:1;}"
+    },
+    {
+      "id": "rounded-double-subnormal-literal",
+      "feature": "literals", "work_item": "target-implementation-contract", "clause": "6.4.4.2;5.2.4.2.2",
+      "source": "double x=1.0e-320;int main(void){return x>0.0&&x<1.0e-310?42:1;}"
+    },
+    {
+      "id": "minimum-exact-hex-subnormal-literal",
+      "feature": "literals", "work_item": "target-implementation-contract", "clause": "6.4.4.2;5.2.4.2.2",
+      "source": "float a=0x1p-149f;double b=0x1p-1074;int main(void){return a>0.0f&&b>0.0?42:1;}"
+    }
+  ]
+}

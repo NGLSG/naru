@@ -3,12 +3,16 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/VirtualFileSystem.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/WindowsDriver/MSVCPaths.h"
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
+#include <chrono>
+#include <ctime>
+#include <limits>
 
 namespace fs = std::filesystem;
 namespace {
@@ -25,13 +29,13 @@ bool options(NaruToolchain &out, const llvm::json::Object &object,
              const std::string &base = "") {
   for (auto entry : {std::make_pair("triple", &out.triple),
       {"vc_tools_dir", &out.vcTools}, {"windows_sdk_dir", &out.sdkDir},
-      {"windows_sdk_version", &out.sdkVersion}}) {
+      {"windows_sdk_version", &out.sdkVersion}, {"resource_include_dir", &out.resourceIncludes}}) {
     auto *field = object.get(entry.first);
     if (!field) continue;
     auto value = field->getAsString();
     if (!value || value->contains('\0')) { errorText = "invalid target option: " + std::string(entry.first); return false; }
     *entry.second = value->str();
-    if (!base.empty() && (entry.second == &out.vcTools || entry.second == &out.sdkDir)
+    if (!base.empty() && (entry.second == &out.vcTools || entry.second == &out.sdkDir || entry.second == &out.resourceIncludes)
         && !value->empty() && fs::u8path(*entry.second).is_relative())
       *entry.second = (fs::u8path(base) / fs::u8path(*entry.second)).u8string();
   }
@@ -46,6 +50,22 @@ bool naruDiscoverToolchain(NaruToolchain &out, std::string &error) {
   if (out.triple.empty()) out.triple = llvm::sys::getDefaultTargetTriple();
   out.triple = llvm::Triple::normalize(out.triple);
   llvm::Triple triple(out.triple);
+  // Installed compiler-resource headers supplement the real target SDK.
+  // Discovery is filesystem-only and survives empty PATH/no-child execution.
+  if (out.resourceIncludes.empty()) {
+    if (const char *configured = std::getenv("NARU_RESOURCE_INCLUDE_DIR")) out.resourceIncludes = configured;
+    else {
+      auto executable = llvm::sys::fs::getMainExecutable(nullptr, reinterpret_cast<void *>(&naruDiscoverToolchain));
+      auto installed = fs::u8path(executable).parent_path() / "runtime" / "clang" / "include";
+      std::error_code ec;
+      if (fs::is_directory(installed, ec)) out.resourceIncludes = installed.u8string();
+    }
+  }
+  if (!out.resourceIncludes.empty()) {
+    std::error_code ec;
+    if (!fs::is_directory(fs::u8path(out.resourceIncludes), ec)) { error = "compiler resource include directory does not exist: " + out.resourceIncludes; return false; }
+    addDirectory(out.includes, out.resourceIncludes);
+  }
   if (!triple.isOSWindows()) return true; // Other targets may supply explicit sysroots.
   auto vfs = llvm::vfs::getRealFileSystem();
   llvm::ToolsetLayout layout = llvm::ToolsetLayout::VS2017OrNewer;
@@ -61,6 +81,7 @@ bool naruDiscoverToolchain(NaruToolchain &out, std::string &error) {
     addDirectory(out.includes, llvm::getSubDirectoryPath(llvm::SubDirectoryType::Include, layout, out.vcTools, triple.getArch()));
     addDirectory(out.libraries, llvm::getSubDirectoryPath(llvm::SubDirectoryType::Lib, layout, out.vcTools, triple.getArch()));
   }
+  const size_t defaultIncludePrefix = out.includes.size();
   // Driver APIs borrow these views; preserve the override strings throughout
   // both SDK queries. Discovery must not invalidate a view by changing out.
   const std::string sdkOverride = out.sdkDir, versionOverride = out.sdkVersion;
@@ -83,7 +104,7 @@ bool naruDiscoverToolchain(NaruToolchain &out, std::string &error) {
     // stay first, exactly as in the native compiler's search order.
     std::vector<std::string> ucrt;
     addDirectory(ucrt, (fs::u8path(out.ucrtDir) / "Include" / out.ucrtVersion / "ucrt").u8string());
-    auto pos = out.includes.empty() || out.vcTools.empty() ? out.includes.begin() : out.includes.begin() + 1;
+    auto pos = out.includes.begin() + std::min(defaultIncludePrefix, out.includes.size());
     out.includes.insert(pos, ucrt.begin(), ucrt.end());
     addDirectory(out.libraries, (fs::u8path(out.ucrtDir) / "Lib" / out.ucrtVersion / "ucrt" / llvm::archToWindowsSDKArch(triple.getArch())).u8string());
   }
@@ -116,9 +137,11 @@ const char *naru_target_toolchain(const char *json, int64_t length) {
   pairs.push_back(llvm::json::Array{"triple", info.triple});
   pairs.push_back(llvm::json::Array{"architecture", triple.getArchName().str()});
   pairs.push_back(llvm::json::Array{"os", triple.getOSName().str()});
+  pairs.push_back(llvm::json::Array{"environment", triple.getEnvironmentName().str()});
   pairs.push_back(llvm::json::Array{"pointer_bits", triple.isArch64Bit() ? 64 : triple.isArch32Bit() ? 32 : 16});
   pairs.push_back(llvm::json::Array{"little_endian", triple.isLittleEndian() ? 1 : 0});
   pairs.push_back(llvm::json::Array{"include_paths", strings(info.includes)});
+  pairs.push_back(llvm::json::Array{"resource_include_dir", info.resourceIncludes});
   pairs.push_back(llvm::json::Array{"library_paths", strings(info.libraries)});
   pairs.push_back(llvm::json::Array{"vc_tools_dir", info.vcTools});
   pairs.push_back(llvm::json::Array{"windows_sdk_dir", info.sdkDir});
@@ -129,3 +152,37 @@ const char *naru_target_toolchain(const char *json, int64_t length) {
   return resultText.c_str();
 }
 const char *naru_target_error(void) { return errorText.c_str(); }
+
+// Neutral host time facts. Source languages own spelling and predefined-macro
+// policy; the engine owns snapshot lifetime, including fresh frozen execution.
+const char *naru_host_clock_snapshot(void) {
+  errorText.clear();
+  int64_t seconds = std::chrono::duration_cast<std::chrono::seconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+  bool utc = false;
+  if (const char *epoch = std::getenv("SOURCE_DATE_EPOCH")) {
+    if (!*epoch) { errorText = "SOURCE_DATE_EPOCH must be a nonnegative decimal integer"; return nullptr; }
+    seconds = 0;
+    for (const char *digit = epoch; *digit; ++digit) {
+      if (*digit < '0' || *digit > '9' || seconds > (std::numeric_limits<int64_t>::max() - (*digit - '0')) / 10) {
+        errorText = "SOURCE_DATE_EPOCH must be a representable nonnegative decimal integer"; return nullptr;
+      }
+      seconds = seconds * 10 + (*digit - '0');
+    }
+    utc = true;
+  }
+  const std::time_t epoch = static_cast<std::time_t>(seconds);
+  std::tm calendar{};
+#ifdef _WIN32
+  const bool valid = (utc ? gmtime_s(&calendar, &epoch) : localtime_s(&calendar, &epoch)) == 0;
+#else
+  const bool valid = (utc ? gmtime_r(&epoch, &calendar) : localtime_r(&epoch, &calendar)) != nullptr;
+#endif
+  if (!valid || calendar.tm_year < -1900 || calendar.tm_year > 8099) {
+    errorText = "host clock snapshot cannot be represented as a calendar year from 0000 to 9999"; return nullptr;
+  }
+  llvm::json::Array facts{calendar.tm_year + 1900, calendar.tm_mon + 1, calendar.tm_mday,
+      calendar.tm_hour, calendar.tm_min, calendar.tm_sec, seconds, utc ? 1 : 0};
+  resultText = llvm::formatv("{0}", llvm::json::Value(std::move(facts))).str();
+  return resultText.c_str();
+}

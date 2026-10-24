@@ -1,0 +1,319 @@
+{
+  "format": 1,
+  "standard": "C11 real system/resource header contracts, addressable library functions and type-generic dispatch",
+  "target": "windows-x86_64-llp64",
+  "scope": "Deferred source-only acceptance; alternate target-carrier or compiler-header-support oracles are explicit and never supplied to Naru",
+  "full_conformance_claimed": false,
+  "cases": [
+    {
+      "id": "atomic-api-parenthesized",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.1.4;7.17.4;7.17.8",
+      "source": "#include <stdatomic.h>\natomic_flag f=ATOMIC_FLAG_INIT;int main(void){int a=(atomic_flag_test_and_set)(&f),b=(atomic_flag_test_and_set_explicit)(&f,memory_order_acquire);(atomic_flag_clear_explicit)(&f,memory_order_release);int c=(atomic_flag_test_and_set)(&f);(atomic_flag_clear)(&f);(atomic_thread_fence)(memory_order_seq_cst);(atomic_signal_fence)(memory_order_acquire);return !a&&b&&!c?42:1;}",
+      "reference_additional_sources": {
+        "resource-atomic-api.c": "#include <stdatomic.h>\n_Bool (atomic_flag_test_and_set)(volatile atomic_flag *p){return atomic_flag_test_and_set(p);}\n_Bool (atomic_flag_test_and_set_explicit)(volatile atomic_flag *p,memory_order o){return atomic_flag_test_and_set_explicit(p,o);}\nvoid (atomic_flag_clear)(volatile atomic_flag *p){atomic_flag_clear(p);}\nvoid (atomic_flag_clear_explicit)(volatile atomic_flag *p,memory_order o){atomic_flag_clear_explicit(p,o);}\nvoid (atomic_thread_fence)(memory_order o){atomic_thread_fence(o);}\nvoid (atomic_signal_fence)(memory_order o){atomic_signal_fence(o);}"
+      },
+      "reference_note": "Same source with an explicit independent Clang support TU implementing the resource header's six addressable functions through its original macros; no support source is supplied to Naru."
+    },
+    {
+      "id": "atomic-api-function-pointers",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.1.4;7.17.4;7.17.8",
+      "source": "#include <stdatomic.h>\natomic_flag f=ATOMIC_FLAG_INIT;int main(void){_Bool(*test)(volatile atomic_flag*)=atomic_flag_test_and_set;_Bool(*testx)(volatile atomic_flag*,memory_order)=atomic_flag_test_and_set_explicit;void(*clear)(volatile atomic_flag*)=atomic_flag_clear;void(*clearx)(volatile atomic_flag*,memory_order)=atomic_flag_clear_explicit;void(*thread)(memory_order)=atomic_thread_fence;void(*signal)(memory_order)=atomic_signal_fence;int a=test(&f);clearx(&f,memory_order_release);int b=testx(&f,memory_order_acq_rel);clear(&f);thread(memory_order_seq_cst);signal(memory_order_consume);return !a&&!b?42:1;}",
+      "reference_additional_sources": {
+        "resource-atomic-api.c": "#include <stdatomic.h>\n_Bool (atomic_flag_test_and_set)(volatile atomic_flag *p){return atomic_flag_test_and_set(p);}\n_Bool (atomic_flag_test_and_set_explicit)(volatile atomic_flag *p,memory_order o){return atomic_flag_test_and_set_explicit(p,o);}\nvoid (atomic_flag_clear)(volatile atomic_flag *p){atomic_flag_clear(p);}\nvoid (atomic_flag_clear_explicit)(volatile atomic_flag *p,memory_order o){atomic_flag_clear_explicit(p,o);}\nvoid (atomic_thread_fence)(memory_order o){atomic_thread_fence(o);}\nvoid (atomic_signal_fence)(memory_order o){atomic_signal_fence(o);}"
+      },
+      "reference_note": "Same source with an explicit independent Clang support TU implementing the resource header's six addressable functions through its original macros; no support source is supplied to Naru."
+    },
+    {
+      "id": "atomic-api-undef",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.1.4;7.17.4;7.17.8",
+      "source": "#include <stdatomic.h>\n#undef atomic_flag_test_and_set\n#undef atomic_flag_test_and_set_explicit\n#undef atomic_flag_clear\n#undef atomic_flag_clear_explicit\n#undef atomic_thread_fence\n#undef atomic_signal_fence\natomic_flag f=ATOMIC_FLAG_INIT;int main(void){int a=atomic_flag_test_and_set(&f);atomic_flag_clear(&f);int b=atomic_flag_test_and_set_explicit(&f,memory_order_relaxed);atomic_flag_clear_explicit(&f,memory_order_relaxed);atomic_thread_fence(memory_order_release);atomic_signal_fence(memory_order_acq_rel);return !a&&!b?42:1;}",
+      "reference_additional_sources": {
+        "resource-atomic-api.c": "#include <stdatomic.h>\n_Bool (atomic_flag_test_and_set)(volatile atomic_flag *p){return atomic_flag_test_and_set(p);}\n_Bool (atomic_flag_test_and_set_explicit)(volatile atomic_flag *p,memory_order o){return atomic_flag_test_and_set_explicit(p,o);}\nvoid (atomic_flag_clear)(volatile atomic_flag *p){atomic_flag_clear(p);}\nvoid (atomic_flag_clear_explicit)(volatile atomic_flag *p,memory_order o){atomic_flag_clear_explicit(p,o);}\nvoid (atomic_thread_fence)(memory_order o){atomic_thread_fence(o);}\nvoid (atomic_signal_fence)(memory_order o){atomic_signal_fence(o);}"
+      },
+      "reference_note": "Same source with an explicit independent Clang support TU implementing the resource header's six addressable functions through its original macros; no support source is supplied to Naru."
+    },
+    {
+      "id": "atomic-api-volatile-dynamic-order",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.1.4;7.17.4;7.17.8",
+      "source": "#include <stdatomic.h>\nvolatile atomic_flag f=ATOMIC_FLAG_INIT;int main(void){memory_order orders[]={memory_order_relaxed,memory_order_consume,memory_order_acquire,memory_order_release,memory_order_acq_rel,memory_order_seq_cst};for(int i=0;i<6;++i){(atomic_flag_clear_explicit)(&f,memory_order_release);if((atomic_flag_test_and_set_explicit)(&f,orders[i]))return 1;(atomic_thread_fence)(orders[i]);(atomic_signal_fence)(orders[i]);}return 42;}",
+      "reference_additional_sources": {
+        "resource-atomic-api.c": "#include <stdatomic.h>\n_Bool (atomic_flag_test_and_set)(volatile atomic_flag *p){return atomic_flag_test_and_set(p);}\n_Bool (atomic_flag_test_and_set_explicit)(volatile atomic_flag *p,memory_order o){return atomic_flag_test_and_set_explicit(p,o);}\nvoid (atomic_flag_clear)(volatile atomic_flag *p){atomic_flag_clear(p);}\nvoid (atomic_flag_clear_explicit)(volatile atomic_flag *p,memory_order o){atomic_flag_clear_explicit(p,o);}\nvoid (atomic_thread_fence)(memory_order o){atomic_thread_fence(o);}\nvoid (atomic_signal_fence)(memory_order o){atomic_signal_fence(o);}"
+      },
+      "reference_note": "Same source with an explicit independent Clang support TU implementing the resource header's six addressable functions through its original macros; no support source is supplied to Naru."
+    },
+    {
+      "id": "atomic-api-cross-unit-identity",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.1.4;7.17.4;7.17.8",
+      "source": "#include <stdatomic.h>\ntypedef _Bool(*test_fn)(volatile atomic_flag*);test_fn other(void);atomic_flag f=ATOMIC_FLAG_INIT;int main(void){return other()==&atomic_flag_test_and_set&&!other()(&f)?42:1;}",
+      "reference_additional_sources": {
+        "resource-atomic-api.c": "#include <stdatomic.h>\n_Bool (atomic_flag_test_and_set)(volatile atomic_flag *p){return atomic_flag_test_and_set(p);}\n_Bool (atomic_flag_test_and_set_explicit)(volatile atomic_flag *p,memory_order o){return atomic_flag_test_and_set_explicit(p,o);}\nvoid (atomic_flag_clear)(volatile atomic_flag *p){atomic_flag_clear(p);}\nvoid (atomic_flag_clear_explicit)(volatile atomic_flag *p,memory_order o){atomic_flag_clear_explicit(p,o);}\nvoid (atomic_thread_fence)(memory_order o){atomic_thread_fence(o);}\nvoid (atomic_signal_fence)(memory_order o){atomic_signal_fence(o);}"
+      },
+      "reference_note": "Same source with an explicit independent Clang support TU implementing the resource header's six addressable functions through its original macros; no support source is supplied to Naru.",
+      "additional_sources": {
+        "other.c": "#include <stdatomic.h>\ntypedef _Bool(*test_fn)(volatile atomic_flag*);test_fn other(void){return &atomic_flag_test_and_set;}"
+      }
+    },
+    {
+      "id": "atomic-api-cross-unit-fence",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.1.4;7.17.4;7.17.8",
+      "source": "#include <stdatomic.h>\ntypedef void(*fence_fn)(memory_order);fence_fn other(void);int main(void){fence_fn f=other();f(memory_order_seq_cst);return f==&atomic_thread_fence?42:1;}",
+      "reference_additional_sources": {
+        "resource-atomic-api.c": "#include <stdatomic.h>\n_Bool (atomic_flag_test_and_set)(volatile atomic_flag *p){return atomic_flag_test_and_set(p);}\n_Bool (atomic_flag_test_and_set_explicit)(volatile atomic_flag *p,memory_order o){return atomic_flag_test_and_set_explicit(p,o);}\nvoid (atomic_flag_clear)(volatile atomic_flag *p){atomic_flag_clear(p);}\nvoid (atomic_flag_clear_explicit)(volatile atomic_flag *p,memory_order o){atomic_flag_clear_explicit(p,o);}\nvoid (atomic_thread_fence)(memory_order o){atomic_thread_fence(o);}\nvoid (atomic_signal_fence)(memory_order o){atomic_signal_fence(o);}"
+      },
+      "reference_note": "Same source with an explicit independent Clang support TU implementing the resource header's six addressable functions through its original macros; no support source is supplied to Naru.",
+      "additional_sources": {
+        "other.c": "#include <stdatomic.h>\ntypedef void(*fence_fn)(memory_order);fence_fn other(void){return &atomic_thread_fence;}"
+      }
+    },
+    {
+      "id": "atomic-header-typedef-inventory",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.17.1;7.17.6",
+      "source": "#include <stdatomic.h>\n#include <stdint.h>\n#include <uchar.h>\n#include <stddef.h>\n_Static_assert(sizeof(atomic_bool)==sizeof(_Atomic(_Bool)),\"atomic_bool size\");\n_Static_assert(_Alignof(atomic_bool)==_Alignof(_Atomic(_Bool)),\"atomic_bool alignment\");\n_Static_assert(sizeof(atomic_char)==sizeof(_Atomic(char)),\"atomic_char size\");\n_Static_assert(_Alignof(atomic_char)==_Alignof(_Atomic(char)),\"atomic_char alignment\");\n_Static_assert(sizeof(atomic_schar)==sizeof(_Atomic(signed char)),\"atomic_schar size\");\n_Static_assert(_Alignof(atomic_schar)==_Alignof(_Atomic(signed char)),\"atomic_schar alignment\");\n_Static_assert(sizeof(atomic_uchar)==sizeof(_Atomic(unsigned char)),\"atomic_uchar size\");\n_Static_assert(_Alignof(atomic_uchar)==_Alignof(_Atomic(unsigned char)),\"atomic_uchar alignment\");\n_Static_assert(sizeof(atomic_short)==sizeof(_Atomic(short)),\"atomic_short size\");\n_Static_assert(_Alignof(atomic_short)==_Alignof(_Atomic(short)),\"atomic_short alignment\");\n_Static_assert(sizeof(atomic_ushort)==sizeof(_Atomic(unsigned short)),\"atomic_ushort size\");\n_Static_assert(_Alignof(atomic_ushort)==_Alignof(_Atomic(unsigned short)),\"atomic_ushort alignment\");\n_Static_assert(sizeof(atomic_int)==sizeof(_Atomic(int)),\"atomic_int size\");\n_Static_assert(_Alignof(atomic_int)==_Alignof(_Atomic(int)),\"atomic_int alignment\");\n_Static_assert(sizeof(atomic_uint)==sizeof(_Atomic(unsigned int)),\"atomic_uint size\");\n_Static_assert(_Alignof(atomic_uint)==_Alignof(_Atomic(unsigned int)),\"atomic_uint alignment\");\n_Static_assert(sizeof(atomic_long)==sizeof(_Atomic(long)),\"atomic_long size\");\n_Static_assert(_Alignof(atomic_long)==_Alignof(_Atomic(long)),\"atomic_long alignment\");\n_Static_assert(sizeof(atomic_ulong)==sizeof(_Atomic(unsigned long)),\"atomic_ulong size\");\n_Static_assert(_Alignof(atomic_ulong)==_Alignof(_Atomic(unsigned long)),\"atomic_ulong alignment\");\n_Static_assert(sizeof(atomic_llong)==sizeof(_Atomic(long long)),\"atomic_llong size\");\n_Static_assert(_Alignof(atomic_llong)==_Alignof(_Atomic(long long)),\"atomic_llong alignment\");\n_Static_assert(sizeof(atomic_ullong)==sizeof(_Atomic(unsigned long long)),\"atomic_ullong size\");\n_Static_assert(_Alignof(atomic_ullong)==_Alignof(_Atomic(unsigned long long)),\"atomic_ullong alignment\");\n_Static_assert(sizeof(atomic_char16_t)==sizeof(_Atomic(char16_t)),\"atomic_char16_t size\");\n_Static_assert(_Alignof(atomic_char16_t)==_Alignof(_Atomic(char16_t)),\"atomic_char16_t alignment\");\n_Static_assert(sizeof(atomic_char32_t)==sizeof(_Atomic(char32_t)),\"atomic_char32_t size\");\n_Static_assert(_Alignof(atomic_char32_t)==_Alignof(_Atomic(char32_t)),\"atomic_char32_t alignment\");\n_Static_assert(sizeof(atomic_wchar_t)==sizeof(_Atomic(wchar_t)),\"atomic_wchar_t size\");\n_Static_assert(_Alignof(atomic_wchar_t)==_Alignof(_Atomic(wchar_t)),\"atomic_wchar_t alignment\");\n_Static_assert(sizeof(atomic_int_least8_t)==sizeof(_Atomic(int_least8_t)),\"atomic_int_least8_t size\");\n_Static_assert(_Alignof(atomic_int_least8_t)==_Alignof(_Atomic(int_least8_t)),\"atomic_int_least8_t alignment\");\n_Static_assert(sizeof(atomic_uint_least8_t)==sizeof(_Atomic(uint_least8_t)),\"atomic_uint_least8_t size\");\n_Static_assert(_Alignof(atomic_uint_least8_t)==_Alignof(_Atomic(uint_least8_t)),\"atomic_uint_least8_t alignment\");\n_Static_assert(sizeof(atomic_int_least16_t)==sizeof(_Atomic(int_least16_t)),\"atomic_int_least16_t size\");\n_Static_assert(_Alignof(atomic_int_least16_t)==_Alignof(_Atomic(int_least16_t)),\"atomic_int_least16_t alignment\");\n_Static_assert(sizeof(atomic_uint_least16_t)==sizeof(_Atomic(uint_least16_t)),\"atomic_uint_least16_t size\");\n_Static_assert(_Alignof(atomic_uint_least16_t)==_Alignof(_Atomic(uint_least16_t)),\"atomic_uint_least16_t alignment\");\n_Static_assert(sizeof(atomic_int_least32_t)==sizeof(_Atomic(int_least32_t)),\"atomic_int_least32_t size\");\n_Static_assert(_Alignof(atomic_int_least32_t)==_Alignof(_Atomic(int_least32_t)),\"atomic_int_least32_t alignment\");\n_Static_assert(sizeof(atomic_uint_least32_t)==sizeof(_Atomic(uint_least32_t)),\"atomic_uint_least32_t size\");\n_Static_assert(_Alignof(atomic_uint_least32_t)==_Alignof(_Atomic(uint_least32_t)),\"atomic_uint_least32_t alignment\");\n_Static_assert(sizeof(atomic_int_least64_t)==sizeof(_Atomic(int_least64_t)),\"atomic_int_least64_t size\");\n_Static_assert(_Alignof(atomic_int_least64_t)==_Alignof(_Atomic(int_least64_t)),\"atomic_int_least64_t alignment\");\n_Static_assert(sizeof(atomic_uint_least64_t)==sizeof(_Atomic(uint_least64_t)),\"atomic_uint_least64_t size\");\n_Static_assert(_Alignof(atomic_uint_least64_t)==_Alignof(_Atomic(uint_least64_t)),\"atomic_uint_least64_t alignment\");\n_Static_assert(sizeof(atomic_int_fast8_t)==sizeof(_Atomic(int_fast8_t)),\"atomic_int_fast8_t size\");\n_Static_assert(_Alignof(atomic_int_fast8_t)==_Alignof(_Atomic(int_fast8_t)),\"atomic_int_fast8_t alignment\");\n_Static_assert(sizeof(atomic_uint_fast8_t)==sizeof(_Atomic(uint_fast8_t)),\"atomic_uint_fast8_t size\");\n_Static_assert(_Alignof(atomic_uint_fast8_t)==_Alignof(_Atomic(uint_fast8_t)),\"atomic_uint_fast8_t alignment\");\n_Static_assert(sizeof(atomic_int_fast16_t)==sizeof(_Atomic(int_fast16_t)),\"atomic_int_fast16_t size\");\n_Static_assert(_Alignof(atomic_int_fast16_t)==_Alignof(_Atomic(int_fast16_t)),\"atomic_int_fast16_t alignment\");\n_Static_assert(sizeof(atomic_uint_fast16_t)==sizeof(_Atomic(uint_fast16_t)),\"atomic_uint_fast16_t size\");\n_Static_assert(_Alignof(atomic_uint_fast16_t)==_Alignof(_Atomic(uint_fast16_t)),\"atomic_uint_fast16_t alignment\");\n_Static_assert(sizeof(atomic_int_fast32_t)==sizeof(_Atomic(int_fast32_t)),\"atomic_int_fast32_t size\");\n_Static_assert(_Alignof(atomic_int_fast32_t)==_Alignof(_Atomic(int_fast32_t)),\"atomic_int_fast32_t alignment\");\n_Static_assert(sizeof(atomic_uint_fast32_t)==sizeof(_Atomic(uint_fast32_t)),\"atomic_uint_fast32_t size\");\n_Static_assert(_Alignof(atomic_uint_fast32_t)==_Alignof(_Atomic(uint_fast32_t)),\"atomic_uint_fast32_t alignment\");\n_Static_assert(sizeof(atomic_int_fast64_t)==sizeof(_Atomic(int_fast64_t)),\"atomic_int_fast64_t size\");\n_Static_assert(_Alignof(atomic_int_fast64_t)==_Alignof(_Atomic(int_fast64_t)),\"atomic_int_fast64_t alignment\");\n_Static_assert(sizeof(atomic_uint_fast64_t)==sizeof(_Atomic(uint_fast64_t)),\"atomic_uint_fast64_t size\");\n_Static_assert(_Alignof(atomic_uint_fast64_t)==_Alignof(_Atomic(uint_fast64_t)),\"atomic_uint_fast64_t alignment\");\n_Static_assert(sizeof(atomic_intptr_t)==sizeof(_Atomic(intptr_t)),\"atomic_intptr_t size\");\n_Static_assert(_Alignof(atomic_intptr_t)==_Alignof(_Atomic(intptr_t)),\"atomic_intptr_t alignment\");\n_Static_assert(sizeof(atomic_uintptr_t)==sizeof(_Atomic(uintptr_t)),\"atomic_uintptr_t size\");\n_Static_assert(_Alignof(atomic_uintptr_t)==_Alignof(_Atomic(uintptr_t)),\"atomic_uintptr_t alignment\");\n_Static_assert(sizeof(atomic_size_t)==sizeof(_Atomic(size_t)),\"atomic_size_t size\");\n_Static_assert(_Alignof(atomic_size_t)==_Alignof(_Atomic(size_t)),\"atomic_size_t alignment\");\n_Static_assert(sizeof(atomic_ptrdiff_t)==sizeof(_Atomic(ptrdiff_t)),\"atomic_ptrdiff_t size\");\n_Static_assert(_Alignof(atomic_ptrdiff_t)==_Alignof(_Atomic(ptrdiff_t)),\"atomic_ptrdiff_t alignment\");\n_Static_assert(sizeof(atomic_intmax_t)==sizeof(_Atomic(intmax_t)),\"atomic_intmax_t size\");\n_Static_assert(_Alignof(atomic_intmax_t)==_Alignof(_Atomic(intmax_t)),\"atomic_intmax_t alignment\");\n_Static_assert(sizeof(atomic_uintmax_t)==sizeof(_Atomic(uintmax_t)),\"atomic_uintmax_t size\");\n_Static_assert(_Alignof(atomic_uintmax_t)==_Alignof(_Atomic(uintmax_t)),\"atomic_uintmax_t alignment\");\nint main(void){return 42;}"
+    },
+    {
+      "id": "atomic-header-lock-free-inventory",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.17.5",
+      "source": "#include <stdatomic.h>\nint main(void){atomic_bool b=0;atomic_char c=0;atomic_short s=0;atomic_int i=0;atomic_long l=0;atomic_llong ll=0;_Atomic(void*) p=0;return ATOMIC_BOOL_LOCK_FREE==2&&ATOMIC_CHAR_LOCK_FREE==2&&ATOMIC_CHAR16_T_LOCK_FREE==2&&ATOMIC_CHAR32_T_LOCK_FREE==2&&ATOMIC_WCHAR_T_LOCK_FREE==2&&ATOMIC_SHORT_LOCK_FREE==2&&ATOMIC_INT_LOCK_FREE==2&&ATOMIC_LONG_LOCK_FREE==2&&ATOMIC_LLONG_LOCK_FREE==2&&ATOMIC_POINTER_LOCK_FREE==2&&atomic_is_lock_free(&b)&&atomic_is_lock_free(&c)&&atomic_is_lock_free(&s)&&atomic_is_lock_free(&i)&&atomic_is_lock_free(&l)&&atomic_is_lock_free(&ll)&&atomic_is_lock_free(&p)?42:1;}"
+    },
+    {
+      "id": "atomic-header-wrapper-next",
+      "feature": "atomics",
+      "work_item": "atomics",
+      "clause": "7.17;compiler include_next extension",
+      "source": "#include <stdatomic.h>\n#ifndef PROJECT_ATOMIC_WRAPPER\n#error user wrapper was skipped\n#endif\natomic_int x=ATOMIC_VAR_INIT(42);int main(void){return atomic_load(&x);}",
+      "files": {
+        "overlay/stdatomic.h": "#define PROJECT_ATOMIC_WRAPPER 1\n#if !__has_include_next(<stdatomic.h>)\n#error compiler provider missing\n#endif\n#include_next <stdatomic.h>"
+      },
+      "include_directories": [
+        "overlay"
+      ],
+      "reference_flags": [
+        "-Wno-gnu-include-next"
+      ]
+    },
+    {
+      "id": "system-complex-macro-context",
+      "feature": "standard-headers",
+      "work_item": "all-standard-headers",
+      "clause": "6.10.4;7.3",
+      "source": "#line 120 \"archive.c\"\n#include <complex.h>\nint main(void){return __LINE__==121?42:1;}"
+    },
+    {
+      "id": "complex-system-macro-contract",
+      "feature": "complex",
+      "work_item": "complex",
+      "clause": "7.3;7.1.4",
+      "source": "#include <complex.h>\n#if !defined(complex)||!defined(CMPLX)||!defined(CMPLXF)||!defined(CMPLXL)||!defined(I)||!defined(_Complex_I)\n#error ISO complex macros missing\n#endif\nint main(void){double complex z=CMPLX(20,22);float complex f=CMPLXF(20,22);long double complex l=CMPLXL(20,22);return creal(z)==20&&cimag(z)==22&&crealf(f)==20&&cimagf(f)==22&&creall(l)==20&&cimagl(l)==22?42:1;}",
+      "reference_source": "#include <complex.h>\nint main(void){_Dcomplex z=_Cbuild(20,22);_Fcomplex f=_FCbuild(20,22);_Lcomplex l=_LCbuild(20,22);return creal(z)==20&&cimag(z)==22&&crealf(f)==20&&cimagf(f)==22&&creall(l)==20&&cimagl(l)==22?42:1;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed."
+    },
+    {
+      "id": "complex-system-macro-type",
+      "feature": "complex",
+      "work_item": "complex",
+      "clause": "7.3;7.1.4",
+      "source": "#include <complex.h>\nint main(void){return _Generic(CMPLX(1,2),double complex:1,default:0)&&_Generic(CMPLXF(1,2),float complex:1,default:0)&&_Generic(CMPLXL(1,2),long double complex:1,default:0)&&_Generic(I,float complex:1,default:0)?42:1;}",
+      "reference_source": "#include <complex.h>\nint main(void){return _Generic(_Cbuild(1,2),_Dcomplex:1,default:0)&&_Generic(_FCbuild(1,2),_Fcomplex:1,default:0)&&_Generic(_LCbuild(1,2),_Lcomplex:1,default:0)&&_Generic(I,_Fcomplex:1,default:0)?42:1;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed."
+    },
+    {
+      "id": "complex-system-signed-zero",
+      "feature": "complex",
+      "work_item": "complex",
+      "clause": "7.3;7.1.4",
+      "source": "#include <complex.h>\n#include <math.h>\ndouble complex z=CMPLX(42,-0.0);int main(void){return creal(z)==42&&signbit(cimag(z))?42:1;}",
+      "reference_source": "#include <complex.h>\n#include <math.h>\n_Dcomplex z={{42,-0.0}};int main(void){return creal(z)==42&&signbit(cimag(z))?42:1;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed."
+    },
+    {
+      "id": "complex-system-macro-single-evaluation",
+      "feature": "complex",
+      "work_item": "complex",
+      "clause": "7.3;7.1.4",
+      "source": "#include <complex.h>\nint a,b;double x(void){++a;return 20;}double y(void){++b;return 22;}int main(void){double complex z=CMPLX(x(),y());return a==1&&b==1&&creal(z)+cimag(z)==42?42:1;}",
+      "reference_source": "#include <complex.h>\nint a,b;double x(void){++a;return 20;}double y(void){++b;return 22;}int main(void){_Dcomplex z=_Cbuild(x(),y());return a==1&&b==1&&creal(z)+cimag(z)==42?42:1;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed."
+    },
+    {
+      "id": "complex-system-function-pointer",
+      "feature": "complex",
+      "work_item": "complex",
+      "clause": "7.3;7.1.4",
+      "source": "#include <complex.h>\nint main(void){double complex(*p)(double complex)=&csqrt;double complex z=p(CMPLX(4,0));return creal(z)==2&&cimag(z)==0?42:1;}",
+      "reference_source": "#include <complex.h>\nint main(void){_Dcomplex(*p)(_Dcomplex)=&csqrt;_Dcomplex z=p(_Cbuild(4,0));return creal(z)==2&&cimag(z)==0?42:1;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed."
+    },
+    {
+      "id": "complex-system-iso-redeclaration",
+      "feature": "complex",
+      "work_item": "complex",
+      "clause": "7.3;7.1.4",
+      "source": "#include <complex.h>\ndouble _Complex csqrt(double _Complex);double cabs(double _Complex);int main(void){double _Complex z=csqrt(CMPLX(4,0));return cabs(z)==2?42:1;}",
+      "reference_source": "#include <complex.h>\n_Dcomplex csqrt(_Dcomplex);double cabs(_Dcomplex);int main(void){_Dcomplex z=csqrt(_Cbuild(4,0));return cabs(z)==2?42:1;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed."
+    },
+    {
+      "id": "complex-system-interface-inventory-double",
+      "feature": "complex",
+      "work_item": "complex",
+      "clause": "7.3;7.1.4",
+      "source": "#include <complex.h>\nint main(void){\ndouble (*p_cabs)(double _Complex)=&cabs;\ndouble (*p_carg)(double _Complex)=&carg;\ndouble (*p_creal)(double _Complex)=&creal;\ndouble (*p_cimag)(double _Complex)=&cimag;\ndouble _Complex (*p_cacos)(double _Complex)=&cacos;\ndouble _Complex (*p_casin)(double _Complex)=&casin;\ndouble _Complex (*p_catan)(double _Complex)=&catan;\ndouble _Complex (*p_ccos)(double _Complex)=&ccos;\ndouble _Complex (*p_csin)(double _Complex)=&csin;\ndouble _Complex (*p_ctan)(double _Complex)=&ctan;\ndouble _Complex (*p_cacosh)(double _Complex)=&cacosh;\ndouble _Complex (*p_casinh)(double _Complex)=&casinh;\ndouble _Complex (*p_catanh)(double _Complex)=&catanh;\ndouble _Complex (*p_ccosh)(double _Complex)=&ccosh;\ndouble _Complex (*p_csinh)(double _Complex)=&csinh;\ndouble _Complex (*p_ctanh)(double _Complex)=&ctanh;\ndouble _Complex (*p_cexp)(double _Complex)=&cexp;\ndouble _Complex (*p_clog)(double _Complex)=&clog;\ndouble _Complex (*p_cpow)(double _Complex, double _Complex)=&cpow;\ndouble _Complex (*p_csqrt)(double _Complex)=&csqrt;\ndouble _Complex (*p_conj)(double _Complex)=&conj;\ndouble _Complex (*p_cproj)(double _Complex)=&cproj;\nreturn p_cabs!=0&&p_carg!=0&&p_creal!=0&&p_cimag!=0&&p_cacos!=0&&p_casin!=0&&p_catan!=0&&p_ccos!=0&&p_csin!=0&&p_ctan!=0&&p_cacosh!=0&&p_casinh!=0&&p_catanh!=0&&p_ccosh!=0&&p_csinh!=0&&p_ctanh!=0&&p_cexp!=0&&p_clog!=0&&p_cpow!=0&&p_csqrt!=0&&p_conj!=0&&p_cproj!=0?42:1;}",
+      "reference_source": "#include <complex.h>\nint main(void){\ndouble (*p_cabs)(_Dcomplex)=&cabs;\ndouble (*p_carg)(_Dcomplex)=&carg;\ndouble (*p_creal)(_Dcomplex)=&creal;\ndouble (*p_cimag)(_Dcomplex)=&cimag;\n_Dcomplex (*p_cacos)(_Dcomplex)=&cacos;\n_Dcomplex (*p_casin)(_Dcomplex)=&casin;\n_Dcomplex (*p_catan)(_Dcomplex)=&catan;\n_Dcomplex (*p_ccos)(_Dcomplex)=&ccos;\n_Dcomplex (*p_csin)(_Dcomplex)=&csin;\n_Dcomplex (*p_ctan)(_Dcomplex)=&ctan;\n_Dcomplex (*p_cacosh)(_Dcomplex)=&cacosh;\n_Dcomplex (*p_casinh)(_Dcomplex)=&casinh;\n_Dcomplex (*p_catanh)(_Dcomplex)=&catanh;\n_Dcomplex (*p_ccosh)(_Dcomplex)=&ccosh;\n_Dcomplex (*p_csinh)(_Dcomplex)=&csinh;\n_Dcomplex (*p_ctanh)(_Dcomplex)=&ctanh;\n_Dcomplex (*p_cexp)(_Dcomplex)=&cexp;\n_Dcomplex (*p_clog)(_Dcomplex)=&clog;\n_Dcomplex (*p_cpow)(_Dcomplex, _Dcomplex)=&cpow;\n_Dcomplex (*p_csqrt)(_Dcomplex)=&csqrt;\n_Dcomplex (*p_conj)(_Dcomplex)=&conj;\n_Dcomplex (*p_cproj)(_Dcomplex)=&cproj;\nreturn p_cabs!=0&&p_carg!=0&&p_creal!=0&&p_cimag!=0&&p_cacos!=0&&p_casin!=0&&p_catan!=0&&p_ccos!=0&&p_csin!=0&&p_ctan!=0&&p_cacosh!=0&&p_casinh!=0&&p_catanh!=0&&p_ccosh!=0&&p_csinh!=0&&p_ctanh!=0&&p_cexp!=0&&p_clog!=0&&p_cpow!=0&&p_csqrt!=0&&p_conj!=0&&p_cproj!=0?42:1;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed."
+    },
+    {
+      "id": "complex-system-interface-inventory-f",
+      "feature": "complex",
+      "work_item": "complex",
+      "clause": "7.3;7.1.4",
+      "source": "#include <complex.h>\nint main(void){\nfloat (*p_cabsf)(float _Complex)=&cabsf;\nfloat (*p_cargf)(float _Complex)=&cargf;\nfloat (*p_crealf)(float _Complex)=&crealf;\nfloat (*p_cimagf)(float _Complex)=&cimagf;\nfloat _Complex (*p_cacosf)(float _Complex)=&cacosf;\nfloat _Complex (*p_casinf)(float _Complex)=&casinf;\nfloat _Complex (*p_catanf)(float _Complex)=&catanf;\nfloat _Complex (*p_ccosf)(float _Complex)=&ccosf;\nfloat _Complex (*p_csinf)(float _Complex)=&csinf;\nfloat _Complex (*p_ctanf)(float _Complex)=&ctanf;\nfloat _Complex (*p_cacoshf)(float _Complex)=&cacoshf;\nfloat _Complex (*p_casinhf)(float _Complex)=&casinhf;\nfloat _Complex (*p_catanhf)(float _Complex)=&catanhf;\nfloat _Complex (*p_ccoshf)(float _Complex)=&ccoshf;\nfloat _Complex (*p_csinhf)(float _Complex)=&csinhf;\nfloat _Complex (*p_ctanhf)(float _Complex)=&ctanhf;\nfloat _Complex (*p_cexpf)(float _Complex)=&cexpf;\nfloat _Complex (*p_clogf)(float _Complex)=&clogf;\nfloat _Complex (*p_cpowf)(float _Complex, float _Complex)=&cpowf;\nfloat _Complex (*p_csqrtf)(float _Complex)=&csqrtf;\nfloat _Complex (*p_conjf)(float _Complex)=&conjf;\nfloat _Complex (*p_cprojf)(float _Complex)=&cprojf;\nreturn p_cabsf!=0&&p_cargf!=0&&p_crealf!=0&&p_cimagf!=0&&p_cacosf!=0&&p_casinf!=0&&p_catanf!=0&&p_ccosf!=0&&p_csinf!=0&&p_ctanf!=0&&p_cacoshf!=0&&p_casinhf!=0&&p_catanhf!=0&&p_ccoshf!=0&&p_csinhf!=0&&p_ctanhf!=0&&p_cexpf!=0&&p_clogf!=0&&p_cpowf!=0&&p_csqrtf!=0&&p_conjf!=0&&p_cprojf!=0?42:1;}",
+      "reference_source": "#include <complex.h>\nint main(void){\nfloat (*p_cabsf)(_Fcomplex)=&cabsf;\nfloat (*p_cargf)(_Fcomplex)=&cargf;\nfloat (*p_crealf)(_Fcomplex)=&crealf;\nfloat (*p_cimagf)(_Fcomplex)=&cimagf;\n_Fcomplex (*p_cacosf)(_Fcomplex)=&cacosf;\n_Fcomplex (*p_casinf)(_Fcomplex)=&casinf;\n_Fcomplex (*p_catanf)(_Fcomplex)=&catanf;\n_Fcomplex (*p_ccosf)(_Fcomplex)=&ccosf;\n_Fcomplex (*p_csinf)(_Fcomplex)=&csinf;\n_Fcomplex (*p_ctanf)(_Fcomplex)=&ctanf;\n_Fcomplex (*p_cacoshf)(_Fcomplex)=&cacoshf;\n_Fcomplex (*p_casinhf)(_Fcomplex)=&casinhf;\n_Fcomplex (*p_catanhf)(_Fcomplex)=&catanhf;\n_Fcomplex (*p_ccoshf)(_Fcomplex)=&ccoshf;\n_Fcomplex (*p_csinhf)(_Fcomplex)=&csinhf;\n_Fcomplex (*p_ctanhf)(_Fcomplex)=&ctanhf;\n_Fcomplex (*p_cexpf)(_Fcomplex)=&cexpf;\n_Fcomplex (*p_clogf)(_Fcomplex)=&clogf;\n_Fcomplex (*p_cpowf)(_Fcomplex, _Fcomplex)=&cpowf;\n_Fcomplex (*p_csqrtf)(_Fcomplex)=&csqrtf;\n_Fcomplex (*p_conjf)(_Fcomplex)=&conjf;\n_Fcomplex (*p_cprojf)(_Fcomplex)=&cprojf;\nreturn p_cabsf!=0&&p_cargf!=0&&p_crealf!=0&&p_cimagf!=0&&p_cacosf!=0&&p_casinf!=0&&p_catanf!=0&&p_ccosf!=0&&p_csinf!=0&&p_ctanf!=0&&p_cacoshf!=0&&p_casinhf!=0&&p_catanhf!=0&&p_ccoshf!=0&&p_csinhf!=0&&p_ctanhf!=0&&p_cexpf!=0&&p_clogf!=0&&p_cpowf!=0&&p_csqrtf!=0&&p_conjf!=0&&p_cprojf!=0?42:1;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed."
+    },
+    {
+      "id": "complex-system-interface-inventory-l",
+      "feature": "complex",
+      "work_item": "complex",
+      "clause": "7.3;7.1.4",
+      "source": "#include <complex.h>\nint main(void){\nlong double (*p_cabsl)(long double _Complex)=&cabsl;\nlong double (*p_cargl)(long double _Complex)=&cargl;\nlong double (*p_creall)(long double _Complex)=&creall;\nlong double (*p_cimagl)(long double _Complex)=&cimagl;\nlong double _Complex (*p_cacosl)(long double _Complex)=&cacosl;\nlong double _Complex (*p_casinl)(long double _Complex)=&casinl;\nlong double _Complex (*p_catanl)(long double _Complex)=&catanl;\nlong double _Complex (*p_ccosl)(long double _Complex)=&ccosl;\nlong double _Complex (*p_csinl)(long double _Complex)=&csinl;\nlong double _Complex (*p_ctanl)(long double _Complex)=&ctanl;\nlong double _Complex (*p_cacoshl)(long double _Complex)=&cacoshl;\nlong double _Complex (*p_casinhl)(long double _Complex)=&casinhl;\nlong double _Complex (*p_catanhl)(long double _Complex)=&catanhl;\nlong double _Complex (*p_ccoshl)(long double _Complex)=&ccoshl;\nlong double _Complex (*p_csinhl)(long double _Complex)=&csinhl;\nlong double _Complex (*p_ctanhl)(long double _Complex)=&ctanhl;\nlong double _Complex (*p_cexpl)(long double _Complex)=&cexpl;\nlong double _Complex (*p_clogl)(long double _Complex)=&clogl;\nlong double _Complex (*p_cpowl)(long double _Complex, long double _Complex)=&cpowl;\nlong double _Complex (*p_csqrtl)(long double _Complex)=&csqrtl;\nlong double _Complex (*p_conjl)(long double _Complex)=&conjl;\nlong double _Complex (*p_cprojl)(long double _Complex)=&cprojl;\nreturn p_cabsl!=0&&p_cargl!=0&&p_creall!=0&&p_cimagl!=0&&p_cacosl!=0&&p_casinl!=0&&p_catanl!=0&&p_ccosl!=0&&p_csinl!=0&&p_ctanl!=0&&p_cacoshl!=0&&p_casinhl!=0&&p_catanhl!=0&&p_ccoshl!=0&&p_csinhl!=0&&p_ctanhl!=0&&p_cexpl!=0&&p_clogl!=0&&p_cpowl!=0&&p_csqrtl!=0&&p_conjl!=0&&p_cprojl!=0?42:1;}",
+      "reference_source": "#include <complex.h>\nint main(void){\nlong double (*p_cabsl)(_Lcomplex)=&cabsl;\nlong double (*p_cargl)(_Lcomplex)=&cargl;\nlong double (*p_creall)(_Lcomplex)=&creall;\nlong double (*p_cimagl)(_Lcomplex)=&cimagl;\n_Lcomplex (*p_cacosl)(_Lcomplex)=&cacosl;\n_Lcomplex (*p_casinl)(_Lcomplex)=&casinl;\n_Lcomplex (*p_catanl)(_Lcomplex)=&catanl;\n_Lcomplex (*p_ccosl)(_Lcomplex)=&ccosl;\n_Lcomplex (*p_csinl)(_Lcomplex)=&csinl;\n_Lcomplex (*p_ctanl)(_Lcomplex)=&ctanl;\n_Lcomplex (*p_cacoshl)(_Lcomplex)=&cacoshl;\n_Lcomplex (*p_casinhl)(_Lcomplex)=&casinhl;\n_Lcomplex (*p_catanhl)(_Lcomplex)=&catanhl;\n_Lcomplex (*p_ccoshl)(_Lcomplex)=&ccoshl;\n_Lcomplex (*p_csinhl)(_Lcomplex)=&csinhl;\n_Lcomplex (*p_ctanhl)(_Lcomplex)=&ctanhl;\n_Lcomplex (*p_cexpl)(_Lcomplex)=&cexpl;\n_Lcomplex (*p_clogl)(_Lcomplex)=&clogl;\n_Lcomplex (*p_cpowl)(_Lcomplex, _Lcomplex)=&cpowl;\n_Lcomplex (*p_csqrtl)(_Lcomplex)=&csqrtl;\n_Lcomplex (*p_conjl)(_Lcomplex)=&conjl;\n_Lcomplex (*p_cprojl)(_Lcomplex)=&cprojl;\nreturn p_cabsl!=0&&p_cargl!=0&&p_creall!=0&&p_cimagl!=0&&p_cacosl!=0&&p_casinl!=0&&p_catanl!=0&&p_ccosl!=0&&p_csinl!=0&&p_ctanl!=0&&p_cacoshl!=0&&p_casinhl!=0&&p_catanhl!=0&&p_ccoshl!=0&&p_csinhl!=0&&p_ctanhl!=0&&p_cexpl!=0&&p_clogl!=0&&p_cpowl!=0&&p_csqrtl!=0&&p_conjl!=0&&p_cprojl!=0?42:1;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed."
+    },
+    {
+      "id": "complex-system-bad-redeclaration",
+      "feature": "complex",
+      "work_item": "complex",
+      "clause": "6.2.7;7.3",
+      "source": "#include <complex.h>\ndouble csqrt(double);int main(void){return 0;}",
+      "reference_source": "double _Complex csqrt(double _Complex);\ndouble csqrt(double);int main(void){return 0;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed.",
+      "reject": true
+    },
+    {
+      "id": "complex-system-user-record-rejected",
+      "feature": "complex",
+      "work_item": "complex",
+      "clause": "6.5.2.2;7.3",
+      "source": "#include <complex.h>\nstruct Pair{double a,b;};int main(void){struct Pair p={4,0};csqrt(p);return 0;}",
+      "reference_source": "double _Complex csqrt(double _Complex);\nstruct Pair{double a,b;};int main(void){struct Pair p={4,0};csqrt(p);return 0;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed.",
+      "reject": true
+    },
+    {
+      "id": "tgmath-real-result-types",
+      "feature": "standard-headers",
+      "work_item": "all-standard-headers",
+      "clause": "7.25;6.5.1.1",
+      "source": "#include <tgmath.h>\nint main(void){return _Generic(sqrt(4.0f),float:1,default:0)&&_Generic(sqrt(4),double:1,default:0)&&_Generic(sqrt(4.0L),long double:1,default:0)&&_Generic(pow(2.0f,3.0f),float:1,default:0)&&_Generic(pow(2.0f,3),double:1,default:0)?42:1;}",
+      "reference_header_policy": "target-crt"
+    },
+    {
+      "id": "tgmath-real-runtime",
+      "feature": "standard-headers",
+      "work_item": "all-standard-headers",
+      "clause": "7.25;6.5.1.1",
+      "source": "#include <tgmath.h>\nint main(void){return sqrt(4.0f)==2&&floor(2.75L)==2&&pow(2.0f,3)==8&&fabs(-20)==20&&fmax(20.0f,22)==22?42:1;}",
+      "reference_header_policy": "target-crt"
+    },
+    {
+      "id": "tgmath-real-single-evaluation",
+      "feature": "standard-headers",
+      "work_item": "all-standard-headers",
+      "clause": "7.25;6.5.1.1",
+      "source": "#include <tgmath.h>\nint a,b;double x(void){++a;return 2;}double y(void){++b;return 3;}int main(void){double n=pow(x(),y());return a==1&&b==1&&n==8?42:1;}",
+      "reference_header_policy": "target-crt"
+    },
+    {
+      "id": "tgmath-overlay-include-next",
+      "feature": "standard-headers",
+      "work_item": "all-standard-headers",
+      "clause": "7.25;6.5.1.1",
+      "source": "#include <tgmath.h>\n#ifndef PROJECT_TGMATH_WRAPPER\n#error wrapper skipped\n#endif\nint main(void){return sqrt(1764.0)==42?42:1;}",
+      "reference_header_policy": "target-crt",
+      "files": {
+        "overlay/tgmath.h": "#define PROJECT_TGMATH_WRAPPER 1\n#if !__has_include_next(<tgmath.h>)\n#error target tgmath not found\n#endif\n#include_next <tgmath.h>"
+      },
+      "include_directories": [
+        "overlay"
+      ],
+      "reference_flags": [
+        "-Wno-gnu-include-next"
+      ]
+    },
+    {
+      "id": "tgmath-complex-sqrt",
+      "feature": "standard-headers",
+      "work_item": "all-standard-headers",
+      "clause": "7.25;6.5.1.1",
+      "source": "#include <tgmath.h>\nint main(void){double complex z=sqrt(CMPLX(4,0));return _Generic(sqrt(CMPLX(4,0)),double complex:1,default:0)&&creal(z)==2&&cimag(z)==0?42:1;}",
+      "reference_header_policy": "target-crt",
+      "reference_source": "#include <tgmath.h>\nint main(void){_Dcomplex z=sqrt(_Cbuild(4,0));return _Generic(sqrt(_Cbuild(4,0)),_Dcomplex:1,default:0)&&creal(z)==2&&cimag(z)==0?42:1;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed."
+    },
+    {
+      "id": "tgmath-complex-mixed-power",
+      "feature": "standard-headers",
+      "work_item": "all-standard-headers",
+      "clause": "7.25;6.5.1.1",
+      "source": "#include <tgmath.h>\nint main(void){float complex x=CMPLXF(2,0);double complex z=pow(x,3);return _Generic(pow(x,3),double complex:1,default:0)&&creal(z)>7.999&&creal(z)<8.001&&cimag(z)==0?42:1;}",
+      "reference_header_policy": "target-crt",
+      "reference_source": "#include <tgmath.h>\nint main(void){_Fcomplex x=_FCbuild(2,0);_Dcomplex z=pow(x,3);return _Generic(pow(x,3),_Dcomplex:1,default:0)&&creal(z)>7.999&&creal(z)<8.001&&cimag(z)==0?42:1;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed."
+    },
+    {
+      "id": "tgmath-complex-single-evaluation",
+      "feature": "standard-headers",
+      "work_item": "all-standard-headers",
+      "clause": "7.25;6.5.1.1",
+      "source": "#include <tgmath.h>\nint calls;double complex x(void){++calls;return CMPLX(4,0);}int main(void){double complex z=sqrt(x());return calls==1&&creal(z)==2?42:1;}",
+      "reference_header_policy": "target-crt",
+      "reference_source": "#include <tgmath.h>\nint calls;_Dcomplex x(void){++calls;return _Cbuild(4,0);}int main(void){_Dcomplex z=sqrt(x());return calls==1&&creal(z)==2?42:1;}",
+      "reference_note": "Independent Clang uses the unmodified UCRT's reserved carrier types and original functions to compute the same specified results. Naru input uses ISO complex source types/macros; alternate source is explicitly recorded and hashed."
+    },
+    {
+      "id": "tgmath-ordinary-record-rejected",
+      "feature": "standard-headers",
+      "work_item": "all-standard-headers",
+      "clause": "7.25;6.5.1.1",
+      "source": "#include <tgmath.h>\nstruct Pair{double x,y;};int main(void){struct Pair p={4,0};sqrt(p);return 0;}",
+      "reference_header_policy": "target-crt",
+      "reject": true
+    },
+    {
+      "id": "tgmath-header-multiple-units",
+      "feature": "standard-headers",
+      "work_item": "all-standard-headers",
+      "clause": "7.25;6.9",
+      "reference_header_policy": "target-crt",
+      "source": "#include <tgmath.h>\ndouble other(void);int main(void){return pow(2.0,3.0)+other()==42?42:1;}",
+      "additional_sources": {
+        "other.c": "#include <tgmath.h>\ndouble other(void){return pow(2.0,5.0)+2;}"
+      }
+    },
+    {
+      "id": "tgmath-header-helper-address",
+      "feature": "standard-headers",
+      "work_item": "all-standard-headers",
+      "clause": "7.25;target reserved header ABI",
+      "reference_header_policy": "target-crt",
+      "source": "#include <tgmath.h>\nint main(void){_Dcomplex(*p)(_Fcomplex,double)=&__cpow_fc_d;_Dcomplex z=p(_FCbuild(2,0),3);return z._Val[0]>7.999&&z._Val[0]<8.001&&z._Val[1]==0?42:1;}",
+      "reference_note": "The actual UCRT helper body and carrier signature are retained; Naru emits its reserved header definition as COMDAT so a function pointer also works at O0."
+    }
+  ]
+}

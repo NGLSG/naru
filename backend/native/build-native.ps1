@@ -51,5 +51,19 @@ $response = Join-Path $buildDir 'native.rsp'
 [IO.File]::WriteAllLines($response, ($argsList | ForEach-Object { $_.Replace('\', '/') }), [Text.UTF8Encoding]::new($false))
 & $Compiler ('@' + $response)
 if ($LASTEXITCODE -ne 0) { throw "Native backend compilation failed with exit code $LASTEXITCODE" }
+# Stage the actual compiler resource headers beside the executable. This is
+# part of the deferred native build, not a hand-written standard-header shim.
+$naruCompilerRoot = [IO.Path]::GetDirectoryName([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Compiler)))
+$naruResourceRoot = Join-Path $naruCompilerRoot 'lib\clang'
+$naruResourceVersion = Get-ChildItem -LiteralPath $naruResourceRoot -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^\d+(\.\d+)*$' -and (Test-Path -LiteralPath (Join-Path $_.FullName 'include\stdatomic.h')) } |
+    Sort-Object { [version]($_.Name + $(if ($_.Name -notmatch '\.') { '.0' } else { '' })) } -Descending | Select-Object -First 1
+if ($naruResourceVersion) {
+    $naruResourceOutput = Join-Path ([IO.Path]::GetDirectoryName($Output)) 'runtime\clang\include'
+    New-Item -ItemType Directory -Path $naruResourceOutput -Force | Out-Null
+    Copy-Item -Path (Join-Path $naruResourceVersion.FullName 'include\*') -Destination $naruResourceOutput -Recurse -Force
+    $naruResourceLicense = Join-Path $naruCompilerRoot 'share\clang\LICENSE.TXT'
+    if (Test-Path -LiteralPath $naruResourceLicense) { Copy-Item -LiteralPath $naruResourceLicense -Destination (Join-Path (Split-Path $naruResourceOutput) 'LICENSE.TXT') -Force }
+} else { Write-Warning 'Compiler resource headers were not discovered; configure resource_include_dir in the target profile.' }
 Write-Host "Native MLIR backend: $Output"
 

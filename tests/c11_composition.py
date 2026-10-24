@@ -5,6 +5,7 @@ runs with an empty PATH, no child processes and bounded time/private commit.
 """
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,8 +13,16 @@ import shutil
 import subprocess
 import tempfile
 from native_process import execute
+from frozen_snapshot import validate_frozen
+from c11_conformance import fingerprints
 
 ROOT = Path(__file__).resolve().parents[1]
+
+def inputs(compiler: Path) -> dict[str, str]:
+    result = fingerprints(compiler)
+    source = Path(__file__).resolve()
+    result[source.relative_to(ROOT).as_posix()] = hashlib.sha256(source.read_bytes()).hexdigest()
+    return result
 
 VALID = {
     'builtin specifier words may be reordered': 'int main(void){long unsigned int n=40;int short unsigned step=1;signed long long int extra=1;double long value=0;return n+step+extra+(int)value;}',
@@ -92,15 +101,15 @@ INVALID = {
     'compound shift rejects floating operands': ('int main(void){int n=42;n<<=1.0;return n;}', 'shift requires integer operands'),
     'warning pragma must terminate': ('int main(void){return __pragma(warning(suppress:6334) 42;}', 'unterminated MSVC warning pragma'),
 
-    'tag redefinition': ('struct S{int n;};struct S{int n;};int main(void){return 42;}', 'duplicate or incompatible C tag'),
+    'tag redefinition': ('struct S{int n;};struct S{int n;};int main(void){return 42;}', 'duplicate C tag definition'),
     'unused anonymous typedef still validates its layout': ('typedef union {int n;int values[];} Invalid;int main(void){return 42;}', 'flexible array must be the final'),
-    'different kinds share the tag namespace': ('struct S{int n;};union S{int n;};int main(void){return 42;}', 'duplicate or incompatible C tag'),
+    'different kinds share the tag namespace': ('struct S{int n;};union S{int n;};int main(void){return 42;}', 'C tag kind mismatch'),
     'promoted anonymous member names cannot collide': ('struct S{int n;union{int n;float f;};};int main(void){return 42;}', 'duplicate C aggregate member'),
     'flexible array must be last': ('struct S{int n;int values[];int last;};int main(void){return 42;}', 'flexible array must be the final'),
     'flexible array cannot be a union member': ('union U{int n;int values[];};int main(void){return 42;}', 'flexible array must be the final'),
     'flexible array member has no sizeof': ('struct S{int n;int values[];};int main(void){struct S s;return sizeof(s.values);}', 'sizeof requires a complete C array'),
     'enum constants cannot be assigned': ('enum E{Answer=42};int main(void){Answer=1;return 42;}', 'enumeration constant'),
-    'enum constants share the ordinary identifier namespace': ('enum E{Answer=42};int Answer;int main(void){return 42;}', 'conflicts with another identifier'),
+    'enum constants share the ordinary identifier namespace': ('enum E{Answer=42};int Answer;int main(void){return 42;}', 'C ordinary identifier conflicts with enumeration constant'),
     'duplicate enumerators': ('enum E{Answer=42,Answer=1};int main(void){return 42;}', 'duplicate C enumeration constant'),
     'C11 enumerators must fit int': ('enum E{Answer=2147483648};int main(void){return 42;}', 'representable as int'),
     'undefined goto target': ('int main(void){goto missing;return 42;}', 'undefined C label'),
@@ -122,6 +131,8 @@ def main():
     p.add_argument('--frozen', action='store_true')
     p.add_argument('--report', type=Path, default=ROOT/'target/c11-composition.json')
     a = p.parse_args(); compiler = a.compiler.resolve()
+    frozen = validate_frozen(compiler,core=ROOT/'target/naru.exe',required_rules=[ROOT/'dialects/c11.stx']) if a.frozen else None
+    before = inputs(compiler)
     reference = a.reference or shutil.which('clang.exe')
     if not reference: raise SystemExit('A reference Clang is required for this test suite.')
     results = []
@@ -162,8 +173,11 @@ def main():
                 results.append(item)
                 print(('PASS ' if item['passed'] else 'FAIL ')+name+' O'+level+('' if item['passed'] else ': '+item['error']),flush=True)
     passed=sum(r['passed'] for r in results)
-    a.report.write_text(json.dumps({'passed':passed,'total':len(results),'reference':str(reference),'results':results},indent=2)+'\n')
+    unchanged = before == inputs(compiler) and (not a.frozen or frozen == validate_frozen(compiler,core=ROOT/'target/naru.exe',required_rules=[ROOT/'dialects/c11.stx']))
+    a.report.parent.mkdir(parents=True, exist_ok=True)
+    a.report.write_text(json.dumps({'passed':passed,'total':len(results),'reference':str(reference),'frozen_provenance':frozen,
+        'inputs_unchanged':unchanged,'frozen_inputs_unchanged':unchanged,'sha256':before,'results':results},indent=2)+'\n')
     print(f'{passed}/{len(results)} C composition checks passed')
-    return int(passed!=len(results))
+    return int(not unchanged or passed!=len(results))
 
 if __name__=='__main__':raise SystemExit(main())

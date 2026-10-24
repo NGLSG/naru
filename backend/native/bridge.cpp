@@ -20,8 +20,10 @@
 #include "mlir/Target/LLVMIR/Dialect/All.h"
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
+#include "mlir/Conversion/ComplexToLLVM/ComplexToLLVM.h"
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM/ControlFlowToLLVM.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
@@ -30,10 +32,16 @@
 #include "mlir/Conversion/VectorToLLVM/ConvertVectorToLLVM.h"
 #include "mlir/Conversion/UBToLLVM/UBToLLVM.h"
 #include "mlir/Conversion/ConvertToLLVM/ToLLVMPass.h"
+#include "mlir/Conversion/ConvertToLLVM/ToLLVMInterface.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/IR/LegacyPassManager.h"
+#include "llvm/Transforms/Scalar/SROA.h"
+#include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Attributes.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Verifier.h"
@@ -54,6 +62,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <set>
@@ -66,6 +75,65 @@ LLD_HAS_DRIVER(coff)
 
 namespace fs = std::filesystem;
 namespace {
+// A region envelope is deliberately conservative about effects. Some upstream
+// operations (notably constrained FP in the bundled MLIR) advertise Pure even
+// when their exception mode is strict. Keep a single regionless operation and
+// its yielded results opaque to parent DCE/CSE, then translate it in place.
+// This facility has no source-language policy and introduces no runtime call.
+class OrderedYieldOp : public mlir::Op<OrderedYieldOp, mlir::OpTrait::VariadicOperands,
+    mlir::OpTrait::ZeroResults, mlir::OpTrait::ZeroRegions,
+    mlir::OpTrait::ZeroSuccessors, mlir::OpTrait::IsTerminator> {
+public:
+  using Op::Op;
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(OrderedYieldOp)
+  static llvm::StringRef getOperationName() { return "naru_backend.yield"; }
+  static llvm::ArrayRef<llvm::StringRef> getAttributeNames() { return {}; }
+  mlir::LogicalResult verify() {
+    if (!getOperation()->getParentOp() ||
+        getOperation()->getParentOp()->getName().getStringRef() != "naru_backend.ordered")
+      return emitOpError("requires an ordered parent");
+    return mlir::success();
+  }
+};
+class OrderedOp : public mlir::Op<OrderedOp, mlir::OpTrait::ZeroOperands,
+    mlir::OpTrait::VariadicResults, mlir::OpTrait::OneRegion,
+    mlir::OpTrait::ZeroSuccessors> {
+public:
+  using Op::Op;
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(OrderedOp)
+  static llvm::StringRef getOperationName() { return "naru_backend.ordered"; }
+  static llvm::ArrayRef<llvm::StringRef> getAttributeNames() { return {}; }
+  mlir::LogicalResult verify() {
+    auto &region = getOperation()->getRegion(0);
+    if (!llvm::hasSingleElement(region) || region.front().getNumArguments() ||
+        region.front().getOperations().size() != 2)
+      return emitOpError("requires one block, one regionless operation and a yield");
+    auto &inner = region.front().front();
+    auto &yield = region.front().back();
+    if (!mlir::isa<OrderedYieldOp>(yield) || inner.getNumRegions() ||
+        inner.getNumSuccessors() || inner.hasTrait<mlir::OpTrait::IsTerminator>() ||
+        !inner.getDialect() || !inner.getDialect()->getRegisteredInterface<mlir::LLVMTranslationDialectInterface>())
+      return emitOpError("requires a nonterminating operation with an LLVM translation interface");
+    if (yield.getOperandTypes() != getOperation()->getResultTypes() ||
+        yield.getNumOperands() != inner.getNumResults())
+      return emitOpError("yield types must match the enclosed operation and ordered results");
+    for (auto [value, result] : llvm::zip(yield.getOperands(), inner.getResults()))
+      if (value != result) return emitOpError("must yield the enclosed operation's results in order");
+    for (auto type : getOperation()->getResultTypes())
+      if (!mlir::LLVM::isCompatibleType(type)) return emitOpError("requires LLVM-compatible result types");
+    for (auto type : inner.getOperandTypes())
+      if (!mlir::LLVM::isCompatibleType(type)) return emitOpError("requires LLVM-compatible operand types");
+    return mlir::success();
+  }
+};
+struct OrderedLLVMConversion : mlir::ConvertToLLVMPatternInterface {
+  explicit OrderedLLVMConversion(mlir::Dialect *dialect)
+      : ConvertToLLVMPatternInterface(dialect) {}
+  void populateConvertToLLVMConversionPatterns(mlir::ConversionTarget &target,
+      mlir::LLVMTypeConverter &, mlir::RewritePatternSet &) const override {
+    target.addLegalOp<OrderedOp, OrderedYieldOp>();
+  }
+};
 // LLVM's initializer translator rejects an instruction-valued result, but an
 // unattached instruction can retain a symbol use during failure cleanup and
 // abort LLVM's module destructor. Inspect actual translated values, rather than
@@ -73,6 +141,30 @@ namespace {
 constexpr llvm::StringLiteral initializerGuard = "naru_backend.require_constant";
 struct InitializerTranslation : mlir::LLVMTranslationDialectInterface {
   using LLVMTranslationDialectInterface::LLVMTranslationDialectInterface;
+  mlir::LogicalResult convertOperation(mlir::Operation *op, llvm::IRBuilderBase &builder,
+      mlir::LLVM::ModuleTranslation &translation) const override {
+    if (!mlir::isa<OrderedOp>(op)) return mlir::failure();
+    auto &inner = op->getRegion(0).front().front();
+    auto *block = builder.GetInsertBlock();
+    if (!block) return op->emitError("ordered translation requires an LLVM insertion block");
+    auto point = builder.GetInsertPoint();
+    auto *previous = point == block->begin() ? nullptr : &*std::prev(point);
+    mlir::LLVMTranslationInterface interfaces(op->getContext());
+    if (mlir::failed(interfaces.convertOperation(&inner, builder, translation))) return mlir::failure();
+    if (builder.GetInsertBlock() != block)
+      return op->emitError("ordered translation must remain in its insertion block");
+    llvm::SmallVector<llvm::Instruction *> instructions;
+    for (auto it = previous ? std::next(previous->getIterator()) : block->begin(); it != point; ++it)
+      instructions.push_back(&*it);
+    for (auto attr : inner.getAttrs())
+      if (mlir::failed(interfaces.amendOperation(&inner, instructions, attr, translation))) return mlir::failure();
+    for (auto [result, enclosed] : llvm::zip(op->getResults(), inner.getResults())) {
+      auto *value = translation.lookupValue(enclosed);
+      if (!value) return op->emitError("enclosed operation did not translate its result");
+      translation.mapValue(result, value);
+    }
+    return mlir::success();
+  }
   mlir::LogicalResult amendOperation(mlir::Operation *op,
       mlir::ArrayRef<llvm::Instruction *> instructions, mlir::NamedAttribute attr,
       mlir::LLVM::ModuleTranslation &translation) const override {
@@ -110,7 +202,8 @@ public:
   static llvm::StringRef getDialectNamespace() { return "naru_backend"; }
   explicit InitializerSafetyDialect(mlir::MLIRContext *context)
       : Dialect(getDialectNamespace(), context, mlir::TypeID::get<InitializerSafetyDialect>()) {
-    addInterfaces<InitializerTranslation>();
+    addOperations<OrderedOp, OrderedYieldOp>();
+    addInterfaces<InitializerTranslation, OrderedLLVMConversion>();
   }
 };
 struct InitializerGuards {
@@ -148,7 +241,7 @@ struct Session {
   std::string pipeline = "builtin.module(canonicalize,cse)";
   std::string lowering = "builtin.module(convert-scf-to-cf,convert-to-llvm,reconcile-unrealized-casts)";
   std::string opt = "3", entry = "main", triple, cpu, features, report, profile, artifact = "mlir";
-  std::string runtime = "freestanding", subsystem = "console", vcTools, sdkDir, sdkVersion;
+  std::string runtime = "freestanding", subsystem = "console", vcTools, sdkDir, sdkVersion, resourceIncludes;
   std::vector<std::string> linkObjects, linkLibraries, libraryPaths, resolvedLibraries;
   std::vector<std::string> protectedFiles;
   std::vector<mlir::DialectPlugin> dialectPlugins;
@@ -172,6 +265,7 @@ struct Session {
     registry.insert<InitializerSafetyDialect>();
     mlir::registerAllExtensions(registry);
     mlir::arith::registerConvertArithToLLVMInterface(registry);
+    mlir::registerConvertComplexToLLVMInterface(registry);
     mlir::registerConvertFuncToLLVMInterface(registry);
     mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
     mlir::registerConvertMemRefToLLVMInterface(registry);
@@ -303,7 +397,7 @@ bool applyConfig(Session &s, llvm::json::Object &o, const std::string &base) {
        {"opt_level", &s.opt}, {"entry", &s.entry}, {"native_entry", &s.entry}, {"triple", &s.triple},
        {"cpu", &s.cpu}, {"features", &s.features}, {"report", &s.report}, {"artifact", &s.artifact},
        {"runtime", &s.runtime}, {"subsystem", &s.subsystem}, {"vc_tools_dir", &s.vcTools},
-       {"windows_sdk_dir", &s.sdkDir}, {"windows_sdk_version", &s.sdkVersion}})
+       {"windows_sdk_dir", &s.sdkDir}, {"windows_sdk_version", &s.sdkVersion}, {"resource_include_dir", &s.resourceIncludes}})
     if (!stringField(s, o, entry.first, *entry.second)) return false;
   if (s.runtime != "freestanding" && s.runtime != "crt-static" && s.runtime != "crt-dynamic") {
     s.fail("runtime must be freestanding, crt-static or crt-dynamic"); return false;
@@ -326,6 +420,7 @@ bool applyConfig(Session &s, llvm::json::Object &o, const std::string &base) {
   }
   if (!s.vcTools.empty()) s.vcTools = absolute(s.vcTools, base);
   if (!s.sdkDir.empty()) s.sdkDir = absolute(s.sdkDir, base);
+  if (!s.resourceIncludes.empty()) s.resourceIncludes = absolute(s.resourceIncludes, base);
   if (o.get("emit")) { s.fail("external emitter commands are unsupported by the in-process backend; select a native target or MLIR artifact"); return false; }
   for (llvm::StringRef key : {"source_inputs", "dialect_plugins", "pass_plugins", "irdl"}) {
     auto *field = o.get(key);
@@ -387,7 +482,7 @@ void report(Session &s, bool success, const std::string &target, const std::stri
   for (const auto &path : s.libraryPaths) directories.push_back(path);
   object["link"] = llvm::json::Object{{"runtime", s.runtime}, {"subsystem", s.subsystem},
       {"objects", std::move(objects)}, {"libraries", std::move(libraries)}, {"library_paths", std::move(directories)},
-      {"vc_tools_dir", s.vcTools}, {"windows_sdk_dir", s.sdkDir}, {"windows_sdk_version", s.sdkVersion}};
+      {"vc_tools_dir", s.vcTools}, {"windows_sdk_dir", s.sdkDir}, {"windows_sdk_version", s.sdkVersion}, {"resource_include_dir", s.resourceIncludes}};
   std::string encoded; llvm::raw_string_ostream stream(encoded);
   stream << llvm::formatv("{0:2}", llvm::json::Value(std::move(object))) << '\n';
   writeBytes(s, s.report, encoded);
@@ -412,10 +507,10 @@ bool prepareLink(Session &s) {
   if (needSDK) {
     NaruToolchain info;
     info.triple = triple.str(); info.vcTools = s.vcTools;
-    info.sdkDir = s.sdkDir; info.sdkVersion = s.sdkVersion;
+    info.sdkDir = s.sdkDir; info.sdkVersion = s.sdkVersion; info.resourceIncludes = s.resourceIncludes;
     std::string error;
     if (!naruDiscoverToolchain(info, error)) { s.fail(error); return false; }
-    s.vcTools = info.vcTools; s.sdkDir = info.sdkDir; s.sdkVersion = info.sdkVersion;
+    s.vcTools = info.vcTools; s.sdkDir = info.sdkDir; s.sdkVersion = info.sdkVersion; s.resourceIncludes = info.resourceIncludes;
     for (const auto &path : info.libraries) addPath(path);
   }
   auto libraries = s.linkLibraries;
@@ -482,6 +577,28 @@ void addFreestandingStackProbe(llvm::Module &module) {
 // Any language library can attach it; no C AST or source spelling reaches here.
 bool applySymbolTargetFacts(Session &s, llvm::Module &module, const llvm::Triple &triple) {
   bool valid = true;
+  // Version-independent enum function attributes. Language libraries provide
+  // backend facts, never source keywords; validate scope and attribute kind
+  // before LLVM optimization so unknown names cannot disappear silently.
+  s.module->walk([&](mlir::Operation *op) {
+    auto raw = op->getAttr("naru.llvm.function_attrs");
+    if (!raw || !valid) return;
+    auto attributes = mlir::dyn_cast<mlir::ArrayAttr>(raw);
+    auto name = op->getAttrOfType<mlir::StringAttr>("sym_name");
+    auto *function = name ? module.getFunction(name.getValue()) : nullptr;
+    if (!attributes || !function || op->getName().getStringRef() != "llvm.func") {
+      s.fail("naru.llvm.function_attrs requires an array on an LLVM function"); valid = false; return;
+    }
+    for (auto rawAttribute : attributes) {
+      auto attribute = mlir::dyn_cast<mlir::StringAttr>(rawAttribute);
+      auto kind = attribute ? llvm::Attribute::getAttrKindFromName(attribute.getValue()) : llvm::Attribute::None;
+      if (!attribute || !llvm::Attribute::isEnumAttrKind(kind) || !llvm::Attribute::canUseAsFnAttr(kind)) {
+        s.fail("naru.llvm.function_attrs requires known value-less LLVM function attributes"); valid = false; return;
+      }
+      function->addFnAttr(kind);
+    }
+  });
+  if (!valid) return false;
   s.module->walk([&](mlir::Operation *op) {
     auto raw = op->getAttr("naru.llvm.dll_storage_class");
     if (!raw || !valid) return;
@@ -543,7 +660,20 @@ bool emitCPU(Session &s, const std::string &target, const std::string &output) {
   builder.crossRegisterProxies(loops, functions, scc, modules);
   auto level = s.opt == "0" ? llvm::OptimizationLevel::O0 : s.opt == "1" ? llvm::OptimizationLevel::O1
       : s.opt == "3" ? llvm::OptimizationLevel::O3 : llvm::OptimizationLevel::O2;
-  auto pipeline = level == llvm::OptimizationLevel::O0 ? builder.buildO0DefaultPipeline(level) : builder.buildPerModuleDefaultPipeline(level);
+  llvm::ModulePassManager pipeline;
+  if (level == llvm::OptimizationLevel::O0) {
+    // Aggregate SSA updates otherwise expand into a full object copy for each
+    // insertvalue during unoptimized code generation. Normalize private stack
+    // storage first, preserving CFG and LLVM's volatile/escaping-memory rules.
+    // This is shared target preparation, independent of source dialects.
+    llvm::FunctionPassManager storage;
+    storage.addPass(llvm::InstCombinePass());
+    storage.addPass(llvm::SROAPass(llvm::SROAOptions(llvm::SROAOptions::PreserveCFG)));
+    pipeline.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(storage)));
+    pipeline.addPass(builder.buildO0DefaultPipeline(level));
+  } else {
+    pipeline = builder.buildPerModuleDefaultPipeline(level);
+  }
   pipeline.run(*module, modules);
   llvm::raw_string_ostream errors(s.error);
   if (llvm::verifyModule(*module, &errors)) return false;

@@ -36,7 +36,7 @@ export const families = {
       section('growth', '同一个名字，并不意味着同一种语言', [
         p('1968 年第四版把基础与高级 BASIC 分开讲述：目录中有函数与 DEF、GOSUB 与 RETURN、INPUT，随后单列矩阵和字母数字信息。这种组织呈现出一个已经扩展的教学与计算工具。'),
         p('版本比较需要逐项核对正文。第四版附录还把若干数据文件与程序连接设施列为未来计划，不能仅凭目录中出现某个名词就认定功能已经实现。同样，不能将后来常见的字符串变量、屏幕命令和微机设备操作倒推到 1964 年。'),
-        note('本馆的版本边界', '这里收录的是两份 Dartmouth 版本文献。两档都还没有独立的 Naru 前端；已有的 historical-basic64.bas 只是源文件样例，不代表 BASIC 编译器已经实现。'),
+        note('本馆的版本边界', '这里收录两份 Dartmouth 版本文献。basic.stx 已提供以 1964 年语言为目标的分阶段实现；1968 第四版没有独立模式，完整 DTSS 交互环境也尚未复原。'),
       ], ['fourth']),
     ],
     references: [ref('early', 'Dartmouth《BASIC》手册 · 1964 年 10 月', 'basic/1964/dtss-basic-manual-196410.pdf', '正文第 I 章、II §2.1（印刷页 1–3）；自编循环示例按 FOR / NEXT 形式整理'), ref('fourth', 'Dartmouth BASIC · 第四版', 'basic/1968/dtss-basic-4th-edition-196801.pdf', '目录、§2.6 Matrices、§2.7 Alphanumeric Information、附录 E Future Plans'), external('dartmouth', 'Dartmouth：BASIC 与分时计算的诞生', 'https://home.dartmouth.edu/news/2014/04/back-basic-computings-future-was-born-dartmouth', 'Dartmouth 官方历史回顾，2014')],
@@ -196,7 +196,7 @@ export const families = {
 
 const version = (name, lead, focus, boundary, features, implementation, sections = []) => ({ name, lead, focus, boundary, features, implementation, sections })
 export const versions = {
-  'basic/1964': version('Dartmouth · 1964', '这份条目对应 1964 年 10 月的 Dartmouth BASIC 手册。它从数值问题讲起，用行号、LET、READ、DATA 和控制转移把程序带入分时终端。1964 是语言诞生的年份，本馆原件则是一份同年 10 月的具体手册。', '早期程序与分时学习环境', '不可自动等同后来的微机 BASIC。', ['行号与跳转', '数值算式', 'FOR / NEXT'], undefined, [section('early-reading', '1964 手册，如何带读者写第一段程序', [p('手册先用日常的步骤和配方解释程序，再引入解二元一次方程组的完整例子。这个入口说明 BASIC 的“初学者”定位并非只靠少几个关键字：教材叙事与终端环境也是设计的一部分。'), p('本馆的讲解示例采用重新编写的循环求和程序。仓库另有 historical-basic64.bas，但它尚未关联 BASIC 方言，不能作为已可运行项目展示。')], ['early'])]),
+  'basic/1964': version('Dartmouth · 1964', '这份条目对应 1964 年 10 月的 Dartmouth BASIC 手册。它从数值问题讲起，用行号、LET、READ、DATA 和控制转移把程序带入分时终端。1964 是语言诞生的年份，本馆原件则是一份同年 10 月的具体手册。', '早期程序与分时学习环境', '不可自动等同后来的微机 BASIC。', ['行号与跳转', '数值算式', 'FOR / NEXT'], 'basic', [section('early-reading', '1964 手册，如何带读者写第一段程序', [p('手册先用日常的步骤和配方解释程序，再引入解二元一次方程组的完整例子。这个入口说明 BASIC 的“初学者”定位并非只靠少几个关键字：教材叙事与终端环境也是设计的一部分。'), p('本馆的讲解示例采用重新编写的循环求和程序。当前关联 basic.stx 和 examples/basic/sum.bas；规则范围与验收边界见 basic.md，不把一个可运行例子推广为完整版本兼容。')], ['early'])]),
   'basic/1968': version('Dartmouth · 第四版 / 1968', '1968 年 1 月 1 日第四版把 BASIC 分成入门与高级两部分。矩阵、字母数字信息、函数与子程序有了专门的讲述；同时，附录仍记录尚在规划中的系统设施。', '基础语言如何扩展为更完整的工具', '目录的 Future Plans 不应列成已完成特性。', ['矩阵章节', '字母数字信息', '函数与子程序'], undefined, [section('fourth-reading', '第四版：读目录，也要读时态', [p('§2.6 Matrices 与 §2.7 Alphanumeric Information 出现在高级 BASIC 部分，适合与 1964 手册逐项比较。本文不把第四版的所有能力回填到早期版本。'), p('附录 E 列出的 data files、chaining of programs 等是未来计划。保存原文的这种区分，比用一张统一“支持功能”表更能还原当时的语言状态。')], ['fourth'])]),
   'b/1972': version('B · MH-TSS / 1972', '这份条目以 S. C. Johnson 的 MH-TSS B 手册为语义锚，同时展示 b.stx 和仓库样例。现代 64 位宿主的映射与手册行为分开记录，未把当前规则存在等同于完整历史一致性。', '字寻址、复合赋值与历史字符串', '宿主位宽、打包与库函数覆盖仍有差异。', ['字模型', '=+ 赋值', '* 转义'], 'b'),
   'pascal/1970': version('Wirth 报告谱系 · 1970', '1970 表示 Pascal 的早期语言谱系，馆内实际收藏 1972 修订报告、1973 P-machine 描述与 Pascal-P 实现笔记。年代标签不会替代各原件的身份。', '语言报告与可移植编译器', '目前没有独立的 Wirth 早期行为模式。', ['修订报告', 'P-machine', 'Pascal-P']),

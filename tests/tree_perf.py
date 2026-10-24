@@ -33,11 +33,16 @@ def main():
         'backend_sha256': digest(path.with_name('naru_mlir_backend.dll'))} for name, path in binaries.items()}
     if a.baseline:
         assert snapshots['baseline']['backend_sha256'] == snapshots['current']['backend_sha256']
-    rules = [ROOT/'tests/fixtures/tree_perf.stx', ROOT/'dialects/tree.stx']
+    rules = [ROOT/'tests/fixtures/tree_perf.stx', ROOT/'dialects/tree.stx',
+             ROOT/'tests/fixtures/iteration_contract.stx']
     hashes = {str(path.relative_to(ROOT)): digest(path) for path in rules}
     cases = [('wide_20000', 'tree_perf.wide(20000)', '[20000,200010000]'),
              ('deep_4096', 'tree_perf.deep(4096)', '4097'),
-             ('replace_scratch_20000x64', 'tree_perf.scratch(20000,64)', '[20000,64]')]
+             ('replace_scratch_20000x64', 'tree_perf.scratch(20000,64)', '[20000,64]'),
+             ('sparse_unfold_100001', 'iteration_contract.sparse(100001)',
+              '[0,10000,20000,30000,40000,50000,60000,70000,80000,90000,100000]'),
+             ('replace_fold_30000x32', 'iteration_contract.fold_scratch(30000)', '[30000,32,496]'),
+             ('shared_unfold_100000', 'iteration_contract.repeated(100000)', '[100000,1]')]
     results = []
     with tempfile.TemporaryDirectory(prefix='naru tree perf ') as work:
         for name, expression, expected in cases:

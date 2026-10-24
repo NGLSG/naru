@@ -1,0 +1,36 @@
+// Select compatible providers among the real installed target and compiler
+// resource headers. These are search policies, never replacement header text.
+mod c11.system_headers;
+use c11.pp;
+use headers;
+
+// Use the actual UCRT's ISO wide printf/scanf configuration and its official
+// initialization library. Its default legacy %s/%c mode is not ISO C11.
+effect c11.pp.capability_provider() => c11.pp.MacroProvider("ucrt-iso-stdio","c11.system_headers.stdio_macros");
+effect c11.system_headers.stdio_macros($macros) => c11.pp.predefine($macros,["_CRT_STDIO_ISO_WIDE_SPECIFIERS","1"]);
+
+effect c11.pp.option_provider() => c11.pp.OptionProvider("target-header-providers","c11.system_headers.configure");
+effect c11.system_headers.configure($options) => choose(eq(headers.option($options,"target_header_policy","crt"),"raw"),$options,
+    bind($target,env.get($options,"target_facts"),bind($resource,env.get($target,"resource_include_dir"),
+        bind($base,env.put($options,"header_path_case_sensitive",0),choose(eq($resource,""),$base,
+            c11.system_headers.intrinsic_providers(c11.system_headers.atomic_provider(headers.exclude($base,"tgmath.h",[$resource]),$target,$resource),$target,$resource))))));
+// These installed VC headers describe the Microsoft intrinsic interface used
+// inside current UCRT inline bodies. Do not mix in GNU-vector Clang wrappers
+// requiring a different compiler interface, or claim another compiler identity.
+effect c11.system_headers.intrinsic_providers($options,$target,$resource)
+    => arg(list.fold("c11.system_headers.intrinsic_provider",["intrin.h","intrin0.inl.h","mmintrin.h","xmmintrin.h","emmintrin.h",
+        "pmmintrin.h","tmmintrin.h","smmintrin.h","nmmintrin.h","wmmintrin.h","immintrin.h","ammintrin.h","zmmintrin.h"],[$options,$target,$resource]),0);
+effect c11.system_headers.intrinsic_provider([$options,$target,$resource],$header)
+    => [choose(choose(eq(env.get($target,"vc_tools_dir"),""),0,source.exists(source.path(env.get($target,"vc_tools_dir"),concat("include/",$header)))),
+        headers.exclude($options,$header,[$resource]),$options),$target,$resource];
+effect c11.system_headers.atomic_provider($options,$target,$resource)
+    => choose(and(not(eq(env.get($target,"vc_tools_dir"),"")),source.exists(source.path($resource,"stdatomic.h"))),
+        headers.exclude($options,"stdatomic.h",[source.path(env.get($target,"vc_tools_dir"),"include")]),$options);
+effect c11.system_headers.crt_header($header,$path,$options)
+    => bind($target,env.get($options,"target_facts"),choose(eq(env.get($target,"ucrt_dir"),""),0,
+        eq(headers.directory_key($path,$options),headers.directory_key(source.path(env.get($target,"ucrt_dir"),
+            concat("Include/",concat(env.get($target,"ucrt_version"),concat("/ucrt/",$header)))),$options))));
+effect c11.system_headers.resource_header($header,$path,$options)
+    => bind($target,env.get($options,"target_facts"),bind($directory,env.get($target,"resource_include_dir"),
+        choose(eq($directory,""),0,eq(headers.directory_key($path,$options),
+            headers.directory_key(source.path($directory,$header),$options)))));

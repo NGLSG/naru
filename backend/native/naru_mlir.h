@@ -51,6 +51,7 @@ NARU_API int32_t naru_exact_flags(void);
  * subprocess and no source-language parsing. Pair-list text is thread-local. */
 NARU_API const char *naru_target_toolchain(const char *json, int64_t len);
 NARU_API const char *naru_target_error(void);
+NARU_API const char *naru_host_clock_snapshot(void);
 /* Optional tooling helper: no MLIR session is created. Returns a thread-local
  * lowercase SHA256, or an empty string when the input cannot be read. */
 NARU_API const char *naru_file_sha256(const char *path, int64_t len);

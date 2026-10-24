@@ -25,13 +25,14 @@ effect array_members($count,$element) => bind(ArrayParts($index,$limit,$type,$pa
 effect array_part(ArrayParts($index,$count,$element,$parts)) when eq($index,$count) => [0,ArrayParts($index,$count,$element,$parts)];
 effect array_part(ArrayParts($index,$count,$element,$parts)) when lt($index,$count)
     => [1,ArrayParts(add($index,1),$count,$element,list.prepend([mul(mul($index,c11.types.bytes($element)),8),$index,shape($element)],$parts))];
-effect shape(c11.types.Record($name,$fields)) => bind($offsets,list.cursor(arg(c11.types.record_layout($fields),2)),
+effect shape(c11.types.Record($name,$fields)) => record_shape($name,$fields);
+effect[fallback] record_shape($name,$fields) => bind($offsets,list.cursor(arg(c11.types.named_aggregate_layout("struct",$name,$fields),2)),
     bind(RecordParts($remaining,$index,$parts),list.fold("c11.union_storage.record_part",$fields,RecordParts($offsets,0,[])),
         storage.Aggregate(types.repr(c11.types.Record($name,$fields)),mul(c11.types.bytes(c11.types.Record($name,$fields)),8),list.reverse($parts))));
 effect record_part(RecordParts($offsets,$index,$parts),c11.types.Field($name,$type))
     => RecordParts(list.cursor.tail($offsets),add($index,1),choose(eq(c11.types.bytes($type),0),$parts,
         list.prepend([mul(list.cursor.head($offsets),8),$index,shape($type)],$parts)));
-effect shape(c11.types.Union($name,$fields)) => bind($type,c11.types.Union($name,$fields),bind($unit,c11.types.union_unit($fields),
+effect shape(c11.types.Union($name,$fields)) => bind($type,c11.types.Union($name,$fields),bind($unit,c11.types.union_storage_unit($name,$fields),
     storage.Aggregate(types.repr($type),mul(c11.types.bytes($type),8),array_members(int.div(c11.types.bytes($type),$unit),unit_type($unit)))));
 effect unit_type(8) => c11.types.integer("unsigned long long");
 effect unit_type(4) => c11.types.integer("unsigned int");

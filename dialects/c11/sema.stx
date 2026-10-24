@@ -7,6 +7,54 @@ use control;
 use externc;
 use tree;
 use c11.constants;
+use name_scope;
+use c11.names;
+use c11.enums;
+use c11.initializers;
+use c11.objects;
+
+// Frontend snapshots carry an opaque immutable frame. The declaration table
+// may contain future symbols for linking, but expression lookup is lexical.
+effect visible_frame_key() => VisibleFrameKey();
+effect c11.sema.name_visible($env,$name) => choose(env.contains($env,VisibleFrameKey()),
+    or(name_scope.contains(env.get($env,VisibleFrameKey()),"ordinary",$name),
+        or(choose(env.contains($env,FunctionNameKey()),eq(env.get($env,FunctionNameKey()),$name),0),
+            choose(env.contains($env,$name),c11.sema.incoming_name(env.get($env,$name)),0))),1);
+// Parameter copies read the bound incoming SSA slot before the first source
+// statement installs its parameter-frame snapshot.
+effect c11.sema.incoming_name(base.Slot($type,$identity)) => 1;
+effect[fallback] c11.sema.incoming_name($binding) => 0;
+effect c11.sema.lookup_name($env,$name) => choose(env.contains($env,$name),
+    choose(c11.sema.name_visible($env,$name),env.get($env,$name),
+        fail(concat("C identifier is not visible at this declaration point: ",$name))),env.get($env,$name));
+// The spelling table serves linking and compatibility. Source references use
+// stable lexical identities, so a later shadow cannot replace an earlier read.
+effect c11.sema.bind_name($env,$name,$binding) => c11.sema.capture_name(env.put($env,$name,$binding),$name);
+effect c11.sema.capture_name($env,$name) => bind($captured,choose(env.contains($env,VisibleFrameKey()),
+    bind($binding,name_scope.lookup(env.get($env,VisibleFrameKey()),"ordinary",$name),
+        choose(eq($binding,name_scope.Missing()),$env,c11.sema.capture_binding($env,$name,$binding))),$env),
+            choose(env.contains($captured,$name),c11.sema.binding_facts($name,env.get($captured,$name),$captured),$captured));
+// Library adapters may retain declaration facts under opaque keys. Lexical
+// shadowing still changes the ordinary binding; it cannot erase learned ABI
+// type identities needed by a generic library operation.
+effect[fallback] c11.sema.binding_facts($name,$binding,$env) => $env;
+effect capture_binding($env,$name,name_scope.Binding($identity,DeclarationView($view)))
+    => env.put(env.put($env,NameBindingKey($identity),env.get($env,$name)),DeclarationBindingKey($identity,$view),env.get($env,$name));
+effect[fallback] capture_binding($env,$name,$binding) => env.put($env,NameBindingKey(name_scope.binding_identity($binding)),env.get($env,$name));
+effect c11.sema.capture_names($env,$names) => list.fold("c11.sema.capture_name",$names,$env);
+effect c11.sema.lookup_at($frame,$name,$env) => bind($binding,name_scope.lookup($frame,"ordinary",$name),
+    choose(eq($binding,name_scope.Missing()),fail(concat("C identifier is not visible at this declaration point: ",$name)),
+        c11.sema.lookup_binding($binding,$name,$env)));
+effect c11.sema.lookup_binding(name_scope.Binding($identity,c11.names.EnumerationName($value)),$name,$env) => c11.enums.EnumerationConstant($value);
+effect c11.sema.lookup_binding(name_scope.Binding($identity,DeclarationView($view)),$name,$env)
+    => choose(env.contains($env,DeclarationBindingKey($identity,$view)),env.get($env,DeclarationBindingKey($identity,$view)),
+        $view);
+effect[fallback] c11.sema.lookup_binding(name_scope.Binding($identity,$fact),$name,$env) => choose(env.contains($env,NameBindingKey($identity)),
+    env.get($env,NameBindingKey($identity)),choose(c11.sema.current_identity($env,$name,$identity),env.get($env,$name),
+        fail(concat("C declaration binding is unavailable at this expression point: ",$name))));
+effect c11.sema.current_identity($env,$name,$identity) => choose(and(env.contains($env,VisibleFrameKey()),env.contains($env,$name)),
+    bind($binding,name_scope.lookup(env.get($env,VisibleFrameKey()),"ordinary",$name),
+        choose(eq($binding,name_scope.Missing()),0,eq(name_scope.binding_identity($binding),$identity))),0);
 
 // Pointer arithmetic extensions are supplied by c11.objects; keep the
 // relation declaration in its owning module so cross-module calls resolve.
@@ -18,7 +66,20 @@ effect c11.sema.initializer_constant($source,$env) when eq(0,1)
     => fail("initializer constant policy is not loaded");
 
 effect c11.sema.analyze($items) => bind($prepared,externc.prepare_module(c11.sema.prepare_domain($items)),
-    c11.sema.prepare_items($prepared,c11.sema.declarations($prepared,env.empty()),env.empty()));
+    c11.sema.append_runtime_items(c11.sema.prepare_items($prepared,c11.sema.module_constraints(c11.sema.declarations(c11.sema.declaration_order($prepared),env.empty())),env.empty())));
+effect c11.sema.append_runtime_items($items) => bind([$support,$seen],list.fold("c11.sema.add_runtime_provider",
+    collect("c11.sema.runtime_provider",[$items]),[[],env.empty()]),list.concat($support,$items));
+effect[fallback] c11.sema.runtime_provider($items) => NoRuntimeProvider();
+effect c11.sema.add_runtime_provider([$out,$seen],NoRuntimeProvider()) => [$out,$seen];
+effect c11.sema.add_runtime_provider([$out,$seen],RuntimeProvider($name,$items))
+    => choose(env.contains($seen,$name),fail(concat("duplicate C runtime provider: ",$name)),[list.concat($out,$items),env.put($seen,$name,1)]);
+effect[fallback] c11.sema.module_constraints($env) => $env;
+effect[fallback] c11.sema.function_constraints($name,$body,$env) => 1;
+effect[fallback] c11.sema.language_annotations($item,$name,$env) => $item;
+// Declaration registration is independent of the prepared source/emission
+// order. Storage policies can postpone implicit declarations while preserving
+// every source item's lexical snapshot and lowering order.
+effect[fallback] c11.sema.declaration_order($items) => $items;
 effect[fallback] c11.sema.prepare_domain($items) => $items;
 effect c11.sema.emit_program($items) => base.lower_items(c11.sema.analyze($items));
 effect c11.sema.declarations([],$env) => $env;
@@ -28,34 +89,96 @@ effect c11.sema.declare(c11.syntax.Function($name,$params,$result,$body),$rest,$
     => c11.sema.install($name,list.map("c11.sema.parameter_type",$params),c11.types.unqualified($result),0,1,$rest,$env);
 effect c11.sema.declare(c11.syntax.VariadicFunction($name,$params,$result,$body),$rest,$env)
     => c11.sema.install($name,list.map("c11.sema.parameter_type",$params),c11.types.unqualified($result),1,1,$rest,$env);
+effect c11.sema.declare(c11.syntax.OldFunction($name,$params,$result,$body),$rest,$env)
+    => bind($binding,OldSignature(list.map("c11.sema.parameter_type",$params),c11.types.unqualified($result)),
+        c11.sema.declarations($rest,env.put($env,$name,choose(env.contains($env,$name),composite_binding(env.get($env,$name),$binding),$binding))));
 effect c11.sema.declare(c11.syntax.Prototype($name,$params,$result,$variadic),$rest,$env)
     => c11.sema.install($name,list.map("c11.sema.parameter_type",$params),c11.types.unqualified($result),$variadic,0,$rest,$env);
 effect c11.sema.parameter_type(base.Param($name,$type)) => c11.types.unqualified($type);
 effect c11.sema.declare(c11.syntax.UnspecifiedPrototype($name,$result),$rest,$env)
-    => fail(concat("C function declaration without a prototype is not implemented: ",$name));
+    => choose(env.contains($env,$name),
+        c11.sema.declarations($rest,env.put($env,$name,c11.sema.composite_binding(env.get($env,$name),UnspecifiedSignature($result)))),
+        c11.sema.declarations($rest,env.put($env,$name,UnspecifiedSignature($result))));
 effect c11.sema.install($name,$params,$result,$variadic,$definition,$rest,$env)
     => choose(env.contains($env,$name),c11.sema.merge($name,$params,$result,$variadic,$definition,$rest,$env,env.get($env,$name)),
         c11.sema.declarations($rest,env.put($env,$name,CSignature($params,$result,$variadic,$definition))));
 effect c11.sema.merge($name,$params,$result,$variadic,$definition,$rest,$env,CSignature($old_params,$old_result,$old_variadic,$old_definition))
-    => choose(and(eq($params,$old_params),and(eq($result,$old_result),eq($variadic,$old_variadic))),
+    => choose(c11.types.compatible(c11.sema.signature_type($params,$result,$variadic),c11.sema.signature_type($old_params,$old_result,$old_variadic)),
         choose(and($definition,$old_definition),fail(concat("duplicate C function definition: ",$name)),
-            c11.sema.declarations($rest,env.put($env,$name,CSignature($params,$result,$variadic,or($definition,$old_definition))))),
+            bind(c11.types.FunctionType($composite_result,$composite_params,$v,$p),
+                c11.types.composite(c11.sema.signature_type($params,$result,$variadic),c11.sema.signature_type($old_params,$old_result,$old_variadic)),
+                c11.sema.declarations($rest,env.put($env,$name,CSignature(list.map("c11.sema.parameter_type",$composite_params),$composite_result,$v,or($definition,$old_definition)))))),
         fail(concat("incompatible C function declarations: ",$name)));
+effect c11.sema.signature_type($params,$result,$variadic)
+    => c11.types.FunctionType($result,list.map("c11.sema.unnamed_parameter",$params),$variadic,1);
+effect visible_binding_type(GlobalSlot($type,$name),$tags) => GlobalSlot(c11.objects.declaration_type($type,$tags),$name);
+effect visible_binding_type(CSignature($params,$result,$variadic,$definition),$tags)
+    => bind(c11.types.FunctionType($r,$p,$v,$x),c11.objects.declaration_type(c11.sema.signature_type($params,$result,$variadic),$tags),
+        CSignature(list.map("c11.sema.parameter_type",$p),$r,$v,$definition));
+effect composite_binding(GlobalSlot($a,$name),GlobalSlot($b,$name))
+    => GlobalSlot(choose(or(inferred_view($a),inferred_view($b)),$b,c11.sema.composite_object($a,$b)),$name);
+effect inferred_view(c11.initializers.InferredArray($element,$source)) => 1;
+effect inferred_view(c11.types.Qualified($type,$c,$v,$r)) => inferred_view($type);
+effect inferred_view(c11.types.AlignedType($type,$alignment)) => inferred_view($type);
+effect[fallback] inferred_view($type) => 0;
+effect composite_binding(CSignature($ap,$ar,$av,$ad),CSignature($bp,$br,$bv,$bd))
+    => choose(c11.types.compatible(c11.sema.signature_type($ap,$ar,$av),c11.sema.signature_type($bp,$br,$bv)),
+        bind(c11.types.FunctionType($r,$p,$v,$x),c11.types.composite(c11.sema.signature_type($ap,$ar,$av),c11.sema.signature_type($bp,$br,$bv)),
+            CSignature(list.map("c11.sema.parameter_type",$p),$r,$v,or($ad,$bd))),fail("incompatible C function declarations"));
+effect[fallback] composite_binding($a,$b) => fail("C linked declaration conflicts with another identifier");
+effect visible_binding_type(UnspecifiedSignature($result),$tags)
+    => UnspecifiedSignature(c11.objects.declaration_type($result,$tags));
+effect composite_binding(UnspecifiedSignature($a),UnspecifiedSignature($b))
+    => UnspecifiedSignature(c11.types.composite($a,$b));
+effect composite_binding(UnspecifiedSignature($a),CSignature($params,$b,$variadic,$definition))
+    => bind(c11.types.FunctionType($r,$p,$v,$x),c11.types.composite(c11.types.FunctionType($a,[],0,0),c11.sema.signature_type($params,$b,$variadic)),
+        CSignature(list.map("c11.sema.parameter_type",$p),$r,$v,$definition));
+effect composite_binding(CSignature($params,$a,$variadic,$definition),UnspecifiedSignature($b))
+    => composite_binding(UnspecifiedSignature($b),CSignature($params,$a,$variadic,$definition));
+effect c11.sema.merge($name,$params,$result,$variadic,$definition,$rest,$env,UnspecifiedSignature($old_result))
+    => c11.sema.declarations($rest,env.put($env,$name,composite_binding(UnspecifiedSignature($old_result),CSignature($params,$result,$variadic,$definition))));
+effect visible_binding_type(OldSignature($params,$result),$tags)
+    => bind(c11.types.FunctionType($r,$p,$v,$x),c11.objects.declaration_type(c11.sema.signature_type($params,$result,0),$tags),
+        OldSignature(list.map("c11.sema.parameter_type",$p),$r));
+effect composite_binding(OldSignature($params,$a),UnspecifiedSignature($b)) => OldSignature($params,c11.types.composite($a,$b));
+effect composite_binding(UnspecifiedSignature($a),OldSignature($params,$b)) => OldSignature($params,c11.types.composite($a,$b));
+effect composite_binding(OldSignature($params,$a),CSignature($prototype,$b,$variadic,$definition))
+    => seq(choose($definition,fail("duplicate C function definition"),1),
+        seq(choose(and(not($variadic),c11.types.compatible_parameters(list.map("c11.sema.unnamed_parameter",list.map("c11.types.default_argument",$params)),list.map("c11.sema.unnamed_parameter",$prototype))),
+            1,fail("incompatible C old-style and prototype declarations")),
+            CSignature($prototype,c11.types.composite($a,$b),0,1)));
+effect composite_binding(CSignature($prototype,$a,$variadic,$definition),OldSignature($params,$b))
+    => composite_binding(OldSignature($params,$b),CSignature($prototype,$a,$variadic,$definition));
+effect composite_binding(OldSignature($a,$ar),OldSignature($b,$br)) => fail("duplicate C function definition");
+effect c11.sema.merge($name,$params,$result,$variadic,$definition,$rest,$env,OldSignature($old_params,$old_result))
+    => c11.sema.declarations($rest,env.put($env,$name,composite_binding(OldSignature($old_params,$old_result),CSignature($params,$result,$variadic,$definition))));
 effect[fallback] c11.sema.merge($name,$params,$result,$variadic,$definition,$rest,$env,$old) => fail(concat("C identifier conflicts with an object: ",$name));
 effect c11.sema.declare(c11.syntax.Global($name,$type,$value),$rest,$env)
-    => c11.sema.declarations($rest,c11.sema.install_object($name,$type,c11.sema.object_definition($value),$value,$env));
+    => bind($inference,c11.sema.bind_name($env,$name,GlobalSlot(c11.initializers.inference_type($type),$name)),
+        bind($complete,c11.sema.complete_type($type,$inference),
+            c11.sema.declarations($rest,c11.sema.install_object($name,$complete,c11.sema.object_definition($value),$value,$env))));
 effect c11.sema.declare(c11.syntax.ExternalGlobal($name,$type),$rest,$env)
     => c11.sema.declarations($rest,c11.sema.install_object($name,$type,0,c11.syntax.Zero($type),$env));
 effect c11.sema.object_definition(c11.syntax.Zero($type)) => 1;
 effect[fallback] c11.sema.object_definition($value) => 2;
-effect c11.sema.install_object($name,$type,$definition,$value,$env) => choose(env.contains($env,$name),
+effect c11.sema.install_object($name,$type,$definition,$value,$environment) => bind($env,c11.sema.object_storage_environment($name,$environment),choose(env.contains($env,$name),
     c11.sema.merge_object($name,$type,$definition,$value,$env,env.get($env,$name)),
-    env.put(env.put($env,$name,GlobalSlot($type,$name)),ObjectInfoKey($name),ObjectInfo($type,$definition,$value)));
-effect c11.sema.merge_object($name,$type,$definition,$value,$env,GlobalSlot($old_type,$symbol)) => choose(eq($type,$old_type),
+    env.put(env.put($env,$name,GlobalSlot($type,$name)),ObjectInfoKey($name),ObjectInfo($type,$definition,$value))));
+effect[fallback] c11.sema.object_storage_environment($name,$env) => $env;
+effect c11.sema.merge_object($name,$type,$definition,$value,$env,GlobalSlot($old_type,$symbol)) => choose(c11.types.compatible($type,$old_type),
     bind(ObjectInfo($old,$prior,$initializer),env.get($env,ObjectInfoKey($name)),
         choose(and(eq($prior,2),eq($definition,2)),fail(concat("duplicate C object definition: ",$name)),
-            choose(lt($prior,$definition),env.put($env,ObjectInfoKey($name),ObjectInfo($type,$definition,$value)),$env))),
+            bind($composite,c11.sema.composite_object($old_type,$type),
+                env.put(env.put($env,$name,GlobalSlot($composite,$symbol)),ObjectInfoKey($name),
+                    choose(lt($prior,$definition),ObjectInfo($composite,$definition,$value),ObjectInfo($composite,$prior,$initializer)))))),
     fail(concat("incompatible C object declarations: ",$name)));
+effect c11.sema.composite_object(c11.types.AlignedType($old,$a),c11.types.AlignedType($type,$b))
+    => c11.types.AlignedType(c11.types.composite($old,$type),MergeAlignment($a,$b));
+effect c11.sema.composite_object(c11.types.AlignedType($old,$a),$type) when not(c11.sema.is_aligned_type($type))
+    => c11.types.AlignedType(c11.types.composite($old,$type),$a);
+effect c11.sema.composite_object($old,c11.types.AlignedType($type,$b)) when not(c11.sema.is_aligned_type($old))
+    => c11.types.AlignedType(c11.types.composite($old,$type),$b);
+effect[fallback] c11.sema.composite_object($old,$type) => c11.types.composite($old,$type);
 effect[fallback] c11.sema.merge_object($name,$type,$definition,$value,$env,$prior) => fail(concat("C object conflicts with another identifier: ",$name));
 effect c11.sema.declare(c11.syntax.StaticAssert($condition,$message),$rest,$env) => c11.sema.declarations($rest,$env);
 effect c11.sema.declare(c11.syntax.RecordDeclaration($name,$fields,$origin),$rest,$env) => c11.sema.declarations($rest,$env);
@@ -72,7 +195,9 @@ effect c11.sema.prepare_step(Preparing($chunks,$env,$seen),$item) => bind($out,c
     Preparing(list.prepend(c11.sema.internal_items($out,$env),$chunks),$env,choose(eq(size($out),0),$seen,env.put($seen,c11.sema.item_name($item),1))));
 effect c11.sema.item_name(c11.syntax.Function($name,$params,$result,$body)) => $name;
 effect c11.sema.item_name(c11.syntax.VariadicFunction($name,$params,$result,$body)) => $name;
+effect c11.sema.item_name(c11.syntax.OldFunction($name,$params,$result,$body)) => $name;
 effect c11.sema.item_name(c11.syntax.Prototype($name,$params,$result,$variadic)) => $name;
+effect c11.sema.item_name(c11.syntax.UnspecifiedPrototype($name,$result)) => $name;
 effect c11.sema.item_name(c11.syntax.Global($name,$type,$value)) => $name;
 effect c11.sema.item_name(c11.syntax.ExternalGlobal($name,$type)) => $name;
 effect c11.sema.item_name(c11.syntax.Internal($item)) => c11.sema.item_name($item);
@@ -100,11 +225,27 @@ effect c11.sema.prepare_item(c11.syntax.Function($name,$params,$result,$body),$r
     => c11.sema.prepare_function($name,$params,$result,$body,0,$rest,$env,$seen);
 effect c11.sema.prepare_item(c11.syntax.VariadicFunction($name,$params,$result,$body),$rest,$env,$seen)
     => c11.sema.prepare_function($name,$params,$result,$body,1,$rest,$env,$seen);
+effect c11.sema.prepare_item(c11.syntax.OldFunction($name,$params,$result,$body),$rest,$env,$seen)
+    => seq(c11.sema.function_constraints($name,$body,$env),bind($result_type,c11.sema.value_type(c11.sema.complete_type($result,$env)),
+        bind($completed,c11.sema.function_parameters($params,$env),bind($abi,list.map("c11.sema.old_abi_parameter",$completed),
+        bind([$bound,$scope],base.bind_params($abi,env.put($env,FunctionNameKey(),$name),env.empty()),
+            list.prepend(CheckedCFunction($name,$bound,$result_type,
+                c11.sema.check_parameter_body($completed,c11.sema.function_body($name,$body),
+                    c11.sema.function_label_scope($body,c11.sema.function_scope($scope,$completed,0)),$result_type),0),
+                c11.sema.prepare_items($rest,$env,$seen)))))));
+effect old_abi_parameter(base.Param($name,$type)) => base.Param($name,c11.types.default_argument(c11.types.unqualified($type)));
 effect c11.sema.prepare_function($name,$params,$result,$body,$variadic,$rest,$env,$seen)
-    => bind([$bound,$scope],base.bind_params($params,$env,env.empty()),
-        list.prepend(CheckedCFunction($name,$bound,c11.types.unqualified($result),base.check_body(c11.sema.parameter_locals($params,c11.sema.function_body($name,$body)),
-            c11.sema.function_label_scope($body,c11.sema.function_scope($scope,$params,$variadic)),c11.types.unqualified($result)),$variadic),
-            c11.sema.prepare_items($rest,$env,$seen)));
+    => seq(c11.sema.function_constraints($name,$body,$env),bind($result_type,c11.sema.value_type(c11.sema.complete_type($result,$env)),
+        bind($completed,c11.sema.function_parameters($params,$env),bind([$bound,$scope],base.bind_params($completed,env.put($env,FunctionNameKey(),$name),env.empty()),
+        list.prepend(CheckedCFunction($name,$bound,$result_type,c11.sema.check_parameter_body($completed,c11.sema.function_body($name,$body),
+            c11.sema.function_label_scope($body,c11.sema.function_scope($scope,$completed,$variadic)),$result_type),$variadic),
+            c11.sema.prepare_items($rest,$env,$seen))))));
+effect c11.sema.function_parameters($params,$env) => bind(FunctionParameters($out,$scope),
+    list.fold("c11.sema.function_parameter_step",$params,FunctionParameters([],$env)),list.reverse($out));
+effect c11.sema.function_parameter_step(FunctionParameters($out,$env),$param)
+    => FunctionParameters(list.prepend(c11.sema.function_parameter($param,$env),$out),$env);
+effect c11.sema.function_parameter(base.Param($name,$type),$env)
+    => base.Param($name,c11.sema.complete_type($type,$env));
 effect c11.sema.function_scope($scope,$params,0) => env.put($scope,LocalNamesKey(),env.empty());
 effect[fallback] c11.sema.function_label_scope($body,$scope) => $scope;
 effect c11.sema.function_scope($scope,$params,1) => choose(lt(0,size($params)),
@@ -113,12 +254,34 @@ effect c11.sema.function_scope($scope,$params,1) => choose(lt(0,size($params)),
 effect c11.sema.function_body("main",$body) => c11.syntax.append($body,base.Return(c11.syntax.Literal("0")));
 effect[fallback] c11.sema.function_body($name,$body) => $body;
 effect c11.sema.parameter_locals([],$body) => $body;
-effect c11.sema.parameter_locals($params,$body) when lt(0,size($params)) => bind(base.Param($name,$type),list.head($params),
-    ParameterDeclare($name,$type,c11.sema.parameter_locals(list.tail($params),$body)));
+effect c11.sema.parameter_locals($params,$body) when lt(0,size($params))
+    => c11.sema.parameter_local(list.head($params),c11.sema.parameter_locals(list.tail($params),$body));
+effect c11.sema.parameter_local(base.Param($name,$type),$body) => ParameterDeclare($name,$type,$body);
 effect c11.sema.prepare_item(c11.syntax.Prototype($name,$params,$result,$variadic),$rest,$env,$seen)
-    => bind(CSignature($types,$declared_result,$declared_variadic,$definition),env.get($env,$name),
+    => c11.sema.prepare_prototype($name,$rest,$env,$seen,env.get($env,$name));
+effect prepare_prototype($name,$rest,$env,$seen,CSignature($types,$result,$variadic,$definition))
+    =>
         choose(or($definition,env.contains($seen,$name)),c11.sema.prepare_items($rest,$env,$seen),
-            list.prepend(CheckedPrototype($name,$types,$result,$variadic),c11.sema.prepare_items($rest,$env,env.put($seen,$name,1)))));
+            list.prepend(CheckedPrototype($name,c11.sema.prototype_types_for($name,$types,$env),c11.sema.prototype_type($result,$env),$variadic),
+                c11.sema.prepare_items($rest,$env,env.put($seen,$name,1))));
+effect c11.sema.prototype_type($type,$env) => c11.objects.declaration_type($type,c11.objects.tag_environment($env));
+effect[fallback] c11.sema.prototype_types_for($name,$types,$env) => c11.sema.prototype_types($types,$env);
+effect c11.sema.prototype_types($types,$env) => bind(PrototypeTypes($out,$scope),list.fold("c11.sema.prototype_type_step",$types,PrototypeTypes([],$env)),list.reverse($out));
+effect c11.sema.prototype_type_step(PrototypeTypes($out,$env),$type) => PrototypeTypes(list.prepend(c11.sema.prototype_type($type,$env),$out),$env);
+effect prepare_prototype($name,$rest,$env,$seen,OldSignature($params,$result)) => c11.sema.prepare_items($rest,$env,$seen);
+effect c11.sema.prepare_item(c11.syntax.UnspecifiedPrototype($name,$result),$rest,$env,$seen)
+    => choose(env.contains($seen,$name),c11.sema.prepare_items($rest,$env,$seen),
+        c11.sema.prepare_unspecified($name,$rest,$env,$seen,env.get($env,$name)));
+effect prepare_unspecified($name,$rest,$env,$seen,CSignature($params,$result,$variadic,$definition))
+    => choose($definition,c11.sema.prepare_items($rest,$env,$seen),
+        list.prepend(CheckedPrototype($name,c11.sema.prototype_types_for($name,$params,$env),c11.sema.prototype_type($result,$env),$variadic),c11.sema.prepare_items($rest,$env,$seen)));
+// A backend declaration uses a variadic physical signature when only an
+// unspecified declaration exists. Calls use C default promotions and the
+// target's variadic physical ABI (including Windows x64 FP register copies).
+// This physical signature does not make the source type variadic.
+effect prepare_unspecified($name,$rest,$env,$seen,UnspecifiedSignature($result))
+    => list.prepend(CheckedPrototype($name,[],c11.sema.prototype_type($result,$env),1),c11.sema.prepare_items($rest,$env,$seen));
+effect prepare_unspecified($name,$rest,$env,$seen,OldSignature($params,$result)) => c11.sema.prepare_items($rest,$env,$seen);
 effect c11.sema.prepare_item(c11.syntax.Global($name,$type,$value),$rest,$env,$seen)
     => c11.sema.prepare_object($name,$rest,$env,$seen);
 effect c11.sema.prepare_item(c11.syntax.ExternalGlobal($name,$type),$rest,$env,$seen)
@@ -170,17 +333,43 @@ effect base.check_body(c11.syntax.Declare($name,$type,$value,$next),$env,$result
 effect base.check_body(ParameterDeclare($name,$type,$next),$env,$result)
     => c11.sema.check_declaration($name,$type,c11.syntax.Name($name),$next,$env,$result,1);
 effect c11.sema.check_declaration($name,$type,$value,$next,$env,$result,$parameter)
-    => bind($declared,c11.sema.aligned_type($type,$env),
-        bind($seen,env.get($env,LocalNamesKey()),choose(env.contains($seen,$name),fail(concat("duplicate C local declaration: ",$name)),
-            bind($identity,symbol($name),Declared($identity,$declared,c11.sema.initializer($value,
-                choose($parameter,$env,env.put($env,$name,ObjectSlot($declared,$identity))),c11.types.unqualified($declared)),
-                base.check_body($next,env.put(env.put($env,LocalNamesKey(),env.put($seen,$name,1)),$name,ObjectSlot($declared,$identity)),$result))))));
+    => c11.sema.check_declaration_policy($name,$type,$value,$next,$env,$result,$parameter,"none");
+effect c11.sema.declaration_slot($type,$identity,"none") => ObjectSlot($type,$identity);
+effect c11.sema.check_declaration_policy($name,$type,$value,$next,$env,$result,$parameter,$storage)
+    => bind([$declaration,$scope],
+        c11.sema.declaration_fact($name,$type,$value,$env,$parameter,$storage),
+        c11.sema.append_declaration($declaration,base.check_body($next,$scope,$result)));
+effect c11.sema.append_declaration(Declared($identity,$type,$value,base.End()),$next) => Declared($identity,$type,$value,$next);
+effect[fallback] c11.sema.declaration_type_fact($type,$env) => TypeFact($type,$env,[]);
+effect[fallback] c11.sema.declared_fact($identity,$name,$source,$type,$value,$bounds,$env) => Declared($identity,$type,$value,base.End());
+// A checked declaration fact is independent of the rest of the statement
+// chain. Parameter preparation can fold these facts without rule recursion.
+effect c11.sema.declaration_fact($name,$type,$value,$env,$parameter,$storage)
+    => bind($seen,env.get($env,LocalNamesKey()),choose(env.contains($seen,$name),fail(concat("duplicate C local declaration: ",$name)),
+        bind($identity,symbol($name),
+            bind($inference,choose($parameter,$env,c11.sema.bind_name($env,$name,
+                c11.sema.declaration_slot(c11.initializers.inference_type($type),$identity,$storage))),
+            bind(TypeFact($materialized,$typed_scope,$bounds),c11.sema.declaration_type_fact($type,$inference),
+            bind($declared,c11.sema.aligned_type($materialized,$typed_scope),bind($slot,c11.sema.declaration_slot($declared,$identity,$storage),
+                [c11.sema.declared_fact($identity,$name,$type,$declared,c11.sema.initializer($value,
+                    choose($parameter,$env,c11.sema.bind_name($typed_scope,$name,$slot)),c11.types.unqualified($declared)),$bounds,$typed_scope),
+                 c11.sema.bind_name(env.put($typed_scope,LocalNamesKey(),env.put($seen,$name,1)),$name,$slot)])))))));
+effect c11.sema.check_parameter_body($params,$body,$env,$result)
+    => bind(ParameterFacts($declarations,$scope),list.fold("c11.sema.parameter_fact",$params,ParameterFacts([],c11.sema.parameter_environment($body,$env))),
+        list.fold("c11.sema.prepend_parameter",$declarations,base.check_body($body,$scope,$result)));
+effect[fallback] c11.sema.parameter_environment($body,$env) => $env;
+effect[fallback] c11.sema.parameter_fact(ParameterFacts($declarations,$scope),$param)
+    => bind(ParameterPolicy($name,$type,$storage),c11.sema.parameter_policy($param),
+        bind([$declaration,$next],c11.sema.declaration_fact($name,$type,c11.syntax.Name($name),$scope,1,$storage),
+            ParameterFacts(list.prepend($declaration,$declarations),$next)));
+effect c11.sema.parameter_policy(base.Param($name,$type)) => ParameterPolicy($name,$type,"none");
+effect c11.sema.prepend_parameter($body,$declaration) => c11.sema.append_declaration($declaration,$body);
 effect c11.sema.initializer(c11.syntax.Uninitialized(),$env,$type) => NoInitializer();
 effect base.check(c11.syntax.Comma($first,$last),$env,$expected)
     => bind($left,base.check($first,$env,base.Any()),bind(base.Typed($type,$right),base.check($last,$env,$expected),
         base.Typed($type,CommaValue($left,base.Typed($type,$right)))));
 effect base.lower(base.Typed($type,CommaValue($first,$last)),$env) => seq(base.lower($first,$env),base.lower($last,$env));
-effect[fallback] c11.sema.initializer($value,$env,$type) => c11.sema.convert_expression($value,$env,c11.types.unqualified($type));
+effect[fallback] c11.sema.initializer($value,$env,$type) => c11.sema.convert_expression($value,$env,c11.sema.value_type($type));
 effect base.check_body(c11.syntax.Scope($body,$next),$env,$result)
     => CheckedScope(base.check_body($body,env.put($env,LocalNamesKey(),env.empty()),$result),base.check_body($next,$env,$result));
 effect base.check_body(c11.syntax.For($init,$condition,$step,$body,$next),$env,$result)
@@ -220,22 +409,31 @@ effect base.function_continuation(c11.types.FloatType($rank,$format)) => Fallthr
 effect base.function_continuation(c11.types.Pointer($element)) => Fallthrough(c11.types.Pointer($element));
 effect base.function_continuation(c11.types.CBool()) => Fallthrough(c11.types.CBool());
 effect base.function_continuation(c11.types.PlainChar()) => Fallthrough(c11.types.PlainChar());
+// C11 6.9.1p12 allows reaching a non-void function's closing brace when
+// the caller discards the value. Aggregate returns follow the same policy
+// as scalar returns, including detached tails kept for possible labels.
+effect base.function_continuation(c11.types.Record($name,$fields)) => Fallthrough(c11.types.Record($name,$fields));
+effect base.function_continuation(c11.types.Union($name,$fields)) => Fallthrough(c11.types.Union($name,$fields));
 effect base.function_continuation(c11.types.Qualified($type,$const,$volatile,$restrict)) => base.function_continuation($type);
 effect base.finish(Fallthrough($type)) => base.ret(mlir.op("llvm.mlir.undef",[],[types.repr($type)],[],[]));
 effect base.finish_context(Fallthrough($type),$environment) => base.return_in($environment,[mlir.op("llvm.mlir.undef",[],[types.repr($type)],[],[])]);
 
-effect base.check(c11.syntax.Name($name),$env,$expected) => c11.sema.contextual(c11.sema.complete_value(c11.sema.named_read(env.get($env,$name),$name),$env),$expected);
+effect base.check(c11.syntax.Name($name),$env,$expected) => c11.sema.contextual(c11.sema.complete_value(c11.sema.named_read(c11.sema.lookup_name($env,$name),$name),$env),$expected);
+effect base.check(c11.names.NameAt($frame,$name),$env,$expected) => c11.sema.contextual(c11.sema.complete_value(c11.sema.named_read(c11.sema.lookup_at($frame,$name,$env),$name),$env),$expected);
 effect c11.sema.complete_value(base.Typed($type,$value),$env) => base.Typed(c11.sema.complete_type($type,$env),$value);
 effect c11.sema.read(ObjectSlot($type,$identity)) => c11.sema.object_read($type,LocalReference($type,$identity));
 effect c11.sema.read(GlobalSlot($type,$name)) => c11.sema.object_read($type,GlobalReference($type,$name));
-effect[fallback] c11.sema.object_read($type,$reference) => base.Typed(c11.types.unqualified($type),ReferenceLoad($reference));
-effect c11.sema.read(base.Slot($type,$identity)) => base.Typed(c11.types.unqualified($type),base.Read($identity));
+effect[fallback] c11.sema.value_type($type) => c11.types.unqualified($type);
+effect[fallback] c11.sema.object_read($type,$reference) => base.Typed(c11.sema.value_type($type),ReferenceLoad($reference));
+effect[fallback] c11.sema.address_allowed($reference) => 1;
+effect[fallback] c11.sema.array_decay_allowed($reference) => 1;
+effect c11.sema.read(base.Slot($type,$identity)) => base.Typed(c11.sema.value_type($type),base.Read($identity));
 effect base.check(c11.syntax.Literal($raw),$env,$expected) => c11.sema.contextual(c11.types.literal($raw),$expected);
 effect base.check(c11.syntax.Character($raw),$env,$expected) => c11.sema.contextual(c11.types.character($raw),$expected);
 effect base.check(c11.syntax.Zero($type),$env,$expected) => c11.sema.contextual(c11.sema.zero($type),$expected);
 effect base.check(StringAddress($name,$count),$env,$expected) => c11.sema.contextual(base.Typed(c11.types.Pointer(c11.types.integer("char")),StringPointer($name)),$expected);
 effect c11.sema.contextual($value,base.Any()) => $value;
-effect c11.sema.contextual($value,$expected) when not(eq($expected,base.Any())) => c11.sema.convert($value,c11.types.unqualified($expected));
+effect c11.sema.contextual($value,$expected) when not(eq($expected,base.Any())) => c11.sema.convert($value,c11.sema.value_type($expected));
 // Nullness is a source-language fact: a variable containing zero is not a
 // null pointer constant. Evaluate only proven integer constant expressions
 // when a pointer context actually needs this fact; ordinary runtime arithmetic
@@ -252,8 +450,9 @@ effect c11.sema.integer_constant_expression(c11.syntax.Literal($raw),$env) => c1
 effect c11.sema.integer_constant_expression(c11.syntax.Character($raw),$env) => 1;
 effect c11.sema.integer_constant_expression(c11.syntax.Name($name),$env) => c11.sema.integer_constant_name($name,$env);
 effect[fallback] c11.sema.integer_constant_name($name,$env) => 0;
-effect c11.sema.integer_constant_expression(c11.syntax.SizeType($type),$env) => 1;
-effect c11.sema.integer_constant_expression(c11.syntax.SizeValue($value),$env) => 1;
+effect c11.sema.integer_constant_expression(c11.syntax.SizeType($type),$env) => c11.sema.size_is_constant(c11.sema.complete_type($type,$env));
+effect c11.sema.integer_constant_expression(c11.syntax.SizeValue($value),$env) => c11.sema.size_is_constant(c11.sema.object_type($value,$env));
+effect[fallback] c11.sema.size_is_constant($type) => 1;
 effect c11.sema.integer_constant_expression(c11.syntax.AlignType($type),$env) => 1;
 effect c11.sema.integer_constant_expression(c11.syntax.Unary($op,$value),$env) => c11.sema.integer_constant_expression($value,$env);
 effect c11.sema.integer_constant_expression(c11.syntax.Binary($op,$a,$b),$env) => and(c11.sema.integer_constant_expression($a,$env),c11.sema.integer_constant_expression($b,$env));
@@ -261,13 +460,13 @@ effect c11.sema.integer_constant_expression(c11.syntax.Comparison($op,$a,$b),$en
 effect c11.sema.integer_constant_expression(c11.syntax.Logical($op,$a,$b),$env) => and(c11.sema.integer_constant_expression($a,$env),c11.sema.integer_constant_expression($b,$env));
 effect c11.sema.integer_constant_expression(c11.syntax.Shift($op,$a,$b),$env) => and(c11.sema.integer_constant_expression($a,$env),c11.sema.integer_constant_expression($b,$env));
 effect c11.sema.integer_constant_expression(c11.syntax.Cast($type,$value),$env)
-    => and(c11.types.is_integer($type),or(c11.constants.immediate_float($value),c11.sema.integer_constant_expression($value,$env)));
+    => and(c11.types.is_integer(c11.sema.value_type($type)),or(c11.constants.immediate_float($value),c11.sema.integer_constant_expression($value,$env)));
 effect c11.sema.integer_constant_expression(c11.syntax.Conditional($test,$a,$b),$env)
     => and(c11.sema.integer_constant_expression($test,$env),and(c11.sema.integer_constant_expression($a,$env),c11.sema.integer_constant_expression($b,$env)));
 effect[fallback] c11.sema.integer_constant_expression($source,$env) => 0;
 effect c11.sema.convert(base.Typed($from,$value),$to) when eq($from,$to) => base.Typed($to,$value);
 effect c11.sema.convert(base.Typed($from,$value),$to) when not(eq($from,$to)) => c11.sema.conversion(base.Typed($from,$value),$to);
-effect c11.sema.conversion($value,c11.types.CBool()) => base.Typed(c11.types.CBool(),Converted(c11.sema.truth($value),"arith.extui"));
+effect[fallback] c11.sema.conversion($value,c11.types.CBool()) => base.Typed(c11.types.CBool(),Converted(c11.sema.truth($value),"arith.extui"));
 effect c11.sema.conversion(base.Typed($type,base.Integer(0)),c11.types.Pointer($element)) when c11.types.is_integer($type)
     => base.Typed(c11.types.Pointer($element),NullPointer());
 effect c11.sema.conversion(base.Typed($type,$value),c11.types.Pointer($element)) when and(c11.types.is_integer($type),not(eq($value,base.Integer(0))))
@@ -283,7 +482,20 @@ effect c11.sema.zero(c11.types.Pointer($element)) => base.Typed(c11.types.Pointe
 effect c11.sema.zero(c11.types.Qualified($type,$const,$volatile,$restrict)) => c11.sema.zero($type);
 
 effect base.check(c11.syntax.Binary($operation,$a,$b),$env,$expected)
-    => c11.sema.contextual_expression(c11.syntax.Binary($operation,$a,$b),c11.sema.binary($operation,base.check($a,$env,base.Any()),base.check($b,$env,base.Any())),$env,$expected);
+    => c11.sema.contextual_expression(c11.syntax.Binary($operation,$a,$b),c11.sema.binary_checked($operation,base.check($a,$env,base.Any()),base.check($b,$env,base.Any()),$env),$env,$expected);
+effect c11.sema.binary_checked($operation,$a,$b,$env) when or(eq($operation,"add"),eq($operation,"sub"))
+    => c11.sema.binary($operation,c11.sema.arithmetic_operand($a,$env),c11.sema.arithmetic_operand($b,$env));
+effect[fallback] c11.sema.binary_checked($operation,$a,$b,$env) => c11.sema.binary($operation,$a,$b);
+// A pointer value itself needs no object layout. Arithmetic does, and records
+// that layout in the checked expression so lowering never sees future tags.
+effect c11.sema.arithmetic_type(c11.types.Pointer($element),$env)
+    => choose(c11.types.object_pointer_target($element),
+        bind($complete,c11.sema.complete_type($element,$env),seq(c11.sema.object_layout_complete($complete),c11.types.Pointer($complete))),
+        fail("C pointer arithmetic requires a complete object type"));
+effect[fallback] c11.sema.object_layout_complete($type) => c11.types.bytes($type);
+effect[fallback] c11.sema.arithmetic_type($type,$env) => $type;
+effect c11.sema.arithmetic_operand(base.Typed($type,$value),$env)
+    => base.Typed(c11.sema.arithmetic_type($type,$env),$value);
 effect[fallback] c11.sema.binary($operation,base.Typed($at,$a),base.Typed($bt,$b)) => bind($type,c11.types.usual($at,$bt),
     seq(base.opcode($operation,$type),base.Typed($type,base.Binary($operation,c11.sema.convert(base.Typed($at,$a),$type),c11.sema.convert(base.Typed($bt,$b),$type)))));
 effect base.check(c11.syntax.Comparison($operation,$a,$b),$env,$expected)
@@ -329,7 +541,7 @@ effect c11.sema.pointer_predicate("gt") => 8;
 effect c11.sema.pointer_predicate("ge") => 9;
 effect c11.sema.boolean_to_int($value) => base.Typed(c11.types.integer("int"),Converted($value,"arith.extui"));
 effect base.check(c11.syntax.Truth($value),$env,$expected) => base.expect(c11.sema.truth(base.check($value,$env,base.Any())),$expected);
-effect c11.sema.truth(base.Typed($type,$value)) when c11.types.is_arithmetic($type)
+effect[fallback] c11.sema.truth(base.Typed($type,$value)) when c11.types.is_arithmetic($type)
     => base.Typed(types.Bool(),base.Comparison("ne",base.Typed($type,$value),c11.sema.zero($type)));
 effect c11.sema.truth(base.Typed(c11.types.Pointer($element),$value)) => base.Typed(types.Bool(),PointerTruth(base.Typed(c11.types.Pointer($element),$value)));
 effect base.check(c11.syntax.Unary("!",$value),$env,$expected)
@@ -339,7 +551,7 @@ effect base.check(c11.syntax.Unary($operation,$value),$env,$expected) when not(e
 effect c11.sema.unary($operation,base.Typed($type,$value)) => bind($promoted,c11.types.promotion($type),
     c11.sema.unary_promoted($operation,c11.sema.convert(base.Typed($type,$value),$promoted)));
 effect c11.sema.unary_promoted("+",$value) => $value;
-effect c11.sema.unary_promoted("-",base.Typed($type,$value)) => base.Typed($type,base.Binary("sub",c11.sema.zero($type),base.Typed($type,$value)));
+effect[fallback] c11.sema.unary_promoted("-",base.Typed($type,$value)) => base.Typed($type,base.Binary("sub",c11.sema.zero($type),base.Typed($type,$value)));
 effect c11.sema.unary_promoted("~",base.Typed($type,$value)) => choose(c11.types.is_integer($type),
     base.Typed($type,base.Binary("xor",base.Typed($type,$value),base.Typed($type,base.Integer(-1)))),fail("bitwise complement requires an integer"));
 effect base.check(c11.syntax.Logical($operation,$a,$b),$env,$expected)
@@ -351,34 +563,50 @@ effect c11.sema.shift($operation,base.Typed($at,$a),base.Typed($bt,$b)) => bind(
     choose(and(c11.types.is_integer($type),c11.types.is_integer($bt)),base.Typed($type,c11.sema.Shifted($operation,
         c11.sema.convert(base.Typed($at,$a),$type),c11.sema.convert(base.Typed($bt,$b),$type))),fail("shift requires integer operands")));
 effect base.check(c11.syntax.Cast($type,$value),$env,$expected) => c11.sema.contextual_expression(c11.syntax.Cast($type,$value),c11.sema.explicit_expression($type,$value,$env),$env,$expected);
-effect c11.sema.explicit_expression(c11.types.Pointer($type),$source,$env)
-    => c11.sema.explicit_convert(c11.sema.null_operand($source,base.check($source,$env,base.Any()),$env),c11.types.Pointer($type));
-effect[fallback] c11.sema.explicit_expression($type,$source,$env) => c11.sema.explicit_convert(base.check($source,$env,base.Any()),$type);
-effect c11.sema.explicit_convert(base.Typed(c11.types.IntType($rank,$width,$unsigned),$value),c11.types.Pointer($element))
+// Cast constraints precede the same-type conversion fast path. An aggregate
+// is never a legal non-void cast target even when a typedef stores its fully
+// completed descriptor. Top-level qualifiers do not make a cast an lvalue.
+effect c11.sema.explicit_expression($type,$source,$env)
+    => bind($target,c11.sema.value_type(c11.sema.complete_type($type,$env)),bind($value,base.check($source,$env,base.Any()),
+        seq(c11.sema.cast_constraint(arg($value,0),$target),c11.sema.explicit_checked($target,$source,$value,$env))));
+effect c11.sema.explicit_checked(c11.types.Pointer($type),$source,$value,$env)
+    => c11.sema.explicit_convert(c11.sema.null_operand($source,$value,$env),c11.types.Pointer($type));
+effect[fallback] c11.sema.explicit_checked($type,$source,$value,$env) => c11.sema.explicit_convert($value,$type);
+effect c11.sema.cast_constraint($from,control.Void()) => 1;
+effect[fallback] c11.sema.cast_constraint($from,$to) => choose(and(c11.types.is_scalar($from),c11.types.is_scalar($to)),
+    choose(or(and(c11.sema.pointer_type($from),c11.sema.float_type($to)),and(c11.sema.float_type($from),c11.sema.pointer_type($to))),
+        fail("C cast cannot convert between pointer and floating types"),1),fail("C cast requires a scalar operand and scalar or void target"));
+effect c11.sema.pointer_type(c11.types.Pointer($element)) => 1;
+effect[fallback] c11.sema.pointer_type($type) => 0;
+effect c11.sema.float_type(c11.types.FloatType($rank,$format)) => 1;
+effect[fallback] c11.sema.float_type($type) => 0;
+effect c11.sema.explicit_convert(base.Typed($integer,$value),c11.types.Pointer($element)) when c11.types.is_integer($integer)
     => base.Typed(c11.types.Pointer($element),choose(eq($value,base.Integer(0)),NullPointer(),
-        PointerConverted(base.Typed(c11.types.IntType($rank,$width,$unsigned),$value),"llvm.inttoptr")));
-effect c11.sema.explicit_convert(base.Typed(c11.types.Pointer($element),$value),c11.types.IntType($rank,$width,$unsigned))
-    => base.Typed(c11.types.IntType($rank,$width,$unsigned),PointerConverted(base.Typed(c11.types.Pointer($element),$value),"llvm.ptrtoint"));
+        PointerConverted(base.Typed($integer,$value),"llvm.inttoptr")));
+effect c11.sema.explicit_convert(base.Typed(c11.types.Pointer($element),$value),$integer)
+    when and(c11.types.is_integer($integer),not(eq($integer,c11.types.CBool())))
+    => base.Typed($integer,PointerConverted(base.Typed(c11.types.Pointer($element),$value),"llvm.ptrtoint"));
 effect c11.sema.explicit_convert(base.Typed(c11.types.Pointer($from),$value),c11.types.Pointer($to)) => base.Typed(c11.types.Pointer($to),$value);
 effect[fallback] c11.sema.explicit_convert($value,$type) => c11.sema.convert($value,$type);
 
 effect base.check(c11.syntax.Assign($target,$value),$env,$expected)
-    => bind($reference,c11.sema.modifiable($target,$env),bind($type,c11.sema.complete_type(c11.types.unqualified(arg($reference,0)),$env),c11.sema.contextual(base.Typed($type,Assigned($reference,
+    => bind($reference,c11.sema.modifiable($target,$env),bind($type,c11.sema.complete_type(c11.sema.value_type(arg($reference,0)),$env),c11.sema.contextual(base.Typed($type,Assigned($reference,
         c11.sema.convert_expression($value,$env,$type))),$expected)));
 effect base.check(c11.syntax.Compound($operation,$target,$value),$env,$expected)
-    => bind($reference,c11.sema.modifiable($target,$env),bind($type,c11.sema.complete_type(c11.types.unqualified(arg($reference,0)),$env),
+    => bind($reference,c11.sema.modifiable($target,$env),bind($type,c11.sema.arithmetic_type(c11.sema.complete_type(c11.sema.value_type(arg($reference,0)),$env),$env),
         bind($right,base.check($value,$env,base.Any()),seq(c11.sema.compound_value($operation,base.Typed($type,Existing(0)),$right),
             c11.sema.contextual(base.Typed($type,CompoundAssigned($operation,$reference,$right)),$expected)))));
 effect base.check(c11.syntax.Increment($target,$delta,$prefix),$env,$expected)
-    => bind($reference,c11.sema.modifiable($target,$env),bind($type,c11.sema.complete_type(c11.types.unqualified(arg($reference,0)),$env),seq(c11.sema.increment_type($type),
+    => bind($reference,c11.sema.modifiable($target,$env),bind($type,c11.sema.arithmetic_type(c11.sema.complete_type(c11.sema.value_type(arg($reference,0)),$env),$env),seq(c11.sema.increment_type($type),
         c11.sema.contextual(base.Typed($type,Incremented($reference,$delta,$prefix)),$expected))));
 effect c11.sema.increment_type(c11.types.Pointer($element)) => c11.types.Pointer($element);
-effect[fallback] c11.sema.increment_type($type) => c11.types.promotion($type);
-effect c11.sema.modifiable(c11.syntax.Name($name),$env) => c11.sema.writable(c11.sema.slot_type(env.get($env,$name)),c11.sema.lvalue(c11.syntax.Name($name),$env));
+effect[fallback] c11.sema.increment_type($type) => choose(c11.types.is_arithmetic($type),c11.types.promotion($type),fail("C increment requires a real or pointer operand"));
+effect c11.sema.modifiable(c11.syntax.Name($name),$env) => c11.sema.writable(c11.sema.slot_type(c11.sema.lookup_name($env,$name)),c11.sema.lvalue(c11.syntax.Name($name),$env));
 effect c11.sema.modifiable(c11.syntax.Dereference($value),$env) => bind(base.Typed(c11.types.Pointer($type),$pointer),base.check($value,$env,base.Any()),
-    c11.sema.writable($type,IndirectReference($type,base.Typed(c11.types.Pointer($type),$pointer))));
+    bind($complete,c11.sema.complete_type($type,$env),c11.sema.writable($complete,IndirectReference($complete,base.Typed(c11.types.Pointer($type),$pointer)))));
 effect[fallback] c11.sema.modifiable($expression,$env) => bind($reference,c11.sema.lvalue($expression,$env),c11.sema.writable(arg($reference,0),$reference));
-effect c11.sema.lvalue(c11.syntax.Name($name),$env) => c11.sema.slot_reference(env.get($env,$name));
+effect c11.sema.lvalue(c11.syntax.Name($name),$env) => c11.sema.slot_reference(c11.sema.lookup_name($env,$name));
+effect c11.sema.lvalue(c11.names.NameAt($frame,$name),$env) => c11.sema.slot_reference(c11.sema.lookup_at($frame,$name,$env));
 effect c11.sema.lvalue(c11.syntax.Dereference($value),$env) => c11.sema.indirect_reference(base.check($value,$env,base.Any()));
 effect c11.sema.indirect_reference(base.Typed(c11.types.Pointer($element),$pointer))
     => IndirectReference($element,base.Typed(c11.types.Pointer($element),$pointer));
@@ -399,7 +627,19 @@ effect[fallback] c11.sema.writable_member_type($type) => c11.sema.writable_type(
 effect[fallback] c11.sema.writable_type($type) => c11.types.bytes($type);
 effect[fallback] c11.sema.lvalue($expression,$env) => fail("C assignment requires a modifiable lvalue");
 effect base.check(c11.syntax.Address(c11.syntax.Name($name)),$env,$expected)
-    => c11.sema.contextual(c11.sema.address(env.get($env,$name)),$expected);
+    => c11.sema.contextual(c11.sema.address_binding(c11.sema.lookup_name($env,$name),$name),$expected);
+effect base.check(c11.syntax.Address(c11.names.NameAt($frame,$name)),$env,$expected)
+    => c11.sema.contextual(c11.sema.address_binding(c11.sema.lookup_at($frame,$name,$env),$name),$expected);
+effect c11.sema.address_binding(CSignature($params,$result,$variadic,$definition),$name)
+    => c11.sema.read_function($name,$params,$result,$variadic,$definition);
+effect[fallback] c11.sema.address_binding($binding,$name) => c11.sema.address($binding);
+// &* retains the checked pointer expression. Neither unary operator loads
+// through the pointer; even a null pointer is valid in this composition.
+effect base.check(c11.syntax.Address(c11.syntax.Dereference($value)),$env,$expected)
+    => c11.sema.address_indirect(base.check($value,$env,base.Any()),$expected);
+effect c11.sema.address_indirect(base.Typed(c11.types.Pointer($type),$pointer),$expected)
+    => c11.sema.contextual(base.Typed(c11.types.Pointer($type),$pointer),$expected);
+effect[fallback] c11.sema.address_indirect($value,$expected) => fail("C indirection requires a pointer operand");
 effect c11.sema.address(ObjectSlot($type,$identity)) => base.Typed(c11.types.Pointer($type),ObjectAddress($identity));
 effect c11.sema.address(GlobalSlot($type,$name)) => base.Typed(c11.types.Pointer($type),GlobalAddress($name));
 effect base.check(c11.syntax.Dereference($value),$env,$expected) => c11.sema.dereference(base.check($value,$env,base.Any()),$env,$expected);
@@ -409,10 +649,13 @@ effect[fallback] c11.sema.dereference(base.Typed(c11.types.Pointer($type),$point
     => c11.sema.contextual(c11.sema.complete_value(c11.sema.object_read($type,IndirectReference($type,base.Typed(c11.types.Pointer($type),$pointer))),$env),$expected);
 effect[fallback] c11.sema.complete_type($type,$env) => $type;
 
-effect base.check(c11.syntax.SizeType($type),$env,$expected) => c11.sema.contextual(base.Typed(c11.types.size_type(),base.Integer(c11.types.sizeof(c11.sema.complete_type($type,$env)))),$expected);
+effect base.check(c11.syntax.SizeType($type),$env,$expected) => c11.sema.contextual(c11.sema.size_value(c11.sema.complete_type($type,$env),$env),$expected);
 effect base.check(c11.syntax.SizeValue($value),$env,$expected)
-    => c11.sema.contextual(base.Typed(c11.types.size_type(),base.Integer(c11.types.sizeof(c11.sema.object_type($value,$env)))),$expected);
-effect c11.sema.object_type(c11.syntax.Name($name),$env) => c11.sema.object_binding_type(env.get($env,$name),$env);
+    => c11.sema.contextual(c11.sema.size_expression($value,c11.sema.object_type($value,$env),$env),$expected);
+effect[fallback] c11.sema.size_expression($value,$type,$env) => c11.sema.size_value($type,$env);
+effect[fallback] c11.sema.size_value($type,$env) => base.Typed(c11.types.size_type(),base.Integer(c11.types.sizeof($type)));
+effect c11.sema.object_type(c11.syntax.Name($name),$env) => c11.sema.object_binding_type(c11.sema.lookup_name($env,$name),$env);
+effect c11.sema.object_type(c11.names.NameAt($frame,$name),$env) => c11.sema.object_binding_type(c11.sema.lookup_at($frame,$name,$env),$env);
 effect[fallback] c11.sema.object_binding_type($binding,$env) => c11.sema.complete_type(c11.sema.slot_type($binding),$env);
 // Preserve the array before ordinary expression contexts decay it to char*.
 effect c11.sema.object_type(StringAddress($name,$count),$env) => c11.types.Array($count,c11.types.integer("char"));
@@ -446,12 +689,31 @@ effect c11.sema.conditional_type(base.Typed(c11.types.IntType($rank,$width,$unsi
     when not(eq($a,base.Integer(0))) => fail("conditional C operands require a null pointer constant");
 effect[fallback] c11.sema.conditional_type(base.Typed($at,$a),base.Typed($bt,$b)) => c11.types.usual($at,$bt);
 effect base.check(c11.syntax.Call($name,$arguments),$env,$expected) => c11.sema.named_call($name,$arguments,$env,$expected);
-effect[fallback] c11.sema.named_call($name,$arguments,$env,$expected) => c11.sema.call($name,$arguments,env.get($env,$name),$env,$expected);
+effect base.check(c11.names.CallAt($frame,$name,$arguments),$env,$expected) => c11.sema.named_call_at($frame,$name,$arguments,$env,$expected);
+effect[fallback] c11.sema.named_call_at($frame,$name,$arguments,$env,$expected) => c11.sema.call($name,$arguments,c11.sema.lookup_at($frame,$name,$env),$env,$expected);
+effect[fallback] c11.sema.named_call($name,$arguments,$env,$expected) => c11.sema.call($name,$arguments,c11.sema.lookup_name($env,$name),$env,$expected);
 effect c11.sema.call($name,$arguments,CSignature($params,$result,$variadic,$definition),$env,$expected)
-    => c11.sema.contextual(base.Typed($result,Invoke($name,c11.sema.arguments($arguments,$params,$variadic,$env),$params,$variadic,$definition)),$expected);
+    => bind($value_type,c11.sema.value_type(c11.sema.complete_type($result,$env)),
+        c11.sema.contextual(c11.sema.make_invoke($value_type,$name,c11.sema.arguments($arguments,$params,$variadic,$env),$params,$variadic,$definition),$expected));
+effect[fallback] c11.sema.make_invoke($result,$name,$arguments,$params,$variadic,$definition)
+    => base.Typed($result,Invoke($name,$arguments,$params,$variadic,$definition));
+effect[fallback] c11.sema.make_indirect_invoke($result,$target,$arguments,$params,$variadic)
+    => base.Typed($result,IndirectInvoke($target,$arguments,$params,$variadic));
+effect c11.sema.call($name,$arguments,UnspecifiedSignature($result),$env,$expected)
+    => c11.sema.indirect_call(c11.sema.unspecified_address($name,$result),$arguments,$env,$expected);
+effect unspecified_address($name,$result) => base.Typed(c11.types.Pointer(c11.types.FunctionType($result,[],0,0)),FunctionAddress($name,0));
+effect c11.sema.named_read(UnspecifiedSignature($result),$name) => unspecified_address($name,$result);
+effect c11.sema.address_binding(UnspecifiedSignature($result),$name) => unspecified_address($name,$result);
+effect c11.sema.function_constant(UnspecifiedSignature($result),$name) => unspecified_address($name,$result);
+effect c11.sema.call($name,$arguments,OldSignature($params,$result),$env,$expected)
+    => c11.sema.indirect_call(c11.sema.old_address($name,$params,$result),$arguments,$env,$expected);
+effect old_address($name,$params,$result) => base.Typed(c11.types.Pointer(c11.types.FunctionType($result,list.map("c11.sema.unnamed_parameter",$params),0,2)),FunctionAddress($name,1));
+effect c11.sema.named_read(OldSignature($params,$result),$name) => old_address($name,$params,$result);
+effect c11.sema.address_binding(OldSignature($params,$result),$name) => old_address($name,$params,$result);
+effect c11.sema.function_constant(OldSignature($params,$result),$name) => old_address($name,$params,$result);
 effect c11.sema.arguments([] ,[],$variadic,$env) => [];
 effect c11.sema.arguments($arguments,$params,$variadic,$env) when and(lt(0,size($params)),lt(0,size($arguments)))
-    => list.prepend(c11.sema.convert_expression(list.head($arguments),$env,c11.types.unqualified(list.head($params))),
+    => list.prepend(c11.sema.convert_expression(list.head($arguments),$env,c11.sema.value_type(c11.sema.complete_type(list.head($params),$env))),
         c11.sema.arguments(list.tail($arguments),list.tail($params),$variadic,$env));
 effect c11.sema.arguments($arguments,[],1,$env) when lt(0,size($arguments)) => bind($value,base.check(list.head($arguments),$env,base.Any()),
     list.prepend(c11.sema.convert($value,c11.types.default_argument(arg($value,0))),c11.sema.arguments(list.tail($arguments),[],1,$env)));
@@ -470,7 +732,7 @@ effect c11.sema.allocate(c11.types.AlignedType($type,$alignment))
         list.concat([RawAttr("elem_type",types.repr($type))],[Attr("alignment",$alignment,"i64")]),[]);
 effect c11.sema.allocate($type) when not(c11.sema.is_aligned_type($type))
     => mlir.op("llvm.alloca",[base.lower(base.Typed(types.Signed(64),base.Integer(1)),env.empty())],["!llvm.ptr"],
-    [RawAttr("elem_type",types.repr($type))],[]);
+    [RawAttr("elem_type",types.repr($type)),Attr("alignment",c11.types.alignment($type),"i64")],[]);
 effect c11.sema.memory_attrs(c11.types.AlignedType($type,$alignment)) => c11.sema.memory_attrs($type);
 effect c11.sema.memory_attrs($type) when not(c11.sema.is_aligned_type($type))
     => bind([$const,$volatile,$restrict],c11.types.qualifiers($type),choose($volatile,[RawAttr("volatile_","unit")],[]));
@@ -483,23 +745,32 @@ effect base.lower(base.Typed($type,GlobalAddress($name)),$env) => c11.sema.addre
 effect base.lower(base.Typed($type,StringPointer($name)),$env) => c11.sema.address_global($name);
 effect base.lower(base.Typed($type,NullPointer()),$env) => mlir.op("llvm.mlir.zero",[],["!llvm.ptr"],[],[]);
 effect externc.escape_byte($byte) when eq(text.byte($byte,0),0) => "\\00";
-effect base.lower(base.Typed($type,IndirectLoad($pointer)),$env) => mlir.op("llvm.load",[base.lower($pointer,$env)],[types.repr($type)],[],[]);
-effect base.lower(base.Typed($type,ReferenceLoad($reference)),$env) => mlir.op("llvm.load",[c11.sema.reference_pointer($reference,$env)],[types.repr($type)],c11.sema.memory_attrs(arg($reference,0)),[]);
-effect base.lower(base.Typed($type,Converted($value,$operation)),$env) => base.lower_cast($operation,base.lower($value,$env),$type);
+effect base.lower(base.Typed($type,IndirectLoad($pointer)),$env) => mlir.op("llvm.load",[base.lower($pointer,$env)],[types.repr($type)],[Attr("alignment",1,"i64")],[]);
+effect base.lower(base.Typed($type,ReferenceLoad($reference)),$env) => c11.sema.load_location(c11.sema.reference_location($reference,$env));
+effect[fallback] c11.sema.reference_location($reference,$env) => MemoryLocation(arg($reference,0),c11.sema.reference_pointer($reference,$env));
+effect c11.sema.load_location(MemoryLocation($type,$pointer)) => mlir.op("llvm.load",[$pointer],[types.repr(c11.types.unqualified($type))],c11.sema.access_attrs($type),[]);
+effect c11.sema.access_attrs($type) => list.prepend(Attr("alignment",1,"i64"),c11.sema.memory_attrs($type));
+effect c11.sema.store_location(MemoryLocation($type,$pointer),$value) => seq(mlir.op("llvm.store",[$value,$pointer],[],c11.sema.access_attrs($type),[]),$value);
+effect base.lower(base.Typed($type,Converted($value,$operation)),$env) => base.emit_cast($operation,base.lower($value,$env),$type,$env);
 effect base.lower(base.Typed($type,PointerConverted($value,$operation)),$env) => mlir.op($operation,[base.lower($value,$env)],[types.repr($type)],[],[]);
-effect c11.sema.reference_pointer(LocalReference($type,$identity),$env) => env.get($env,$identity);
+effect c11.sema.reference_pointer(LocalReference($type,$identity),$env) => c11.sema.local_pointer($type,$identity,$env);
+effect[fallback] c11.sema.local_pointer($type,$identity,$env) => env.get($env,$identity);
 effect c11.sema.reference_pointer(GlobalReference($type,$name),$env) => c11.sema.address_global($name);
 effect c11.sema.reference_pointer(IndirectReference($type,$pointer),$env) => base.lower($pointer,$env);
-effect base.lower(base.Typed($type,Assigned($reference,$value)),$env) => bind($pointer,c11.sema.reference_pointer($reference,$env),
-    bind($ssa,base.lower($value,$env),seq(mlir.op("llvm.store",[$ssa,$pointer],[],c11.sema.memory_attrs(arg($reference,0)),[]),$ssa)));
+effect base.lower(base.Typed($type,Assigned($reference,$value)),$env) => bind($location,c11.sema.reference_location($reference,$env),
+    c11.sema.store_location($location,base.lower($value,$env)));
 effect base.lower(base.Typed($type,CompoundAssigned($operation,$reference,$value)),$env)
-    => bind($pointer,c11.sema.reference_pointer($reference,$env),bind($old,mlir.op("llvm.load",[$pointer],[types.repr($type)],c11.sema.memory_attrs(arg($reference,0)),[]),
+    => c11.sema.compound_location(c11.sema.reference_location($reference,$env),$operation,$type,$value,$env);
+effect[fallback] c11.sema.compound_location($location,$operation,$type,$value,$env)
+    => bind($old,c11.sema.load_location($location),
         bind($combined,c11.sema.compound_value($operation,base.Typed($type,Existing($old)),$value),
-            bind($ssa,base.lower(c11.sema.convert($combined,$type),$env),seq(mlir.op("llvm.store",[$ssa,$pointer],[],c11.sema.memory_attrs(arg($reference,0)),[]),$ssa)))));
+            c11.sema.store_location($location,base.lower(c11.sema.convert($combined,$type),$env))));
 effect base.lower(base.Typed($type,Incremented($reference,$delta,$prefix)),$env)
-    => bind($pointer,c11.sema.reference_pointer($reference,$env),bind($old,mlir.op("llvm.load",[$pointer],[types.repr($type)],c11.sema.memory_attrs(arg($reference,0)),[]),
+    => c11.sema.increment_location(c11.sema.reference_location($reference,$env),$type,$delta,$prefix,$env);
+effect[fallback] c11.sema.increment_location($location,$type,$delta,$prefix,$env)
+    => bind($old,c11.sema.load_location($location),
         bind($computed,c11.sema.convert(c11.sema.binary("add",base.Typed($type,Existing($old)),base.Typed(c11.types.integer("int"),base.Integer($delta))),$type),
-            bind($next,base.lower($computed,$env),seq(mlir.op("llvm.store",[$next,$pointer],[],c11.sema.memory_attrs(arg($reference,0)),[]),choose($prefix,$next,$old))))));
+            bind($next,c11.sema.store_location($location,base.lower($computed,$env)),choose($prefix,$next,$old))));
 effect base.lower(base.Typed($type,Existing($value)),$env) => $value;
 effect base.lower(base.Typed($type,c11.sema.Shifted($operation,$a,$b)),$env)
     => mlir.op(control.shift_op($operation,c11.types.storage($type)),[base.lower($a,$env),base.lower($b,$env)],[types.repr($type)],[],[]);
@@ -520,22 +791,24 @@ effect base.lower(base.Typed($type,Invoke($name,$arguments,$params,$variadic,$de
         list.concat([RawAttr("callee",concat("@",$name)),RawAttr("op_bundle_sizes","array<i32>"),
             RawAttr("operandSegmentSizes",concat("array<i32: ",concat(text(size($arguments)),", 0>")))],
             choose($variadic,[RawAttr("var_callee_type",c11.sema.function_type($params,$type,$variadic))],[])),[]);
-effect c11.sema.function_type($params,$result,$variadic) => concat("!llvm.func<",concat(c11.sema.llvm_result($result),concat(" (",
+effect[fallback] c11.sema.function_type($params,$result,$variadic) => concat("!llvm.func<",concat(c11.sema.llvm_result($result),concat(" (",
     concat(types.join(list.map("types.repr",$params)),concat(choose($variadic,choose(eq(size($params),0),"...",", ..."),"")," )>")))));
 effect c11.sema.llvm_result(control.Void()) => "void";
 effect[fallback] c11.sema.llvm_result($type) => types.repr($type);
 effect c11.sema.linkage($name) => RawAttr("linkage",concat("#llvm.linkage<",concat($name,">")));
 effect c11.sema.global($name,$type,$value,$linkage) => c11.sema.global_attrs($name,$type,$value,$linkage,[]);
-effect c11.sema.global_attrs($name,c11.types.AlignedType($type,$alignment),$value,$linkage,$attrs)
-    => mlir.op("llvm.mlir.global",[],[],list.concat($attrs,[Attr("sym_name",$name),RawAttr("global_type",types.repr($type)),
-        c11.sema.linkage($linkage),Attr("alignment",$alignment,"i64")]),
-        [mlir.region(mlir.op("llvm.return",[base.lower($value,env.empty())],[],[],[]))]);
+effect c11.sema.global_alignment(c11.types.AlignedType($type,$alignment)) => $alignment;
+effect c11.sema.global_alignment(c11.types.Qualified($type,$const,$volatile,$restrict)) => c11.sema.global_alignment($type);
+effect[fallback] c11.sema.global_alignment($type) => c11.types.alignment($type);
+effect[fallback] c11.sema.global_storage($type,$value) => c11.sema.GlobalStorage(types.repr($type),$value);
 effect c11.sema.global_attrs($name,$type,base.Typed($value_type,base.Floating($attribute)),$linkage,$attrs)
     => mlir.op("llvm.mlir.global",[],[],list.concat($attrs,[Attr("sym_name",$name),RawAttr("global_type",types.repr($type)),
-        c11.sema.linkage($linkage),RawAttr("value",$attribute)]),[mlir.region_blocks([])]);
+        c11.sema.linkage($linkage),Attr("alignment",c11.sema.global_alignment($type),"i64"),RawAttr("value",$attribute)]),[mlir.region_blocks([])]);
 effect[fallback] c11.sema.global_attrs($name,$type,$value,$linkage,$attrs)
-    => mlir.op("llvm.mlir.global",[],[],list.concat($attrs,[Attr("sym_name",$name),RawAttr("global_type",types.repr($type)),c11.sema.linkage($linkage)]),
-        [mlir.region(mlir.op("llvm.return",[base.lower($value,env.empty())],[],[],[]))]);
+    => bind(c11.sema.GlobalStorage($representation,$initial),c11.sema.global_storage($type,$value),
+        mlir.op("llvm.mlir.global",[],[],list.concat($attrs,[Attr("sym_name",$name),RawAttr("global_type",$representation),
+            c11.sema.linkage($linkage),Attr("alignment",c11.sema.global_alignment($type),"i64")]),
+            [mlir.region(mlir.op("llvm.return",[base.lower($initial,env.empty())],[],[],[]))]));
 
 // Integer constant expressions are analyzed as facts; their runtime effects
 // are never executed while checking static assertions or object initializers.
@@ -566,7 +839,7 @@ effect c11.sema.constant_shift($op,base.Typed(c11.types.IntType($rank,$width,$un
         choose(and(eq($op,"left"),and(not($unsigned),lt($value,0))),fail("negative signed C left shift"),
             c11.sema.constant_result(c11.types.IntType($rank,$width,$unsigned),choose(eq($op,"left"),int.shl($value,$count),int.shr($value,$count)))),
         fail("invalid C constant shift count"));
-effect c11.sema.constant(c11.syntax.Cast($type,$a)) => c11.sema.constant_convert(c11.sema.constant($a),$type);
+effect c11.sema.constant(c11.syntax.Cast($type,$a)) => c11.sema.constant_convert(c11.sema.constant($a),c11.sema.value_type($type));
 effect c11.sema.constant(c11.syntax.Conditional($test,$yes,$no))
     => bind($type,c11.types.usual(c11.sema.constant_type($yes),c11.sema.constant_type($no)),
         c11.sema.constant_convert(choose(c11.sema.constant_truth($test),c11.sema.constant($yes),c11.sema.constant($no)),$type));
@@ -576,7 +849,7 @@ effect c11.sema.constant_type(c11.syntax.Unary($op,$a)) => choose(eq($op,"!"),c1
 effect c11.sema.constant_type(c11.syntax.Comparison($op,$a,$b)) => c11.types.integer("int");
 effect c11.sema.constant_type(c11.syntax.Logical($op,$a,$b)) => c11.types.integer("int");
 effect c11.sema.constant_type(c11.syntax.Shift($op,$a,$b)) => c11.types.promotion(c11.sema.constant_type($a));
-effect c11.sema.constant_type(c11.syntax.Cast($type,$a)) => $type;
+effect c11.sema.constant_type(c11.syntax.Cast($type,$a)) => c11.sema.value_type($type);
 effect c11.sema.constant_type(c11.syntax.Conditional($test,$a,$b)) => c11.types.usual(c11.sema.constant_type($a),c11.sema.constant_type($b));
 effect[fallback] c11.sema.constant_type($value) => arg(c11.sema.constant($value),0);
 effect c11.sema.constant_integer("add",$a,$b) => int.add($a,$b);
@@ -608,13 +881,20 @@ effect[fallback] c11.sema.constant($node) => fail("expression is not a supported
 effect c11.sema.internal_items($items,$env) => bind(InternalItems($out,$scope),list.fold("c11.sema.internal_item",$items,InternalItems([],$env)),list.reverse($out));
 effect c11.sema.internal_item(InternalItems($out,$env),$item) => bind($name,c11.sema.checked_name($item),
     InternalItems(list.prepend(c11.sema.target_annotations(choose(env.contains($env,NoInlineKey($name)),
-        NoInline(c11.sema.internalize($item,$env)),c11.sema.internalize($item,$env)),$name,$env),$out),$env));
+        NoInline(c11.sema.language_annotations(c11.sema.internalize($item,$env),$name,$env)),
+        c11.sema.language_annotations(c11.sema.internalize($item,$env),$name,$env)),$name,$env),$out),$env));
 effect[fallback] c11.sema.target_annotations($item,$name,$env) => $item;
 effect c11.sema.bound_descriptor(base.BoundParam($type,$identity)) => $type;
 effect c11.sema.lower_function($name,$params,$result,$body,$variadic,$linkage) => c11.sema.lower_function_attrs($name,$params,$result,$body,$variadic,$linkage,[]);
 effect c11.sema.lower_function_attrs($name,$params,$result,$body,$variadic,$linkage,$attrs) => mlir.op("llvm.func",[],[],
-    list.concat($attrs,[Attr("sym_name",$name),RawAttr("function_type",c11.sema.function_type(list.map("c11.sema.bound_descriptor",$params),$result,$variadic)),c11.sema.linkage($linkage)]),
-    [base.function_region($params,$body,$result,env.put(env.empty(),base.ReturnOpKey(),"llvm.return"))]);
+    list.concat(list.concat(list.concat($attrs,c11.sema.runtime_function_attrs($body)),c11.sema.function_abi_attrs(list.map("c11.sema.bound_descriptor",$params),$result,$variadic)),
+        [Attr("sym_name",$name),RawAttr("function_type",c11.sema.function_type(list.map("c11.sema.bound_descriptor",$params),$result,$variadic)),c11.sema.linkage($linkage)]),
+    [c11.sema.function_region($params,$body,$result,c11.sema.function_lowering_policy($body,env.put(env.empty(),base.ReturnOpKey(),"llvm.return")))]);
+effect[fallback] c11.sema.function_lowering_policy($body,$environment) => $environment;
+effect[fallback] c11.sema.runtime_function_attrs($body) => [];
+effect[fallback] c11.sema.prepare_runtime_frame($body,$block,$environment) => $environment;
+effect[fallback] c11.sema.function_region($params,$body,$result,$policy) => base.function_region($params,$body,$result,$policy);
+effect[fallback] c11.sema.function_abi_attrs($params,$result,$variadic) => [];
 // MSVC __inline has a deduplicated external definition on the selected ABI.
 effect c11.sema.comdat($name) => mlir.op("llvm.comdat",[],[],[Attr("sym_name",concat(".naru.c.comdat.",$name))],
     [mlir.region(mlir.op("llvm.comdat_selector",[],[],[Attr("sym_name",$name),Attr("comdat",0,"i64")],[]))]);
@@ -624,9 +904,11 @@ effect c11.sema.lower_inline_function($name,$params,$result,$body,$variadic,$att
 
 effect[fallback] c11.sema.constant_initializer($value,$type,$env) => c11.sema.constant_convert(c11.sema.constant_value($value,$env),$type);
 effect c11.sema.constant_value(c11.syntax.Name($name),$env) => c11.sema.constant_name($name,$env);
+effect c11.sema.constant_value(c11.names.NameAt($frame,$name),$env)
+    => c11.sema.function_constant(c11.sema.lookup_at($frame,$name,$env),$name);
 effect c11.sema.constant_value(StringAddress($name,$count),$env)
     => base.Typed(c11.types.Pointer(c11.types.integer("char")),StringPointer($name));
-effect[fallback] c11.sema.constant_name($name,$env) => c11.sema.function_constant(env.get($env,$name),$name);
+effect[fallback] c11.sema.constant_name($name,$env) => c11.sema.function_constant(c11.sema.lookup_name($env,$name),$name);
 effect c11.sema.function_constant(CSignature($params,$result,$variadic,$definition),$name) => c11.sema.read_function($name,$params,$result,$variadic,$definition);
 effect[fallback] c11.sema.function_constant($binding,$name) => fail("C static initializer requires a constant or an address constant");
 effect[fallback] c11.sema.constant_value($value,$env) => c11.sema.constant_context($value,$env);
@@ -658,14 +940,21 @@ effect c11.sema.lower_symbol(InlineObject($item),$policy) => c11.sema.lower_symb
 effect c11.sema.lower_symbol(NoInline($item),$policy) => c11.sema.lower_symbol($item,c11.sema.symbol_attr($policy,"no_inline",RawAttr("no_inline","unit")));
 effect c11.sema.symbol_attr($policy,$name,$attribute) => env.put($policy,"attributes",env.put(choose(env.contains($policy,"attributes"),env.get($policy,"attributes"),env.empty()),$name,$attribute));
 effect c11.sema.symbol_attribute([$name,$attribute]) => $attribute;
+effect c11.sema.symbol_enum_attribute($policy,$name) => env.put($policy,"enum_attributes",
+    env.put(choose(env.contains($policy,"enum_attributes"),env.get($policy,"enum_attributes"),env.empty()),$name,1));
+effect c11.sema.symbol_enum_name([$name,$value]) => text.quote($name);
 effect c11.sema.symbol_attributes($name,$policy) => bind($attrs,choose(env.contains($policy,"attributes"),list.map("c11.sema.symbol_attribute",env.entries(env.get($policy,"attributes"))),[]),
-    choose(env.contains($policy,"comdat"),seq(c11.sema.comdat($name),list.prepend(c11.sema.comdat_attr($name),$attrs)),$attrs));
+    bind($merged,choose(env.contains($policy,"enum_attributes"),list.prepend(RawAttr("naru.llvm.function_attrs",
+        concat("[",concat(text.join(list.map("c11.sema.symbol_enum_name",env.entries(env.get($policy,"enum_attributes"))),", "),"]"))),$attrs),$attrs),
+        choose(env.contains($policy,"comdat"),seq(c11.sema.comdat($name),list.prepend(c11.sema.comdat_attr($name),$merged)),$merged)));
 effect c11.sema.symbol_linkage($policy) => choose(env.contains($policy,"linkage"),env.get($policy,"linkage"),"external");
 effect c11.sema.lower_symbol(CheckedCFunction($name,$params,$result,$body,$variadic),$policy)
     => c11.sema.lower_function_attrs($name,$params,$result,$body,$variadic,c11.sema.symbol_linkage($policy),c11.sema.symbol_attributes($name,$policy));
 effect c11.sema.lower_symbol(CheckedPrototype($name,$params,$result,$variadic),$policy) => choose(eq(c11.sema.symbol_linkage($policy),"internal"),
-    fail("static C function declared without a definition"),mlir.op("llvm.func",[],[],list.concat(c11.sema.symbol_attributes($name,$policy),
-        [Attr("sym_name",$name),RawAttr("function_type",c11.sema.function_type($params,$result,$variadic))]),[mlir.region_blocks([])]));
+    fail("static C function declared without a definition"),c11.sema.lower_prototype($name,$params,$result,$variadic,c11.sema.symbol_attributes($name,$policy)));
+effect[fallback] c11.sema.lower_prototype($name,$params,$result,$variadic,$attrs) => mlir.op("llvm.func",[],[],
+    list.concat(list.concat($attrs,c11.sema.function_abi_attrs($params,$result,$variadic)),
+        [Attr("sym_name",$name),RawAttr("function_type",c11.sema.function_type($params,$result,$variadic))]),[mlir.region_blocks([])]);
 effect c11.sema.lower_symbol(CheckedGlobal($name,$type,$value),$policy)
     => c11.sema.global_attrs($name,$type,$value,c11.sema.symbol_linkage($policy),c11.sema.symbol_attributes($name,$policy));
 effect c11.sema.lower_symbol(CheckedExternalGlobal($name,c11.types.AlignedType($type,$alignment)),$policy)
@@ -676,9 +965,14 @@ effect c11.sema.lower_symbol(CheckedExternalGlobal($name,$type),$policy) => mlir
 effect base.lower(base.Typed($type,FunctionAddress($name,$definition)),$env) => c11.sema.address_global($name);
 effect c11.sema.call($name,$arguments,ObjectSlot($type,$identity),$env,$expected) => c11.sema.indirect_call(c11.sema.read(ObjectSlot($type,$identity)),$arguments,$env,$expected);
 effect c11.sema.call($name,$arguments,GlobalSlot($type,$symbol),$env,$expected) => c11.sema.indirect_call(c11.sema.read(GlobalSlot($type,$symbol)),$arguments,$env,$expected);
-effect c11.sema.indirect_call(base.Typed(c11.types.Pointer(c11.types.FunctionType($result,$params,$variadic,$prototype)),$target),$arguments,$env,$expected)
-    => c11.sema.contextual(base.Typed($result,IndirectInvoke(base.Typed(c11.types.Pointer(c11.types.FunctionType($result,$params,$variadic,$prototype)),$target),
-        c11.sema.arguments($arguments,list.map("c11.sema.parameter_type",$params),$variadic,$env),list.map("c11.sema.parameter_type",$params),$variadic)),$expected);
+effect c11.sema.indirect_call(base.Typed(c11.types.Pointer(c11.types.FunctionType($result,$params,$variadic,1)),$target),$arguments,$env,$expected)
+    => c11.sema.contextual(c11.sema.make_indirect_invoke(c11.sema.value_type(c11.sema.complete_type($result,$env)),base.Typed(c11.types.Pointer(c11.types.FunctionType($result,$params,$variadic,1)),$target),
+        c11.sema.arguments($arguments,list.map("c11.sema.parameter_type",$params),$variadic,$env),list.map("c11.sema.parameter_type",$params),$variadic),$expected);
+effect c11.sema.indirect_call(base.Typed(c11.types.Pointer(c11.types.FunctionType($result,$params,$variadic,$prototype)),$target),$arguments,$env,$expected) when not(eq($prototype,1))
+    => bind($promoted,c11.sema.arguments($arguments,[],1,$env),
+        c11.sema.contextual(c11.sema.make_indirect_invoke(c11.sema.value_type(c11.sema.complete_type($result,$env)),
+            base.Typed(c11.types.Pointer(c11.types.FunctionType($result,$params,$variadic,$prototype)),$target),$promoted,[],1),$expected));
+effect checked_argument_type(base.Typed($type,$value)) => $type;
 effect base.lower(base.Typed($result,IndirectInvoke($target,$arguments,$params,$variadic)),$env)
     => mlir.op("llvm.call",list.prepend(base.lower($target,$env),base.lower_arguments($arguments,$env)),base.result_types($result),
         list.concat(choose($variadic,[RawAttr("var_callee_type",c11.sema.function_type($params,$result,$variadic))],[]),[RawAttr("op_bundle_sizes","array<i32>"),
@@ -689,24 +983,50 @@ effect[fallback] c11.sema.named_read($binding,$name) => c11.sema.read($binding);
 
 effect c11.sema.parameter_repr(base.Param($name,$type)) => types.repr($type);
 
-// The controlling expression is analyzed but never lowered. All associations
-// are checked; only the selected typed expression contributes runtime effects.
-effect base.check(c11.syntax.Generic($control,$associations),$env,$expected) => bind(base.Typed($type,$value),base.check($control,$env,base.Any()),
+// Selection retains a source expression, not a prematurely converted value.
+// All arms are constraint checked, but only the selected source is checked in
+// its enclosing value/address/sizeof/assignment context and ever lowered.
+effect base.check(c11.syntax.Generic($control,$associations),$env,$expected)
+    => base.check(c11.sema.generic_source($control,$associations,$env),$env,$expected);
+effect c11.sema.lvalue(c11.syntax.Generic($control,$associations),$env)
+    => c11.sema.lvalue(c11.sema.generic_source($control,$associations,$env),$env);
+effect c11.sema.object_type(c11.syntax.Generic($control,$associations),$env)
+    => c11.sema.object_type(c11.sema.generic_source($control,$associations,$env),$env);
+effect base.check(c11.syntax.Address(c11.syntax.Generic($control,$associations)),$env,$expected)
+    => base.check(c11.syntax.Address(c11.sema.generic_source($control,$associations,$env)),$env,$expected);
+effect[fallback] base.check(c11.syntax.Address($value),$env,$expected)
+    => fail("C address requires an lvalue or function designator");
+effect c11.sema.generic_source($control,$associations,$env) => bind(base.Typed($type,$value),base.check($control,$env,base.Any()),
     bind(GenericState($scope,$control_type,$seen,$selected,$default),list.fold("c11.sema.generic_association",$associations,
-        GenericState($env,c11.types.unqualified($type),env.empty(),NoGenericValue(),NoGenericValue())),
-        c11.sema.contextual(c11.sema.generic_result($selected,$default),$expected)));
+        GenericState($env,c11.types.unqualified($type),[],NoGenericValue(),NoGenericValue())),
+        c11.sema.generic_result($selected,$default)));
 effect c11.sema.generic_association(GenericState($env,$control,$seen,$selected,$default),c11.syntax.TypeAssociation($type,$expression))
-    => bind($complete,c11.sema.complete_type($type,$env),seq(c11.types.bytes($complete),
-        choose(env.contains($seen,$complete),fail("duplicate compatible C generic association type"),
-            bind($value,base.check($expression,$env,base.Any()),GenericState($env,$control,env.put($seen,$complete,1),
-                choose(eq($control,$complete),$value,$selected),$default)))));
+    => bind($complete,c11.sema.complete_type($type,$env),seq(c11.sema.generic_object_type($complete),
+        choose(c11.sema.generic_seen($seen,$complete),fail("duplicate compatible C generic association type"),
+            seq(base.check($expression,$env,base.Any()),GenericState($env,$control,list.prepend($complete,$seen),
+                choose(c11.sema.generic_match($control,$complete),
+                    choose(eq($selected,NoGenericValue()),$expression,
+                        fail("multiple compatible C generic associations for the controlling type")),$selected),$default)))));
 effect c11.sema.generic_association(GenericState($env,$control,$seen,$selected,NoGenericValue()),c11.syntax.DefaultAssociation($expression))
-    => GenericState($env,$control,$seen,$selected,base.check($expression,$env,base.Any()));
+    => seq(base.check($expression,$env,base.Any()),GenericState($env,$control,$seen,$selected,$expression));
 effect c11.sema.generic_association(GenericState($env,$control,$seen,$selected,$default),c11.syntax.DefaultAssociation($expression)) when not(eq($default,NoGenericValue()))
     => fail("multiple default C generic associations");
 effect c11.sema.generic_result($selected,$default) when not(eq($selected,NoGenericValue())) => $selected;
 effect c11.sema.generic_result(NoGenericValue(),$default) when not(eq($default,NoGenericValue())) => $default;
 effect c11.sema.generic_result(NoGenericValue(),NoGenericValue()) => fail("no compatible C generic association and no default");
+effect c11.sema.generic_seen([],$type) => 0;
+effect c11.sema.generic_seen($seen,$type) when lt(0,size($seen))
+    => or(c11.sema.generic_match(list.head($seen),$type),c11.sema.generic_seen(list.tail($seen),$type));
+effect[fallback] c11.sema.generic_match($control,$association) => c11.types.compatible($control,$association);
+effect c11.sema.generic_object_type($type) => c11.sema.generic_object_unqualified(c11.types.unqualified($type));
+effect c11.sema.generic_object_unqualified(control.Void()) => fail("C generic association requires a complete object type");
+effect c11.sema.generic_object_unqualified(c11.types.FunctionType($result,$params,$variadic,$prototype))
+    => fail("C generic association requires a complete object type");
+effect c11.sema.generic_object_unqualified(c11.types.IncompleteArray($element))
+    => fail("C generic association requires a complete object type");
+effect c11.sema.generic_object_unqualified(c11.types.FlexibleArray($element))
+    => fail("C generic association requires a complete object type");
+effect[fallback] c11.sema.generic_object_unqualified($type) => c11.types.bytes($type);
 
 effect base.check(c11.syntax.IndirectCall($callee,$arguments),$env,$expected) => c11.sema.indirect_call(base.check($callee,$env,base.Any()),$arguments,$env,$expected);
 
@@ -724,15 +1044,20 @@ effect c11.sema.static_symbol_owner(InlineOwner($function,$index),$pool) => [con
 effect c11.sema.static_symbol_owner(NoInlineOwner(),$pool) => [text(symbol(".naru.c.static")),$pool,0];
 effect externc.rewrite_enter(c11.syntax.StaticDeclare($name,$type,$value,$next),$context,externc.Hoisting($globals,$pool))
     => bind([$symbol,$symbol_pool,$shared],c11.sema.static_symbol($pool),
-        tree.Descend([$value,$next],$context,StaticCookie($name,$type,$symbol,$shared),externc.Hoisting($globals,$symbol_pool)));
-effect externc.rewrite_leave(StaticCookie($name,$type,$symbol,$shared),[$initializer,$body],$context,externc.Hoisting($globals,$pool))
-    => [StaticBinding($name,$type,$symbol,$body),externc.Hoisting(list.prepend(choose($shared,c11.syntax.InlineObject(c11.syntax.Global($symbol,$type,$initializer)),
-        c11.syntax.Internal(c11.syntax.Global($symbol,$type,$initializer))),$globals),$pool)];
+        tree.Descend([$value,$next],$context,StaticCookie($name,$type,$symbol,$shared,c11.initializers.static_identity($context,$name),c11.initializers.static_tags($context)),
+            externc.Hoisting($globals,$symbol_pool)));
+effect externc.rewrite_leave(StaticCookie($name,$type,$symbol,$shared,$identity,$tags),[$initializer,$body],$context,externc.Hoisting($globals,$pool))
+    => [StaticBinding($name,$type,$symbol,$body),externc.Hoisting(list.prepend(c11.initializers.static_item($identity,$tags,
+        choose($shared,c11.syntax.InlineObject(c11.syntax.Global($symbol,$type,$initializer)),
+            c11.syntax.Internal(c11.syntax.Global($symbol,$type,$initializer)))),$globals),$pool)];
 effect c11.syntax.append(c11.sema.StaticBinding($name,$type,$symbol,$body),$next)
     => c11.sema.StaticBinding($name,$type,$symbol,c11.syntax.append($body,$next));
-effect base.check_body(StaticBinding($name,$type,$symbol,$next),$env,$result) => bind($seen,env.get($env,LocalNamesKey()),
+effect base.check_body(StaticBinding($name,$type,$symbol,$next),$env,$result) => c11.sema.check_static_binding($name,$type,$symbol,$next,$env,$result);
+effect[fallback] c11.sema.check_static_binding($name,$type,$symbol,$next,$env,$result)
+    => c11.sema.check_static_body($name,env.get($env,$symbol),$next,$env,$result);
+effect c11.sema.check_static_body($name,$binding,$next,$env,$result) => bind($seen,env.get($env,LocalNamesKey()),
     choose(env.contains($seen,$name),fail(concat("duplicate C local declaration: ",$name)),
-        base.check_body($next,env.put(env.put($env,LocalNamesKey(),env.put($seen,$name,1)),$name,GlobalSlot($type,$symbol)),$result)));
+        base.check_body($next,c11.sema.bind_name(env.put($env,LocalNamesKey(),env.put($seen,$name,1)),$name,$binding),$result)));
 
 effect c11.sema.compound_value("left",$a,$b) => c11.sema.shift("left",$a,$b);
 effect c11.sema.compound_value("right",$a,$b) => c11.sema.shift("right",$a,$b);

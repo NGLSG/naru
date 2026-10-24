@@ -1,0 +1,21 @@
+// Compiler-resource header spellings. Attribute semantics reuse the member
+// alignment rules; unknown attributes remain a syntax error.
+mod c11.gnu_attributes;
+use c11.syntax;
+use c11.names;
+use c11.members;
+use c11.header_features;
+
+syntax c11.gnu_attributes.alignment `__aligned__($value:c11.expr)` => $value;
+syntax c11.gnu_attributes.alignment `aligned($value:c11.expr)` => $value;
+syntax c11.field_decl[10,left] `$decl:c11.field_decl __attribute__(($alignment:c11.gnu_attributes.alignment))`
+    => c11.gnu_attributes.AlignedMember($decl,$alignment);
+syntax c11.expr `__alignof__($type:c11.type)` => c11.syntax.AlignType($type);
+syntax c11.expr `__alignof($type:c11.type)` => c11.syntax.AlignType($type);
+effect c11.syntax.type_operand_builtin(c11.syntax.Name("__alignof__")) => 1;
+effect c11.syntax.type_operand_builtin(c11.syntax.Name("__alignof")) => 1;
+effect c11.names.syntax_identifier("__attribute__") => 1;
+effect c11.names.syntax_identifier("__alignof__") => 1;
+effect c11.names.syntax_identifier("__alignof") => 1;
+effect c11.members.field(c11.members.MemberFields($out,$base,$alignments),c11.gnu_attributes.AlignedMember($decl,$alignment))
+    => c11.members.field(c11.members.MemberFields($out,$base,list.prepend($alignment,$alignments)),$decl);

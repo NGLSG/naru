@@ -1,0 +1,2 @@
+mod shared;
+effect answer() => 42;

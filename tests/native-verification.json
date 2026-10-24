@@ -28,6 +28,14 @@
       "passed": true
     },
     {
+      "test": "CPU storage preparation preserves every volatile access",
+      "passed": true
+    },
+    {
+      "test": "CPU storage preparation preserves escaped aggregate writes",
+      "passed": true
+    },
+    {
       "test": "LLVM size preference Os",
       "passed": true
     },
@@ -37,6 +45,22 @@
     },
     {
       "test": "generic DLL symbol facts survive optimization and emit COFF export directives",
+      "passed": true
+    },
+    {
+      "test": "global pointer relocations remain LLVM constants",
+      "passed": true
+    },
+    {
+      "test": "nonconstant symbolic shifts diagnose without LLVM destruction aborts",
+      "passed": true
+    },
+    {
+      "test": "side-effecting global calls preserve verifier diagnostics and the artifact",
+      "passed": true
+    },
+    {
+      "test": "zero-result global stores diagnose before LLVM translation",
       "passed": true
     },
     {

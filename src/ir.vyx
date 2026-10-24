@@ -151,7 +151,7 @@ public fn ir_attributes(e: &mut Engine, list: i64) -> string {
 public fn ir_serialize_region(e: &mut Engine, region: i64, indent: string) -> string {
     var out = ""; var edge = e.node(region).first;
     while (edge >= 0 && e.good()) {
-        let item = e.edges.get(edge); let id = item.value; let op = e.node(id);
+        let item = e.edge(edge); let id = item.value; let op = e.node(id);
         let operands = e.child(id, 0); let types = e.child(id, 1);
         let attrs = e.child(id, 2); let regions = e.child(id, 3); let results = e.child(id, 4);
         out = out + indent;

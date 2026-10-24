@@ -2,6 +2,7 @@ mod c11.flow;
 use c11.syntax;
 use c11.sema;
 use c11.types;
+use c11.objects;
 use base;
 use control;
 use cfg;
@@ -28,12 +29,14 @@ effect c11.syntax.append(base.While($condition,$body,$next),$suffix) => base.Whi
 effect c11.syntax.append(control.Evaluate($value,$next),$suffix) => control.Evaluate($value,c11.syntax.append($next,$suffix));
 
 // Labels have function scope; ordinary object names remain lexically scoped.
-effect c11.sema.function_label_scope($body,$scope) => env.put($scope,LabelsKey(),tree.fold($body,"c11.flow.collect_label",env.empty()));
+effect c11.sema.function_label_scope($body,$scope) => c11.flow.label_constraints($body,env.put($scope,LabelsKey(),tree.fold_with($body,"c11.flow.collect_label",env.empty(),"c11.objects.block_link_children")));
+effect[fallback] c11.flow.label_constraints($body,$scope) => $scope;
 effect collect_label($labels,Label($name,$body)) => choose(env.contains($labels,$name),fail(concat("duplicate C label: ",$name)),env.put($labels,$name,symbol($name)));
 effect[fallback] collect_label($labels,$node) => $labels;
 effect base.check_body(Label($name,$body),$env,$result) => cfg.Label(env.get(env.get($env,LabelsKey()),$name),base.check_body($body,$env,$result));
 effect base.check_body(Goto($name),$env,$result) => choose(env.contains(env.get($env,LabelsKey()),$name),
-    cfg.Jump(env.get(env.get($env,LabelsKey()),$name)),fail(concat("undefined C label: ",$name)));
+    c11.flow.checked_goto($name,env.get(env.get($env,LabelsKey()),$name),$env),fail(concat("undefined C label: ",$name)));
+effect[fallback] c11.flow.checked_goto($name,$identity,$env) => cfg.Jump($identity);
 effect base.check_body(Abrupt($terminal,$next),$env,$result)
     => cfg.Detached(base.check_body($terminal,$env,$result),base.check_body($next,$env,$result));
 
@@ -64,7 +67,7 @@ effect base.lower_flow(CheckedSwitch($selector,$cases,$default,$body,$next),$env
     => lower_switch($selector,$cases,$default,$body,$next,$env,$block,$continuation,mlir.block([]));
 effect lower_switch($selector,$cases,$default,$body,$next,$env,$block,$continuation,$exit)
     => seq(mlir.in_block($block,cfg.dispatch($selector,$cases,$default,$exit,$env)),
-        list.concat([$block],list.concat(base.lower_flow($body,env.put($env,"control.exit",$exit),mlir.block([]),$exit),
+        list.concat([$block],list.concat(base.lower_flow($body,base.flow_targets(env.put($env,"control.exit",$exit),[$exit]),mlir.block([]),$exit),
             base.lower_flow($next,$env,$exit,$continuation))));
 effect base.flow_terminal(CheckedSwitch($selector,$cases,$default,$body,$next)) => base.flow_terminal($next);
 effect c11.sema.for_continues(Switch($value,$body,$next),$step) => Switch($value,c11.sema.for_continues($body,$step),c11.sema.for_continues($next,$step));

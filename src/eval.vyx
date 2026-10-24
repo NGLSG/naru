@@ -18,6 +18,32 @@ class Runtime {
     public parse_context: i64;
 }
 
+struct EffectCandidates { public generic: i64; public specific: i64; public end: i64; }
+
+// Both ordinary dispatch and additive collection use the same sound filter.
+// Candidate lists retain rule IDs so merging them preserves declaration order.
+public fn effect_candidates(e: &mut Engine, bucket: i64, call: i64) -> EffectCandidates {
+    let n = e.node(call);
+    var candidates = EffectCandidates { generic: -1, specific: -1, end: e.effect_rules.len };
+    if (e.effect_generic_heads.contains(bucket)) { candidates.generic = e.node(e.effect_generic_heads.get(bucket)).first; }
+    if (n.count > 0 && e.effect_has_shapes.contains(bucket)) {
+        let key = effect_head_hash(bucket,e.node(e.child(call,0)));
+        if (e.effect_specific_heads.contains(key)) { candidates.specific = e.node(e.effect_specific_heads.get(key)).first; }
+    }
+    return candidates;
+}
+
+public fn effect_candidate_next(e: &mut Engine, candidates: &mut EffectCandidates) -> i64 {
+    if (candidates.generic < 0 && candidates.specific < 0) { return -1; }
+    var generic = candidates.end; var specific = candidates.end;
+    if (candidates.generic >= 0) { generic = str_to_int(e.node(e.edge(candidates.generic).value).text); }
+    if (candidates.specific >= 0) { specific = str_to_int(e.node(e.edge(candidates.specific).value).text); }
+    if (generic < specific) {
+        candidates.generic = e.edge(candidates.generic).next; return generic;
+    }
+    candidates.specific = e.edge(candidates.specific).next; return specific;
+}
+
 public fn new_runtime(e: &mut Engine) -> Runtime {
     if (e.effect_index_count != e.effect_rules.len) { prepare_effect_index(e); }
     let region = e.add_node(8, "region", "<ir>", 1, 1);
@@ -41,7 +67,7 @@ public fn prepare_effect_index(e: &mut Engine) {
         e.effect_rules.set(i, rule);
         heads.put(name, i);
     }
-    e.effect_heads = heads; e.effect_index_count = e.effect_rules.len;
+    e.effect_index_count = e.effect_rules.len;
     i = 0;
     while (i < e.effect_rules.len) {
         let lhs = e.node(e.effect_rules.get(i).lhs); let key = heads.get(lhs.text + ":" + naru_number(lhs.count));
@@ -50,6 +76,7 @@ public fn prepare_effect_index(e: &mut Engine) {
         else { effect_index_append(e,&mut specific,effect_head_hash(key,e.node(first)),i); shaped.put(key,1); }
         i = i + 1;
     }
+    e.effect_heads = heads;
     e.effect_generic_heads = generic; e.effect_specific_heads = specific; e.effect_has_shapes = shaped;
 }
 // Hash collisions only add candidates: full structural matching still
@@ -76,7 +103,7 @@ public fn term_equal(e: &mut Engine, a: i64, b: i64) -> bool {
     if (x.kind != y.kind || x.text != y.text || x.count != y.count) { return false; }
     var xe = x.first; var ye = y.first;
     while (xe >= 0) {
-        let xv = e.edges.get(xe); let yv = e.edges.get(ye);
+        let xv = e.edge(xe); let yv = e.edge(ye);
         if (!term_equal(e, xv.value, yv.value)) { return false; }
         xe = xv.next; ye = yv.next;
     }
@@ -87,7 +114,7 @@ public fn term_equal(e: &mut Engine, a: i64, b: i64) -> bool {
 public fn binding_get(e: &mut Engine, bindings: i64, name: string) -> i64 {
     var edge = e.node(bindings).first;
     while (edge >= 0) {
-        let v = e.edges.get(edge);
+        let v = e.edge(edge);
         if (e.node(v.value).text == name) { return e.child(v.value, 0); }
         edge = v.next;
     }
@@ -98,18 +125,18 @@ public fn binding_merge(e: &mut Engine, outer: i64, inner: i64) -> i64 {
     let merged = e.add_node(5, "", "<binding>", 1, 1);
     var edge = e.node(outer).first;
     while (edge >= 0) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         if (binding_get(e, inner, e.node(item.value).text) < 0) { e.add_child(merged, item.value); }
         edge = item.next;
     }
     edge = e.node(inner).first;
-    while (edge >= 0) { let item = e.edges.get(edge); e.add_child(merged, item.value); edge = item.next; }
+    while (edge >= 0) { let item = e.edge(edge); e.add_child(merged, item.value); edge = item.next; }
     return merged;
 }
 
 public fn release_bindings(e: &mut Engine, bindings: i64) {
     var edge = e.node(bindings).first;
-    while (edge >= 0) { let item = e.edges.get(edge); e.release_frame(item.value); edge = item.next; }
+    while (edge >= 0) { let item = e.edge(edge); e.release_frame(item.value); edge = item.next; }
     e.release_frame(bindings);
 }
 
@@ -128,7 +155,7 @@ public fn match_term(e: &mut Engine, pattern: i64, value: i64, bindings: i64) ->
     if (p.kind != v.kind || p.text != v.text || p.count != v.count) { return false; }
     var pe = p.first; var ve = v.first;
     while (pe >= 0) {
-        let px = e.edges.get(pe); let vx = e.edges.get(ve);
+        let px = e.edge(pe); let vx = e.edge(ve);
         if (!match_term(e, px.value, vx.value, bindings)) { return false; }
         pe = px.next; ve = vx.next;
     }
@@ -159,7 +186,7 @@ public fn substitute_scoped(e: &mut Engine, id: i64, bindings: i64, locals: i64)
     }
     var edge = n.first;
     while (edge >= 0 && e.good()) {
-        let c = e.edges.get(edge);
+        let c = e.edge(edge);
         let value = substitute_scoped(e, c.value, bindings, locals);
         if (value < 0) { return -1; }
         e.add_child(copy, value); edge = c.next;
@@ -226,7 +253,7 @@ public fn scalar_int(e: &mut Engine, id: i64) -> i64 {
 // regardless of source or package loading order.
 public fn effect_priority(e: &mut Engine, previous: i64, candidate: i64) -> i32 {
     if (previous < 0) { return 1; }
-    let a = e.effect_rules.get(previous); let b = e.effect_rules.get(candidate);
+    let a = e.effect_rules.get_ref(previous); let b = e.effect_rules.get_ref(candidate);
     if (a.fallback == b.fallback) { return -1; }
     return b.fallback ? 0 : 1;
 }
@@ -356,7 +383,7 @@ public fn eval_term(e: &mut Engine, rt: &mut Runtime, id: i64, depth: i64) -> i6
     let value = e.add_node(n.kind, n.text, n.file, n.line, n.column);
     var edge = n.first;
     while (edge >= 0 && e.good()) {
-        let c = e.edges.get(edge);
+        let c = e.edge(edge);
         let child = eval_term(e, rt, c.value, depth + 1);
         if (child < 0) { return -1; }
         e.add_child(value, child); edge = c.next;
@@ -378,22 +405,11 @@ public fn dispatch_effect(e: &mut Engine, rt: &mut Runtime, value: i64, depth: i
     if (!rt.heads.contains(dispatch_key)) {
         e.at_error(n.file, n.line, n.column, "no effect registered for " + n.text); return -1;
     }
-    var generic: i64 = -1; var specific: i64 = -1;
-    let bucket = rt.heads.get(dispatch_key);
-    if (e.effect_generic_heads.contains(bucket)) { generic = e.node(e.effect_generic_heads.get(bucket)).first; }
-    if (n.count > 0 && e.effect_has_shapes.contains(bucket)) {
-        let key = effect_head_hash(bucket,e.node(e.child(value,0)));
-        if (e.effect_specific_heads.contains(key)) { specific = e.node(e.effect_specific_heads.get(key)).first; }
-    }
+    var candidates = effect_candidates(e,rt.heads.get(dispatch_key),value);
     var selected: i64 = -1; var selected_bindings: i64 = -1;
-    while (generic >= 0 || specific >= 0) {
-        var generic_id = e.effect_rules.len; var specific_id = e.effect_rules.len;
-        if (generic >= 0) { generic_id = str_to_int(e.node(e.edges.get(generic).value).text); }
-        if (specific >= 0) { specific_id = str_to_int(e.node(e.edges.get(specific).value).text); }
-        var rule_id = specific_id;
-        if (generic_id < specific_id) { rule_id = generic_id; generic = e.edges.get(generic).next; }
-        else { specific = e.edges.get(specific).next; }
-        let rule = e.effect_rules.get(rule_id);
+    var rule_id = effect_candidate_next(e,&mut candidates);
+    while (rule_id >= 0) {
+        let rule = e.effect_rules.get_ref(rule_id);
         let bindings = e.add_node(5, "", n.file, n.line, n.column);
         let eligible = effect_matches(e, rt, rule_id, value, bindings, depth);
         if (!e.good()) { return -1; }
@@ -412,6 +428,7 @@ public fn dispatch_effect(e: &mut Engine, rt: &mut Runtime, value: i64, depth: i
         } else {
             release_bindings(e,bindings);
         }
+        rule_id = effect_candidate_next(e,&mut candidates);
     }
     if (selected < 0) { e.at_error(n.file, n.line, n.column, "no matching effect: " + render_term(e, value)); return -1; }
     let result = effect_body(e, rt, selected, selected_bindings, depth);
@@ -422,7 +439,7 @@ public fn dispatch_effect(e: &mut Engine, rt: &mut Runtime, value: i64, depth: i
 
 public fn effect_matches(e: &mut Engine, rt: &mut Runtime, rule_id: i64, call: i64, bindings: i64, depth: i64) -> bool {
     if (rt.specialized && rule_id < specialized_effect_count()) { return specialized_rule_match(e, rt, rule_id, call, bindings, depth); }
-    let rule = e.effect_rules.get(rule_id);
+    let rule = e.effect_rules.get_ref(rule_id);
     var eligible = match_term(e, rule.lhs, call, bindings);
     if (eligible && rule.guard >= 0) {
         rt.guard_depth = rt.guard_depth + 1;
@@ -440,12 +457,12 @@ public fn effect_body(e: &mut Engine, rt: &mut Runtime, rule_id: i64, bindings: 
     let saved = rt.bindings; rt.bindings = bindings;
     var result: i64 = -1;
     if (rt.specialized && rule_id < specialized_effect_count()) { result = specialized_rule_body(e, rt, rule_id, bindings, depth); }
-    else { result = eval_term(e, rt, e.effect_rules.get(rule_id).rhs, depth + 1); }
+    else { result = eval_term(e, rt, e.effect_rules.get_ref(rule_id).rhs, depth + 1); }
     rt.bindings = saved; return result;
 }
 
 public fn quoted(text: string) -> string {
-    var out = StringBuilder.create(); out.append("\"");
+    var out = std.string.StringBuilder.create(); out.append("\"");
     var i: i64 = 0;
     while (i < text.len) {
         let c = str_char_at(text, i);
@@ -473,7 +490,7 @@ public fn render_term(e: &mut Engine, id: i64) -> string {
     var out = n.kind == 5 ? "[" : n.text + "(";
     var edge = n.first; var index: i64 = 0;
     while (edge >= 0) {
-        let c = e.edges.get(edge);
+        let c = e.edge(edge);
         if (index > 0) { out = out + ", "; }
         out = out + render_term(e, c.value);
         edge = c.next; index = index + 1;

@@ -30,7 +30,7 @@ effect expand(Deferred(base.Call($name, $arguments), $next), $context, $environm
             bind([$captures, $bindings], capture($arguments, $params),
                 base.Let($target,$callee_type,$callee,wrap($bindings, expand($next, push(base.Call($target, $captures), $context),
                     env.put($environment,$target,base.Slot($callee_type,symbol($target))), $result)))))));
-effect expand(Deferred($other, $next), $context, $environment, $result) when not(eq(tag($other), tag(base.Call(0,0))))
+effect[fallback] expand(Deferred($other, $next), $context, $environment, $result) when not(eq(tag($other), tag(base.Call(0,0))))
     => fail("defer requires a named function call");
 effect capture([], []) => [[], []];
 effect capture($arguments, $params) when and(eq(size($arguments), size($params)), lt(0, size($params)))
@@ -58,8 +58,9 @@ effect expand(control.Continue(), Context($returns, $scope, CleanupLoop($calls))
 effect expand(control.Break(), Context($returns, $scope, NoLoop()), $environment, $result) => control.Break();
 effect expand(control.Continue(), Context($returns, $scope, NoLoop()), $environment, $result) => control.Continue();
 effect expand(base.Let($name, $type, $value, $next), $context, $environment, $result)
-    => bind($actual,arg(base.check($value,$environment,$type),0),base.Let($name, $type, $value,
-        expand($next, $context, env.put($environment,$name,base.preparation_slot($actual,symbol($name))), $result)));
+    => bind($expected,binding_type($type,$environment),bind($actual,arg(base.check($value,$environment,$expected),0),base.Let($name, $expected, $value,
+        expand($next, $context, env.put($environment,$name,base.preparation_slot($actual,symbol($name))), $result))));
+effect[fallback] binding_type($type,$environment) => $type;
 effect expand(base.Var($name, $type, $value, $next), $context, $environment, $result)
     => bind($actual,arg(base.check($value,$environment,$type),0),base.Var($name, $type, $value,
         expand($next, $context, env.put($environment,$name,base.preparation_slot($actual,symbol($name))), $result)));

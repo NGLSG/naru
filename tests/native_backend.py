@@ -72,6 +72,58 @@ def main() -> int:
         for level in ("0", "3"):
             check("CFG arguments and backedge at O" + level, lambda level=level: loop(level))
 
+        def storage_preparation(volatile):
+            program = work / 'storage-preparation.mlir'
+            if volatile:
+                program.write_text('''module {
+                  llvm.func @main() -> i32 {
+                    %one = llvm.mlir.constant(1 : i64) : i64
+                    %p = llvm.alloca %one x i32 : (i64) -> !llvm.ptr
+                    %a = llvm.mlir.constant(20 : i32) : i32
+                    %b = llvm.mlir.constant(42 : i32) : i32
+                    llvm.store volatile %a, %p : i32, !llvm.ptr
+                    llvm.store volatile %b, %p : i32, !llvm.ptr
+                    %r = llvm.load volatile %p : !llvm.ptr -> i32
+                    llvm.return %r : i32
+                  }
+                }''')
+            else:
+                program.write_text('''module {
+                  llvm.func @touch(%p: !llvm.ptr) -> i32 {
+                    %n = llvm.load %p : !llvm.ptr -> i32
+                    %k = llvm.mlir.constant(22 : i32) : i32
+                    %r = llvm.add %n, %k : i32
+                    llvm.store %r, %p : i32, !llvm.ptr
+                    llvm.return %r : i32
+                  }
+                  llvm.func @main() -> i32 {
+                    %one = llvm.mlir.constant(1 : i64) : i64
+                    %p = llvm.alloca %one x !llvm.array<2 x i32> : (i64) -> !llvm.ptr
+                    %z = llvm.mlir.zero : !llvm.array<2 x i32>
+                    %n = llvm.mlir.constant(20 : i32) : i32
+                    %a = llvm.insertvalue %n, %z[0] : !llvm.array<2 x i32>
+                    llvm.store %a, %p : !llvm.array<2 x i32>, !llvm.ptr
+                    %unused = llvm.call @touch(%p) : (!llvm.ptr) -> i32
+                    %r = llvm.load %p : !llvm.ptr -> i32
+                    llvm.return %r : i32
+                  }
+                }''')
+            for level in ('0', '2'):
+                ir = work / ('storage-preparation-O' + level + '.ll')
+                invoke('opt', program, '--target', 'llvm-ir', '--opt-level', level,
+                       '--pass-pipeline', 'builtin.module()', '-o', ir)
+                text = ir.read_text()
+                if volatile:
+                    assert text.count('store volatile i32') == 2 and text.count('load volatile i32') == 1, text
+                elif level == '0':
+                    assert re.search(r'call i32 @touch\(ptr ', text), text
+                out = work / ('storage-preparation-O' + level + '.exe')
+                invoke('opt', program, '--target', 'exe', '--opt-level', level,
+                       '--pass-pipeline', 'builtin.module()', '-o', out)
+                assert execute([str(out)], cwd=work).returncode == 42
+        check('CPU storage preparation preserves every volatile access', lambda: storage_preparation(True))
+        check('CPU storage preparation preserves escaped aggregate writes', lambda: storage_preparation(False))
+
         def size(level):
             out = work / ("size-" + level + ".ll")
             invoke("build", source, "--rules", base, "--target", "llvm-ir", "--opt-level", level, "-o", out)

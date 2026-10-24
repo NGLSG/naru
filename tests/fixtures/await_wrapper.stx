@@ -1,0 +1,13 @@
+mod await_wrapper;
+use tasks;
+use base;
+use types;
+syntax expr `wrapped($task:expr)` => Wrapped($task);
+effect base.hint(Wrapped($task),$env) => Wrapper(tasks.element(base.hint($task,$env)));
+effect base.check(Wrapped($task),$env,$expected) => bind($checked,base.check($task,$env,base.Any()),
+    base.expect(base.Typed(Wrapper(tasks.element(arg($checked,0))),WrappedValue($checked)),$expected));
+effect tasks.element(Wrapper($element)) => $element;
+effect tasks.awaitable(base.Typed(Wrapper($element),$value)) => base.Typed(tasks.Task($element),TaskView(base.Typed(Wrapper($element),$value)));
+effect base.lower(base.Typed(Wrapper($element),WrappedValue($task)),$env) => base.lower($task,$env);
+effect base.lower(base.Typed(tasks.Task($element),TaskView($wrapper)),$env) => base.lower($wrapper,$env);
+effect types.repr(Wrapper($element)) => "!llvm.ptr";

@@ -1,0 +1,19 @@
+[package]
+name = "kr-examples"
+version = "0.1.0"
+entry = "power.c"
+
+[language]
+dialects = ["std/base", "std/kr"]
+frontend = "kr.frontend"
+unit = "program"
+relation = "emit_program"
+
+[dependencies]
+std = { path = "../../dialects", package = "naru-stdlib", version = "^0.2.0" }
+
+[build]
+output_dir = "target"
+
+[link]
+runtime = "crt-static"

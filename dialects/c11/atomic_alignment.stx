@@ -1,0 +1,52 @@
+// Typed queries over the actual resource header's compiler interface. The
+// standard query follows DR 465's per-type contract, including null pointers.
+// A separate target extension queries an actual (possibly packed) address.
+mod c11.atomic_alignment;
+use c11.atomics;
+use c11.atomic_api;
+use c11.header_features;
+use c11.types;
+use c11.sema;
+use c11.pp;
+use c11.lex;
+use c11.system_headers;
+use memory_paths;
+use storage;
+use base;
+
+effect c11.header_features.builtin($name) when or(eq($name,"__c11_atomic_is_lock_free_object"),eq($name,"__c11_atomic_is_lock_free_address")) => 1;
+effect c11.atomics.check_builtin($name,[$source],$env)
+    when or(eq($name,"__c11_atomic_is_lock_free_object"),eq($name,"__c11_atomic_is_lock_free_address"))
+    => c11.atomic_alignment.query(base.check($source,$env,base.Any()),$env,eq($name,"__c11_atomic_is_lock_free_address"));
+effect c11.atomic_alignment.query(base.Typed(c11.types.Pointer($object),$pointer),$env,$address)
+    => bind($complete,c11.sema.complete_type($object,$env),seq(
+        choose(c11.atomics.atomic_type($complete),1,c11.atomic_alignment.flag_type($complete,$env)),
+            base.Typed(c11.types.CBool(),c11.atomic_alignment.ObjectLockFree($complete,base.Typed(c11.types.Pointer($object),$pointer),$address))));
+effect[fallback] c11.atomic_alignment.query($value,$env,$address) => fail("C atomic lock-free query requires a pointer to an atomic object");
+effect c11.sema.binding_facts("atomic_flag_test_and_set",c11.sema.CSignature([c11.types.Pointer($flag)],$result,0,$definition),$env)
+    => env.put($env,c11.atomic_alignment.FlagTypeKey(),$flag);
+effect c11.atomic_alignment.flag_type($object,$env)
+    => choose(env.contains($env,c11.atomic_alignment.FlagTypeKey()),
+        bind($flag,c11.sema.complete_type(env.get($env,c11.atomic_alignment.FlagTypeKey()),$env),
+            seq(choose(c11.types.compatible(c11.types.unqualified($object),c11.types.unqualified($flag)),1,
+                fail("C atomic lock-free query requires an atomic type or the actual atomic_flag type")),
+                c11.atomic_api.flag_layout(c11.types.unqualified($object)))),
+        fail("C atomic lock-free query requires a pointer to an atomic object"));
+effect base.lower(base.Typed(c11.types.CBool(),c11.atomic_alignment.ObjectLockFree($object,$pointer,$address)),$env)
+    => bind($p,base.lower($pointer,$env),bind($size,c11.types.bytes($object),
+        choose(c11.atomics.native_size($size),choose($address,
+            mlir.op("llvm.zext",[memory_paths.aligned($p,$size,64)],["i8"],[],[]),storage.integer(1,8)),storage.integer(0,8))));
+
+// Replace only the compiler-size query defined by the installed resource
+// header; project headers and unrelated user macros retain their own policy.
+effect c11.pp.header_macro_provider($header,$path,$options) when c11.system_headers.resource_header("stdatomic.h",$path,$options)
+    => c11.pp.MacroProvider("atomic-typed-query","c11.atomic_alignment.header_macros");
+effect c11.atomic_alignment.header_macros($macros)
+    => choose(choose(c11.pp.defined($macros,"atomic_is_lock_free"),
+        c11.atomic_alignment.size_query(env.get($macros,"atomic_is_lock_free")),0),
+            c11.pp.define_source("atomic_is_lock_free(object) __c11_atomic_is_lock_free_object((object))",
+                env.put($macros,"atomic_is_lock_free",c11.pp.Undefined())),$macros);
+effect c11.atomic_alignment.size_query(c11.pp.Function($params,$variadic,$body))
+    => list.fold("c11.atomic_alignment.query_token",$body,0);
+effect[fallback] c11.atomic_alignment.size_query($macro) => 0;
+effect c11.atomic_alignment.query_token($found,$token) => or($found,eq(c11.lex.spelling($token),"__c11_atomic_is_lock_free"));

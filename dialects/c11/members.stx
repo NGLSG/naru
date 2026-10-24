@@ -1,0 +1,107 @@
+// Member alignment is a layout fact. It is separate from an object's
+// _Alignas annotation and disappears from the member expression's value type.
+mod c11.members;
+use c11.syntax;
+use c11.specifiers;
+use c11.declarators;
+use c11.types;
+use c11.sema;
+use c11.objects;
+use c11.initializers;
+use c11.union_storage;
+use c11.bitfields;
+use c11.atomics;
+use c11.constants;
+use c11.layout;
+use base;
+use types;
+use storage;
+use layout;
+
+syntax c11.member_spec `$parts:c11.declaration_pieces` when c11.specifiers.valid_family($parts) => c11.members.member_spec($parts);
+syntax c11.field `$spec:c11.member_spec $decls:c11.field_decls;` => c11.members.fields($spec,$decls);
+syntax c11.field `$spec:c11.member_spec;` => c11.members.anonymous_field($spec);
+effect c11.members.member_spec($parts) => bind($state,c11.specifiers.state($parts),
+    bind(c11.specifiers.State($words,$named,$quals,$class,$flags,$alignments),$state,
+        seq(choose(and(eq($class,"none"),not(c11.specifiers.has_functions($flags))),1,
+            fail("C member declaration cannot have a storage class or function specifier")),
+            MemberSpec(c11.specifiers.state_type($state),$alignments))));
+effect c11.members.fields(MemberSpec($type,$alignments),$decls)
+    => bind(MemberFields($out,$base,$annotations),list.fold("c11.members.field",$decls,MemberFields([],$type,$alignments)),list.reverse($out));
+effect c11.members.field(MemberFields($out,$base,$alignments),c11.bitfields.BitDecl($decl,$width))
+    => seq(choose(eq(size($alignments),0),1,fail("C alignment specifier cannot apply to a bit-field")),
+        bind(c11.syntax.Fields($members,$type),c11.syntax.field_step(c11.syntax.Fields($out,$base),c11.bitfields.BitDecl($decl,$width)),
+            MemberFields($members,$type,$alignments)));
+effect[fallback] c11.members.field(MemberFields($out,$base,$alignments),$decl)
+    => bind(c11.declarators.Resolved($name,$type),c11.declarators.resolve($decl,$base),
+        seq(c11.declarators.validate_type($type),MemberFields(list.prepend(c11.types.Field($name,c11.members.aligned_member($type,$alignments)),$out),$base,$alignments)));
+effect c11.members.aligned_member($type,[]) => $type;
+effect c11.members.aligned_member($type,$alignments) when lt(0,size($alignments))
+    => bind($alignment,list.fold("c11.members.alignment",$alignments,0),
+        choose(eq($alignment,0),$type,MemberAligned($type,$alignment)));
+effect c11.members.alignment($current,$raw) => bind($value,c11.sema.alignment_value($raw,c11.constants.semantic_environment(syntax.context())),
+    choose(lt($current,$value),$value,$current));
+effect c11.members.anonymous_field(MemberSpec($type,$alignments))
+    => bind([c11.types.Field("",$aggregate)],c11.syntax.anonymous_field($type),
+        [c11.types.Field("",c11.members.aligned_member($aggregate,$alignments))]);
+effect c11.objects.normalize_field(c11.objects.Normalized($out,$kind,$index,$count),c11.types.Field($name,MemberAligned($type,$alignment)))
+    => seq(choose(lt($alignment,c11.types.alignment($type)),fail("C alignment specifier weakens the natural member alignment"),1),
+        bind(c11.objects.Normalized($members,$policy,$next,$limit),
+            c11.objects.normalize_field(c11.objects.Normalized([],$kind,$index,$count),c11.types.Field($name,$type)),
+            c11.objects.Normalized(list.prepend(c11.types.Field($name,MemberAligned(c11.types.field_type(list.head($members)),$alignment)),$out),$policy,$next,$limit)));
+effect types.repr(MemberAligned($type,$alignment)) => types.repr($type);
+effect c11.types.bytes(MemberAligned($type,$alignment)) => c11.types.bytes($type);
+effect c11.types.sizeof(MemberAligned($type,$alignment)) => c11.types.sizeof($type);
+effect c11.types.alignment(MemberAligned($type,$alignment)) => $alignment;
+effect c11.types.member_alignment(MemberAligned($type,$alignment),$cap) => $alignment;
+effect c11.types.required_alignment(MemberAligned($type,$alignment)) => $alignment;
+effect c11.types.unqualified(MemberAligned($type,$alignment)) => c11.types.unqualified($type);
+effect c11.types.qualifiers(MemberAligned($type,$alignment)) => c11.types.qualifiers($type);
+effect c11.types.compatibility_shape(MemberAligned($type,$alignment)) => c11.types.compatibility_shape($type);
+effect c11.sema.complete_type(MemberAligned($type,$alignment),$env) => MemberAligned(c11.sema.complete_type($type,$env),$alignment);
+effect c11.sema.value_type(MemberAligned($type,$alignment)) => c11.sema.value_type($type);
+effect c11.atomics.atomic_type(MemberAligned($type,$alignment)) => c11.atomics.atomic_type($type);
+effect c11.objects.declaration_type(MemberAligned($type,$alignment),$tags) => MemberAligned(c11.objects.declaration_type($type,$tags),$alignment);
+effect c11.sema.object_read(MemberAligned($type,$alignment),$reference) => c11.sema.object_read($type,$reference);
+effect c11.objects.qualified_read(MemberAligned($type,$alignment),$qualifiers,$reference) => c11.objects.qualified_read($type,$qualifiers,$reference);
+effect c11.sema.writable_type(MemberAligned($type,$alignment)) => c11.sema.writable_type($type);
+effect c11.objects.aggregate_layout(MemberAligned($type,$alignment)) => c11.objects.aggregate_layout($type);
+effect c11.objects.anonymous_visible(MemberAligned($type,$alignment)) => c11.objects.anonymous_visible($type);
+effect c11.objects.has_flexible(MemberAligned($type,$alignment)) => c11.objects.has_flexible($type);
+effect c11.initializers.flexible_type(MemberAligned($type,$alignment)) => c11.initializers.flexible_type($type);
+effect c11.union_storage.shape(MemberAligned($type,$alignment)) => c11.union_storage.shape($type);
+
+// A raw LLVM struct cannot express over-aligned members or a nested C object
+// whose natural IR alignment differs. Explicit padding preserves offsets/size;
+// allocations and globals carry the actual C alignment explicitly.
+effect c11.members.needs_storage($fields) => list.fold("c11.members.storage_member",$fields,0);
+effect c11.members.storage_member($seen,c11.types.Field($name,$type)) => or($seen,not(eq(c11.types.alignment($type),c11.members.ir_alignment($type))));
+effect c11.members.ir_alignment(MemberAligned($type,$alignment)) => c11.members.ir_alignment($type);
+effect c11.members.ir_alignment(c11.atomics.Atomic($type)) => c11.members.ir_alignment($type);
+effect c11.members.ir_alignment(c11.types.Qualified($type,$c,$v,$r)) => c11.members.ir_alignment($type);
+effect c11.members.ir_alignment(c11.types.Array($count,$element)) => c11.members.ir_alignment($element);
+effect c11.members.ir_alignment(c11.types.FlexibleArray($element)) => c11.members.ir_alignment($element);
+effect c11.members.ir_alignment(c11.types.Record($name,$fields))
+    => choose(or(c11.bitfields.has_bits($fields),c11.members.record_is_physical($name,$fields)),
+        1,arg(c11.types.record_layout($fields),1));
+effect c11.members.ir_alignment(c11.types.Union($name,$fields)) => c11.types.union_storage_unit($name,$fields);
+effect[fallback] c11.members.ir_alignment($type) => c11.types.alignment($type);
+effect c11.members.physical_record($fields) => and(not(c11.bitfields.has_bits($fields)),c11.members.needs_storage($fields));
+effect[fallback] c11.members.record_is_physical($name,$fields) => c11.members.physical_record($fields);
+effect c11.types.record_repr($name,$fields) when c11.members.record_is_physical($name,$fields)
+    => storage.repr(c11.members.physical_shape($name,$fields));
+effect c11.union_storage.record_shape($name,$fields) when c11.members.record_is_physical($name,$fields)
+    => c11.members.physical_shape($name,$fields);
+effect c11.members.physical_shape($name,$fields)
+    => bind(layout.Object($bytes,$alignment,$offsets),c11.types.named_aggregate_layout("struct",$name,$fields),
+        bind(c11.members.Segments($remaining,$segments),list.fold("c11.members.segment",$fields,c11.members.Segments(list.cursor($offsets),[])),
+            storage.packed_layout($bytes,list.reverse($segments))));
+effect c11.members.segment(c11.members.Segments($offsets,$out),c11.types.Field($name,$type))
+    => c11.members.Segments(list.cursor.tail($offsets),list.concat(list.reverse(c11.members.field_segment(list.cursor.head($offsets),$type)),$out));
+effect[fallback] c11.members.field_segment($offset,$type)
+    => choose(eq(c11.types.bytes($type),0),[],[[$offset,c11.union_storage.shape($type)]]);
+effect c11.initializers.extract_child($parent,c11.types.Record($name,$fields),$index) when c11.members.record_is_physical($name,$fields)
+    => c11.bitfields.extract_member($parent,c11.types.Record($name,$fields),arg(arg(c11.types.named_aggregate_layout("struct",$name,$fields),2),$index),c11.types.field_type(arg($fields,$index)));
+effect c11.initializers.insert_child($parent,c11.types.Record($name,$fields),$index,$child) when c11.members.record_is_physical($name,$fields)
+    => c11.bitfields.insert_member($parent,c11.types.Record($name,$fields),arg(arg(c11.types.named_aggregate_layout("struct",$name,$fields),2),$index),c11.types.field_type(arg($fields,$index)),$child);
+

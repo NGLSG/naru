@@ -6,6 +6,7 @@ use std.fs;
 extern "C" {
     fn naru_target_toolchain(json: rawptr, length: i64) -> rawptr;
     fn naru_target_error() -> rawptr;
+    fn naru_host_clock_snapshot() -> rawptr;
 }
 
 // Source data facilities. All language policy is supplied by ordinary rules.
@@ -17,7 +18,8 @@ public fn source_tool_name(name: string) -> bool {
         || name == "text.lines" || name == "text.line_spans" || name == "text.columns" || name == "text.expand_tabs"
         || name == "text.join" || name == "text.trim" || name == "text.byte"
         || name == "text.lower" || name == "text.quote" || name == "text.unquote"
-        || name == "list.reverse" || name == "list.slice" || name == "target.toolchain";
+        || name == "text.codepoints" || name == "text.from_codepoints" || name == "text.from_bytes" || name == "text.is_ascii"
+        || name == "list.reverse" || name == "list.slice" || name == "target.toolchain" || name == "source.clock_snapshot";
 }
 
 public fn lexical_at(source: string, offset: i64, text: string) -> bool {
@@ -63,7 +65,7 @@ public fn lexical_scan(e: &mut Engine, source: string, path: string, config: i64
         }
         var open = ""; var close = ""; var edge = e.node(comments).first;
         while (edge >= 0 && e.good()) {
-            let item = e.edges.get(edge); let pair = item.value;
+            let item = e.edge(edge); let pair = item.value;
             if (!ir_list(e, pair) || e.node(pair).count != 2) { e.reject("comment configuration requires delimiter pairs"); break; }
             let candidate = scalar_text(e, e.child(pair, 0)); let end = scalar_text(e, e.child(pair, 1));
             if (candidate.len == 0 || end.len == 0) { e.reject("comment delimiters must be nonempty"); break; }
@@ -107,7 +109,7 @@ public fn lexical_scan(e: &mut Engine, source: string, path: string, config: i64
         } else {
             var longest: i64 = 0; edge = e.node(punctuation).first;
             while (edge >= 0 && e.good()) {
-                let item = e.edges.get(edge); let spelling = scalar_text(e, item.value);
+                let item = e.edge(edge); let spelling = scalar_text(e, item.value);
                 if (spelling.len > longest && lexical_at(source, offset, spelling)) { longest = spelling.len; }
                 edge = item.next;
             }
@@ -125,7 +127,7 @@ public fn source_rows_stream(e: &mut Engine, rows: i64) -> Stream {
     if (!ir_list(e, rows)) { return stream; }
     var edge = e.node(rows).first;
     while (edge >= 0 && e.good()) {
-        let item = e.edges.get(edge); let row = item.value;
+        let item = e.edge(edge); let row = item.value;
         if (!ir_list(e, row) || e.node(row).count < 5) { e.reject("source token requires kind, spelling, file, line and column"); break; }
         let kind = scalar_int(e, e.child(row, 0)); let raw = scalar_text(e, e.child(row, 1));
         let path = scalar_text(e, e.child(row, 2)); let line = scalar_int(e, e.child(row, 3)); let column = scalar_int(e, e.child(row, 4));
@@ -151,7 +153,7 @@ public fn source_rows_stream(e: &mut Engine, rows: i64) -> Stream {
 
 public fn decode_quotation(e: &mut Engine, raw: string, origin: Node) -> string {
     if (raw.len < 2 || str_char_at(raw, 0) != str_char_at(raw, raw.len - 1)) { e.reject("quotation delimiters do not match"); return ""; }
-    var out = StringBuilder.create(); var i: i64 = 1;
+    var out = std.string.StringBuilder.create(); var i: i64 = 1;
     while (i < raw.len - 1 && e.good()) {
         let c = str_char_at(raw, i); i = i + 1;
         if (c != 92) { out.appendChar(c); continue; }
@@ -206,6 +208,46 @@ public fn text_unicode_offsets(e: &mut Engine, value: string) -> Vec<i64> {
     }
     offsets.push(value.len); return offsets;
 }
+// Unicode representation only. Escape spellings, identifier ranges and
+// execution character-set policy remain in language-library rules.
+public fn text_codepoints(e: &mut Engine, value: string, origin: Node) -> i64 {
+    let offsets = text_unicode_offsets(e,value);
+    if (!e.good()) { return -1; }
+    let result = e.add_node(5,"",origin.file,origin.line,origin.column); var index: i64 = 0;
+    while (index + 1 < offsets.len) {
+        let start = offsets.get(index); let end = offsets.get(index + 1);
+        let first = str_char_at(value,start) as i64; var scalar = first;
+        if (end - start > 1) {
+            scalar = first % (end - start == 2 ? 32 : end - start == 3 ? 16 : 8);
+            var part = start + 1;
+            while (part < end) { scalar = scalar * 64 + (str_char_at(value,part) as i64) % 64; part = part + 1; }
+        }
+        e.add_child(result,e.add_node(2,naru_number(scalar),origin.file,origin.line,origin.column)); index = index + 1;
+    }
+    return e.complete_value(result);
+}
+public fn text_from_units(e: &mut Engine, values: i64, bytes: bool, origin: Node) -> i64 {
+    if (!ir_list(e,values)) { return -1; }
+    var out = std.string.StringBuilder.create(); var edge = e.node(values).first;
+    while (edge >= 0 && e.good()) {
+        let item = e.edge(edge); let value = scalar_int(e,item.value);
+        if (!e.good()) { return -1; }
+        if (value < 0 || (bytes && value > 255) || (!bytes && (value > 1114111 || (value >= 55296 && value <= 57343)))) {
+            e.reject(bytes ? "byte value outside 0..255" : "invalid Unicode scalar"); return -1;
+        }
+        if (bytes || value < 128) { out.appendChar(value as i32); }
+        else if (value < 2048) {
+            out.appendChar((192 + value / 64) as i32); out.appendChar((128 + value % 64) as i32);
+        } else if (value < 65536) {
+            out.appendChar((224 + value / 4096) as i32); out.appendChar((128 + (value / 64) % 64) as i32); out.appendChar((128 + value % 64) as i32);
+        } else {
+            out.appendChar((240 + value / 262144) as i32); out.appendChar((128 + (value / 4096) % 64) as i32);
+            out.appendChar((128 + (value / 64) % 64) as i32); out.appendChar((128 + value % 64) as i32);
+        }
+        edge = item.next;
+    }
+    let value = out.build(); return e.add_node(1,value.as_str(),origin.file,origin.line,origin.column);
+}
 public fn text_table_tool(e: &mut Engine, call: i64) -> i64 {
     let n = e.node(call); let name = n.text;
     let columns = name == "text.columns";
@@ -222,7 +264,7 @@ public fn text_table_tool(e: &mut Engine, call: i64) -> i64 {
         if (unit == "unicode") { offsets = text_unicode_offsets(e,value); length = offsets.len - 1; }
         let result = e.add_node(5,"",n.file,n.line,n.column); var edge = e.node(ranges).first;
         while (edge >= 0 && e.good()) {
-            let item = e.edges.get(edge); let range = item.value;
+            let item = e.edge(edge); let range = item.value;
             if (!ir_list(e,range) || e.node(range).count != 2) { e.reject("column ranges must be [start, end] pairs"); return -1; }
             var start = scalar_int(e,e.child(range,0)); var end = scalar_int(e,e.child(range,1));
             if (!e.good()) { return -1; }
@@ -237,7 +279,7 @@ public fn text_table_tool(e: &mut Engine, call: i64) -> i64 {
         let width = scalar_int(e,e.child(call,1));
         if (width < 1 || width > 1024) { e.reject("tab width must be between 1 and 1024"); return -1; }
         let offsets = text_unicode_offsets(e,value); if (!e.good()) { return -1; }
-        var out = StringBuilder.create(); var column: i64 = 0; var i: i64 = 0;
+        var out = std.string.StringBuilder.create(); var column: i64 = 0; var i: i64 = 0;
         while (i + 1 < offsets.len) {
             let start = offsets.get(i); let end = offsets.get(i+1); let c = str_char_at(value,start);
             if (c == 9) { let count = width - column % width; var j: i64 = 0;
@@ -315,7 +357,7 @@ public fn source_parse(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64) 
             context = e.child(result,0); let chunk = e.child(result,1);
             if (!ir_list(e,chunk)) { return -1; }
             var edge = e.node(chunk).first;
-            while (edge >= 0) { let part = e.edges.get(edge); e.add_child(items,part.value); edge = part.next; }
+            while (edge >= 0) { let part = e.edge(edge); e.add_child(items,part.value); edge = part.next; }
         }
     }
     return e.good() ? e.complete_value(items) : -1;
@@ -323,7 +365,25 @@ public fn source_parse(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64) 
 
 public fn eval_source_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64) -> i64 {
     let n = e.node(call); let name = n.text;
-    if (name.starts_with("source.") && rt.guard_depth > 0) { e.reject("rule guards cannot perform source IO or invoke a parser"); return -1; }
+    if (name.starts_with("source.") && rt.guard_depth > 0
+        && name != "source.path" && name != "source.directory" && name != "source.rule_path") {
+        e.reject("rule guards cannot perform source IO or invoke a parser"); return -1;
+    }
+    if (name == "source.clock_snapshot") {
+        if (!expect_arity(e, call, 0)) { return -1; }
+        if (e.host_clock_snapshot.len == 0) {
+            let pointer = naru_host_clock_snapshot();
+            if (pointer == null) { e.reject(str_dup(from_cstr(naru_target_error()))); return -1; }
+            e.host_clock_snapshot = str_dup(from_cstr(pointer));
+        }
+        var stream = tokenize(e.host_clock_snapshot, "<host-clock-snapshot>");
+        let facts = stx_term(e, &mut stream, 0);
+        if (stream.diagnostic.len > 0) { e.reject(stream.diagnostic); }
+        if (stream.peek().kind != 0 || facts < 0 || !ir_list(e, facts) || e.node(facts).count != 8) {
+            e.reject("invalid native host clock facts"); return -1;
+        }
+        return facts;
+    }
     if (name == "target.toolchain") {
         if (rt.guard_depth > 0) { e.reject("rule guards cannot discover host SDK installations"); return -1; }
         if (!expect_arity(e, call, 1)) { return -1; }
@@ -338,7 +398,7 @@ public fn eval_source_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i
         var result = e.add_node(11, "env", n.file, n.line, n.column);
         var edge = e.node(pairs).first;
         while (edge >= 0 && e.good()) {
-            let item = e.edges.get(edge); let pair = item.value;
+            let item = e.edge(edge); let pair = item.value;
             if (!ir_list(e, pair) || e.node(pair).count != 2) { e.reject("invalid target fact pair"); return -1; }
             result = env_insert(e, result, e.child(pair, 0), e.child(pair, 1));
             edge = item.next;
@@ -370,6 +430,11 @@ public fn eval_source_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i
     }
     if (name == "source.parse_tokens" || name == "source.parse_expression") { return source_parse(e,rt,call,depth); }
     if (name == "text.lines" || name == "text.line_spans" || name == "text.columns" || name == "text.expand_tabs") { return text_table_tool(e,call); }
+    if (name == "text.codepoints" || name == "text.from_codepoints" || name == "text.from_bytes") {
+        if (!expect_arity(e,call,1)) { return -1; }
+        if (name == "text.codepoints") { return text_codepoints(e,scalar_text(e,e.child(call,0)),n); }
+        return text_from_units(e,e.child(call,0),name == "text.from_bytes",n);
+    }
     if (name == "text.lex") {
         if (!expect_arity(e, call, 3)) { return -1; }
         return lexical_scan(e, scalar_text(e, e.child(call, 0)), scalar_text(e, e.child(call, 1)), e.child(call, 2));
@@ -381,7 +446,7 @@ public fn eval_source_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i
         if (name == "list.slice") { start = scalar_int(e, e.child(call, 1)); end = scalar_int(e, e.child(call, 2)); }
         if (start < 0 || end < start || end > count) { e.reject("invalid list slice bounds"); return -1; }
         var values = Vec::<i64>.new(); var edge = e.node(list).first;
-        while (edge >= 0) { let item = e.edges.get(edge); values.push(item.value); edge = item.next; }
+        while (edge >= 0) { let item = e.edge(edge); values.push(item.value); edge = item.next; }
         let result = e.add_node(5, "", n.file, n.line, n.column); var i = start;
         while (i < end) { e.add_child(result, values.get(name == "list.reverse" ? count - i - 1 : i)); i = i + 1; } return e.complete_value(result);
     }
@@ -389,12 +454,20 @@ public fn eval_source_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i
     if (!expect_arity(e, call, arity)) { return -1; }
     if (name == "text.join") {
         let rows = e.child(call, 0); if (!ir_list(e, rows)) { return -1; }
-        let separator = scalar_text(e, e.child(call, 1)); var out = StringBuilder.create(); var first = true;
+        let separator = scalar_text(e, e.child(call, 1)); var out = std.string.StringBuilder.create(); var first = true;
         var edge = e.node(rows).first;
-        while (edge >= 0 && e.good()) { let item = e.edges.get(edge); if (!first) { out.append(separator); } out.append(scalar_text(e, item.value)); first = false; edge = item.next; }
+        while (edge >= 0 && e.good()) { let item = e.edge(edge); if (!first) { out.append(separator); } out.append(scalar_text(e, item.value)); first = false; edge = item.next; }
         let value = out.build(); return e.add_node(1, value.as_str(), n.file, n.line, n.column);
     }
     let value = scalar_text(e, e.child(call, 0));
+    if (name == "text.is_ascii") {
+        var index: i64 = 0;
+        while (index < value.len) {
+            if (str_char_at(value,index) >= 128) { return e.add_node(2,"0",n.file,n.line,n.column); }
+            index = index + 1;
+        }
+        return e.add_node(2,"1",n.file,n.line,n.column);
+    }
     if (name == "text.byte") {
         let index = scalar_int(e, e.child(call, 1));
         if (index < 0 || index >= value.len) { e.reject("text byte index outside input"); return -1; }

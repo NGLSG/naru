@@ -7,16 +7,17 @@ use base;
 use types;
 use tree;
 use c11.constants;
+use c11.names;
 
 syntax c11.enumerator `$name:ident` => Enumerator($name,Implicit());
 syntax c11.enumerator `$name:ident = $value:c11.expr` => Enumerator($name,$value);
 syntax c11.enumerators `$entry:c11.enumerator` => [$entry];
 syntax c11.enumerators `$entry:c11.enumerator, $rest:c11.enumerators` => list.prepend($entry,$rest);
-syntax c11.specifier `enum $name:ident` => Enum($name);
-syntax c11.specifier `enum $name:ident { $entries:c11.enumerators }` => EnumSpecifier($name,$entries,symbol("enum_definition"));
-syntax c11.specifier `enum $name:ident { $entries:c11.enumerators, }` => EnumSpecifier($name,$entries,symbol("enum_definition"));
-syntax c11.specifier `enum { $entries:c11.enumerators }` => EnumSpecifier(symbol("anonymous_enum"),$entries,symbol("enum_definition"));
-syntax c11.specifier `enum { $entries:c11.enumerators, }` => EnumSpecifier(symbol("anonymous_enum"),$entries,symbol("enum_definition"));
+syntax c11.atom_type `enum $name:ident` => Enum($name);
+syntax c11.atom_type `enum $name:ident { $entries:c11.enumerators }` => EnumSpecifier($name,$entries,symbol("enum_definition"));
+syntax c11.atom_type `enum $name:ident { $entries:c11.enumerators, }` => EnumSpecifier($name,$entries,symbol("enum_definition"));
+syntax c11.atom_type `enum { $entries:c11.enumerators }` => EnumSpecifier(symbol("anonymous_enum"),$entries,symbol("enum_definition"));
+syntax c11.atom_type `enum { $entries:c11.enumerators, }` => EnumSpecifier(symbol("anonymous_enum"),$entries,symbol("enum_definition"));
 syntax c11.item `enum $name:ident { $entries:c11.enumerators };` => EnumDeclaration($name,$entries,symbol("enum_definition"));
 syntax c11.item `enum $name:ident { $entries:c11.enumerators, };` => EnumDeclaration($name,$entries,symbol("enum_definition"));
 syntax c11.item `enum { $entries:c11.enumerators };` => EnumDeclaration(symbol("anonymous_enum"),$entries,symbol("enum_definition"));
@@ -25,10 +26,14 @@ syntax c11.item `enum { $entries:c11.enumerators, };` => EnumDeclaration(symbol(
 effect c11.syntax.record_base(EnumSpecifier($name,$entries,$origin)) => Enum($name);
 effect c11.syntax.record_items(EnumSpecifier($name,$entries,$origin)) => [EnumDeclaration($name,$entries,$origin)];
 effect c11.syntax.commit($context,EnumDeclaration($name,$entries,$origin)) => bind(Enumerating($scope,$values,$next),
-    list.fold("c11.enums.enumerate",$entries,Enumerating($context,[],0)),[$scope,[EnumDeclaration($name,list.reverse($values),$origin)]]);
-effect enumerate(Enumerating($context,$values,$next),Enumerator($name,$expression)) => choose(or(env.contains($context,$name),env.contains($context,EnumConstantKey($name))),
+    list.fold("c11.enums.enumerate",$entries,Enumerating(c11.names.ensure($context),[],0)),[$scope,[EnumDeclaration($name,list.reverse($values),$origin)]]);
+effect enumerate(Enumerating($context,$values,$next),Enumerator($name,$expression)) => choose(c11.names.enum_conflict($context,$name),
     fail(concat("duplicate C enumeration constant: ",$name)),bind($value,enumerator_value($expression,$next,$context),
-        Enumerating(env.put($context,EnumConstantKey($name),$value),list.prepend(Enumerated($name,$value),$values),add(c11.sema.integer_value($value),1))));
+        Enumerating(c11.names.enum_publish($context,$name,$value),list.prepend(Enumerated($name,$value),$values),add(c11.sema.integer_value($value),1))));
+// The grouped-token driver already committed each constant at its declaration
+// point. Retain those facts without publishing or evaluating them again.
+effect enumerate(Enumerating($context,$values,$next),Enumerated($name,$value))
+    => Enumerating($context,list.prepend(Enumerated($name,$value),$values),add(c11.sema.integer_value($value),1));
 effect enumerator_value(Implicit(),$next,$context) => checked_enumerator(base.Typed(c11.types.integer("int"),base.Integer($next)));
 effect[fallback] enumerator_value($expression,$next,$context) => checked_enumerator(c11.sema.integer_constant_value($expression,$context));
 effect checked_enumerator(base.Typed($type,base.Integer($value))) => choose(and(c11.types.is_integer($type),int.fits($value,32,1)),
@@ -36,23 +41,52 @@ effect checked_enumerator(base.Typed($type,base.Integer($value))) => choose(and(
 
 effect c11.objects.tag_node($tags,EnumDeclaration($name,$values,$origin)) => c11.objects.install_tag($tags,$name,c11.objects.Tag("enum",[],$origin));
 effect c11.objects.tag_node($tags,EnumSpecifier($name,$values,$origin)) => c11.objects.install_tag($tags,$name,c11.objects.Tag("enum",[],$origin));
-effect c11.objects.rewrite(EnumSpecifier($name,$values,$origin),$tags,$active) => c11.objects.rewrite(Enum($name),$tags,$active);
-effect c11.objects.rewrite(Enum($name),$tags,$active) => choose(env.contains($tags,$name),
-    choose(eq(arg(env.get($tags,$name),0),"enum"),Enum($name),fail("C tag kind mismatch")),fail("incomplete C enum type"));
+effect c11.enums.require_complete($name,$tags) => choose(env.contains($tags,$name),c11.enums.complete_definition(env.get($tags,$name)),fail("incomplete C enum type"));
+effect c11.enums.complete_definition(c11.objects.Tag("enum",$fields,$origin)) => 1;
+effect c11.enums.complete_definition(c11.objects.IncompleteTag("enum")) => fail("incomplete C enum type");
+effect[fallback] c11.enums.complete_definition($tag) => fail("C tag kind mismatch");
+effect c11.objects.rewrite_enter(EnumSpecifier($name,$values,$origin),[$tags,$active],$state) => seq(c11.enums.require_complete($name,$tags),tree.Stop(Enum($name),$state));
+effect c11.objects.declaration_type(EnumSpecifier($name,$values,$origin),$tags)
+    => seq(c11.enums.require_complete($name,$tags),Enum($name));
+effect c11.objects.rewrite_enter(Enum($name),[$tags,$active],$state) => seq(c11.enums.require_complete($name,$tags),tree.Stop(Enum($name),$state));
+effect c11.sema.complete_type(Enum($name),$env) => c11.objects.rewrite(Enum($name),env.get($env,c11.objects.TagsKey()),[]);
+effect c11.sema.complete_type(EnumSpecifier($name,$values,$origin),$env) => c11.objects.rewrite(Enum($name),env.get($env,c11.objects.TagsKey()),[]);
 effect c11.sema.declare(EnumDeclaration($name,$values,$origin),$rest,$env)
     => c11.sema.declarations($rest,list.fold("c11.enums.declare_constant",$values,$env));
 effect declare_constant($env,Enumerated($name,$value)) => choose(env.contains($env,$name),fail(concat("C enumeration identifier conflict: ",$name)),
     env.put($env,$name,EnumerationConstant($value)));
 effect c11.sema.prepare_item(EnumDeclaration($name,$values,$origin),$rest,$env,$seen) => c11.sema.prepare_items($rest,$env,$seen);
+// Definitions nested in fields, sizeof or array bounds also introduce names
+// in their containing file frame. Capture only facts not already represented
+// by a top-level EnumDeclaration; no function-body traversal is necessary.
+effect c11.enums.file_constants($before,$after,$items) => bind($declared,list.fold("c11.enums.declared_names",$items,env.empty()),
+    bind(MissingNames($out,$seen),list.fold("c11.enums.missing_name",c11.names.enum_delta($before,$after),MissingNames([],$declared)),
+        choose(eq(size($out),0),$items,list.prepend(c11.objects.file_point(c11.names.tags($after),EnumerationNames(list.reverse($out))),$items))));
+effect c11.enums.declared_names($seen,c11.objects.FilePoint($tags,$item)) => c11.enums.declared_names($seen,$item);
+effect c11.enums.declared_names($seen,EnumDeclaration($name,$values,$origin)) => list.fold("c11.enums.declared_name",$values,$seen);
+effect[fallback] c11.enums.declared_names($seen,$item) => $seen;
+effect c11.enums.declared_name($seen,Enumerated($name,$value)) => env.put($seen,$name,1);
+effect c11.enums.missing_name(MissingNames($out,$seen),Enumerated($name,$value)) => MissingNames(
+    choose(env.contains($seen,$name),$out,list.prepend(Enumerated($name,$value),$out)),$seen);
+effect c11.sema.declare(EnumerationNames($values),$rest,$env) => c11.sema.declarations($rest,list.fold("c11.enums.declare_constant",$values,$env));
+effect c11.sema.prepare_item(EnumerationNames($values),$rest,$env,$seen) => c11.sema.prepare_items($rest,$env,$seen);
 effect c11.sema.named_read(EnumerationConstant($value),$name) => $value;
+effect c11.syntax.typedef_binding(EnumerationConstant($value)) => 0;
+effect c11.syntax.append(LocalEnum($values,$rest),$next) => LocalEnum($values,c11.syntax.append($rest,$next));
+effect base.check_body(LocalEnum($values,$next),$env,$result)
+    => base.check_body($next,list.fold("c11.enums.bind_local_constant",$values,$env),$result);
+effect bind_local_constant($env,Enumerated($name,$value)) => env.put($env,$name,EnumerationConstant($value));
+effect c11.sema.for_continues(LocalEnum($values,$next),$step) => LocalEnum($values,c11.sema.for_continues($next,$step));
 effect c11.sema.object_binding_type(EnumerationConstant($value),$env) => arg($value,0);
 effect c11.sema.function_constant(EnumerationConstant($value),$name) => $value;
 effect c11.sema.slot_reference(EnumerationConstant($value)) => fail("C enumeration constant has no object address");
 effect c11.sema.slot_type(EnumerationConstant($value)) => fail("C enumeration constant is not a modifiable object");
-effect c11.sema.constant_name($name,$env) => choose(env.contains($env,$name),c11.sema.function_constant(env.get($env,$name),$name),
+effect c11.sema.constant_name($name,$env) => choose(env.contains($env,$name),c11.sema.function_constant(c11.sema.lookup_name($env,$name),$name),
     env.get($env,EnumConstantKey($name)));
-effect c11.sema.integer_constant_name($name,$env) => choose(env.contains($env,$name),integer_constant_binding(env.get($env,$name)),
+effect c11.sema.integer_constant_name($name,$env) => choose(env.contains($env,$name),
+    choose(c11.sema.name_visible($env,$name),integer_constant_binding(env.get($env,$name)),0),
     env.contains($env,EnumConstantKey($name)));
+effect c11.sema.integer_constant_expression(c11.names.NameAt($frame,$name),$env) => c11.enums.integer_constant_binding(c11.sema.lookup_at($frame,$name,$env));
 effect integer_constant_binding(EnumerationConstant($value)) => 1;
 effect[fallback] integer_constant_binding($binding) => 0;
 effect c11.sema.constant_context($expression,$env) => c11.sema.constant(arg(tree.rewrite_with($expression,
@@ -61,8 +95,9 @@ effect c11.sema.constant_node_value($node,$env) => constant_node($node,$env);
 effect c11.constants.semantic_environment($env) => list.fold("c11.enums.constant_environment_entry",env.entries($env),$env);
 effect constant_environment_entry($env,[EnumConstantKey($name),$value]) => choose(env.contains($env,$name),$env,env.put($env,$name,EnumerationConstant($value)));
 effect[fallback] constant_environment_entry($env,$entry) => $env;
-effect constant_node(c11.syntax.Name($name),$env) => choose(env.contains($env,$name),binding_constant(env.get($env,$name),$name),
+effect constant_node(c11.syntax.Name($name),$env) => choose(env.contains($env,$name),binding_constant(c11.sema.lookup_name($env,$name),$name),
     choose(env.contains($env,EnumConstantKey($name)),EnumValue(env.get($env,EnumConstantKey($name))),c11.syntax.Name($name)));
+effect constant_node(c11.names.NameAt($frame,$name),$env) => c11.enums.binding_constant(c11.sema.lookup_at($frame,$name,$env),$name);
 effect constant_node(c11.syntax.SizeValue($value),$env)
     => EnumValue(base.Typed(c11.types.size_type(),base.Integer(c11.types.sizeof(c11.sema.object_type($value,c11.constants.semantic_environment($env))))));
 effect binding_constant(EnumerationConstant($value),$name) => EnumValue($value);
@@ -74,6 +109,10 @@ effect c11.sema.constant(EnumValue($value)) => $value;
 // int; enum object descriptors retain the identity of their definition.
 effect types.repr(Enum($name)) => "i32";
 effect c11.types.storage(Enum($name)) => types.Signed(32);
+// The selected Windows LLP64 policy uses int as the compatible integer type.
+// Two distinct enumeration tags remain distinct from one another.
+effect c11.types.compatible_shape(Enum($name),c11.types.IntType(3,32,0)) => 1;
+effect c11.types.compatible_shape(c11.types.IntType(3,32,0),Enum($name)) => 1;
 effect c11.types.bytes(Enum($name)) => 4;
 effect c11.types.promotion(Enum($name)) => c11.types.integer("int");
 effect c11.types.is_integer(Enum($name)) => 1;

@@ -1,0 +1,11 @@
+// Encoding facilities shared by source dialects and user-defined data formats.
+mod unicode;
+effect utf8($scalar) => bytes(text.from_codepoints([$scalar]));
+effect bytes($text) => bind(ByteScan($value,$index,$out),rule.iterate("unicode.byte_step",ByteScan($text,0,[]),1000000),list.reverse($out));
+effect byte_step(ByteScan($value,$index,$out)) when eq($index,text.len($value)) => [0,ByteScan($value,$index,$out)];
+effect byte_step(ByteScan($value,$index,$out)) when lt($index,text.len($value))
+    => [1,ByteScan($value,add($index,1),list.prepend(text.byte($value,$index),$out))];
+effect scalar($value) => choose(and(not(lt($value,0)),and(lt($value,1114112),or(lt($value,55296),lt(57343,$value)))),$value,fail("invalid Unicode scalar"));
+effect utf16($value) => bind($checked,scalar($value),choose(lt($checked,65536),[$checked],
+    [add(55296,int.shr(sub($checked,65536),10)),add(56320,int.and(sub($checked,65536),1023))]));
+effect utf32($value) => [scalar($value)];

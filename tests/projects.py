@@ -116,7 +116,8 @@ def main() -> int:
                 for item in lock[section]:
                     assert not Path(item[field]).is_absolute()
                     assert hashlib.sha256((path / item[field]).read_bytes()).hexdigest() == item["sha256"]
-            assert [rule["module"] for rule in lock["rules"]] == ["base", "externc", "numbers", "pipeline", "types"]
+            # Base storage planning and externc's ABI walkers share tree rules.
+            assert [rule["module"] for rule in lock["rules"]] == ["allocation", "base", "externc", "numbers", "pipeline", "tree", "types"]
             old = (path / "Naru.lock").read_bytes()
             success(invoke("build", "--project", path, "--locked"))
             assert (path / "Naru.lock").read_bytes() == old

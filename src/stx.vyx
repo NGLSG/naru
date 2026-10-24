@@ -93,7 +93,7 @@ public fn stx_term(e: &mut Engine, s: &mut Stream, depth: i64) -> i64 {
 public fn stx_has_name(e: &mut Engine, names: i64, name: string) -> bool {
     var edge = e.node(names).first;
     while (edge >= 0) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         if (e.node(item.value).text == name) { return true; }
         edge = item.next;
     }
@@ -108,7 +108,7 @@ public fn stx_collect_vars(e: &mut Engine, root: i64, names: i64) {
     }
     var edge = n.first;
     while (edge >= 0) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         stx_collect_vars(e, item.value, names);
         edge = item.next;
     }
@@ -129,7 +129,7 @@ public fn stx_check_vars(e: &mut Engine, root: i64, names: i64) -> bool {
     }
     var edge = n.first;
     while (edge >= 0) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         if (!stx_check_vars(e, item.value, names)) { return false; }
         edge = item.next;
     }

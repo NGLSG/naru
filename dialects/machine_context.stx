@@ -1,0 +1,9 @@
+// Target machine context intrinsics. No source-language setjmp ABI or buffer
+// definition belongs here. LLVM resolves the frame in the containing function.
+mod machine_context;
+use storage;
+
+effect machine_context.frame_address($depth) => choose(and(not(lt($depth,0)),lt($depth,2147483648)),
+    mlir.op("llvm.call_intrinsic",[storage.integer($depth,32)],["!llvm.ptr"],
+        [Attr("intrin","llvm.frameaddress"),RawAttr("op_bundle_sizes","array<i32>"),RawAttr("operandSegmentSizes","array<i32: 1, 0>")],[]),
+    fail("frame address depth must be a nonnegative i32 constant"));

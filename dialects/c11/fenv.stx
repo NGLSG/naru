@@ -1,0 +1,85 @@
+// C floating policy for the selected x86_64 Windows UCRT profile. CRT calls
+// own environment manipulation; compiler support neither exports replacements
+// for <fenv.h> functions nor changes the installed header.
+mod c11.fenv;
+use floating;
+use complex_numbers;
+use c11.types;
+use c11.sema;
+use c11.syntax;
+use c11.atomics;
+use c11.complex;
+use c11.pp;
+use c11.lex;
+use base;
+use types;
+use storage;
+use tree;
+
+// Implementation default: FENV_ACCESS ON, no implicit contraction. OFF permits
+// relaxed assumptions but does not require using them. This conservative policy
+// also preserves exception-generating expressions in the actual UCRT header.
+effect c11.sema.function_lowering_policy($body,$environment) => floating.strict($environment);
+effect c11.sema.runtime_function_attrs($body) => [RawAttr("passthrough","[\"strictfp\"]")];
+effect c11.pp.enabled("pragma",$tokens,$state,$at) when c11.fenv.supported_pragma($tokens)
+    => seq(choose(eq(size($tokens),3),choose(c11.fenv.pragma_value(c11.lex.spelling(arg($tokens,2))),1,
+        c11.lex.error($at,"STDC pragma requires ON, OFF or DEFAULT")),c11.lex.error($at,"STDC pragma requires one mode")),$state);
+effect c11.fenv.supported_pragma($tokens) => choose(lt(1,size($tokens)),
+    and(eq(c11.lex.spelling(arg($tokens,0)),"STDC"),c11.fenv.pragma_name(c11.lex.spelling(arg($tokens,1)))),0);
+effect c11.fenv.pragma_name($name) => or(eq($name,"FENV_ACCESS"),or(eq($name,"FP_CONTRACT"),eq($name,"CX_LIMITED_RANGE")));
+effect c11.fenv.pragma_value($value) => or(eq($value,"ON"),or(eq($value,"OFF"),eq($value,"DEFAULT")));
+
+effect c11.fenv.floating_type(c11.types.FloatType($rank,$format)) => 1;
+effect[fallback] c11.fenv.floating_type($type) => c11.complex.is_complex($type);
+effect c11.fenv.floating_update($type,base.Typed($right_type,$right))
+    => or(c11.fenv.floating_type($type),c11.fenv.floating_type($right_type));
+effect c11.fenv.update_site($found,base.Typed($type,c11.sema.CompoundAssigned($operation,$reference,$right)))
+    => or($found,and(c11.atomics.atomic_type(arg($reference,0)),c11.fenv.floating_update($type,$right)));
+effect c11.fenv.update_site($found,base.Typed($type,c11.sema.Incremented($reference,$delta,$prefix)))
+    => or($found,and(c11.atomics.atomic_type(arg($reference,0)),c11.fenv.floating_type($type)));
+effect[fallback] c11.fenv.update_site($found,$node) => $found;
+effect c11.fenv.needed($body) => tree.fold($body,"c11.fenv.update_site",0);
+
+// ABI fact, not a substitute fenv_t definition: UCRT's x64 fenv_t is two
+// unsigned longs (8 bytes, alignment 4). The buffer is opaque and over-aligned;
+// only actual CRT functions read it. Real-header assertions are acceptance gates.
+effect c11.fenv.environment_bytes() => 8;
+effect c11.sema.prepare_runtime_frame($body,$block,$environment) when c11.fenv.needed($body)
+    => env.put($environment,c11.fenv.BufferKey(),mlir.with_block($block,
+        mlir.op("llvm.alloca",[storage.integer(c11.fenv.environment_bytes(),64)],["!llvm.ptr"],
+            [RawAttr("elem_type","i8"),Attr("alignment",16,"i64")],[])));
+effect c11.atomics.begin_update($type,$right,$env) when c11.fenv.floating_update($type,$right)
+    => bind($buffer,env.get($env,c11.fenv.BufferKey()),seq(c11.fenv.call("feholdexcept",[$buffer]),c11.fenv.HeldEnvironment($buffer)));
+effect c11.atomics.discard_update(c11.fenv.HeldEnvironment($buffer))
+    => c11.fenv.call("feclearexcept",[storage.integer(31,32)]);
+// Discarded CAS attempts execute the clear in the loop's continuation block.
+// Only the successful attempt's flags are merged with the environment captured
+// after the RHS. Re-raising after restore also honors the original trap masks.
+effect c11.atomics.commit_update(c11.fenv.HeldEnvironment($buffer))
+    => bind($flags,c11.fenv.call("fetestexcept",[storage.integer(31,32)]),
+        seq(c11.fenv.call("fesetenv",[$buffer]),c11.fenv.raise_flags($flags)));
+effect c11.fenv.call($name,$arguments) => mlir.op("llvm.call",$arguments,["i32"],
+    [RawAttr("callee",concat("@",$name)),RawAttr("op_bundle_sizes","array<i32>"),
+        RawAttr("operandSegmentSizes",concat("array<i32: ",concat(text(size($arguments)),", 0>")))],[]);
+effect c11.fenv.raise_flags($flags)
+    => seq(c11.fenv.raise_one($flags,16,"0.0","0.0"),seq(c11.fenv.raise_one($flags,8,"1.0","0.0"),
+        seq(c11.fenv.raise_one($flags,4,"1e300","1e-300"),seq(c11.fenv.raise_one($flags,2,"1e-300","1e300"),
+            c11.fenv.raise_one($flags,1,"2.0","3.0")))));
+effect c11.fenv.raise_one($flags,$mask,$numerator,$denominator)
+    => mlir.op("scf.if",[mlir.op("llvm.icmp",[mlir.op("llvm.and",[$flags,storage.integer($mask,32)],["i32"],[],[]),storage.integer(0,32)],
+        ["i1"],[Attr("predicate",1,"i64")],[])],[],[],[
+            mlir.region(seq(floating.intrinsic("fdiv",[complex_numbers.constant("f64",$numerator),complex_numbers.constant("f64",$denominator)],
+                "f64",floating.Policy(7,2),1),mlir.op("scf.yield",[],[],[],[])))]);
+
+effect c11.sema.runtime_provider($items) when c11.fenv.needed($items)
+    => c11.sema.RuntimeProvider("floating-environment",[c11.fenv.RuntimeDeclarations(tree.fold($items,"c11.fenv.declared_symbol",env.empty()))]);
+effect c11.fenv.declared_symbol($names,c11.sema.CheckedPrototype($name,$params,$result,$variadic)) => env.put($names,$name,1);
+effect c11.fenv.declared_symbol($names,c11.sema.CheckedCFunction($name,$params,$result,$body,$variadic)) => env.put($names,$name,1);
+effect[fallback] c11.fenv.declared_symbol($names,$node) => $names;
+effect base.lower_function(c11.fenv.RuntimeDeclarations($declared))
+    => seq(c11.fenv.declare_if_missing($declared,"feholdexcept","!llvm.ptr"),
+        seq(c11.fenv.declare_if_missing($declared,"feclearexcept","i32"),
+            seq(c11.fenv.declare_if_missing($declared,"fetestexcept","i32"),c11.fenv.declare_if_missing($declared,"fesetenv","!llvm.ptr"))));
+effect c11.fenv.declare_if_missing($declared,$name,$argument)
+    => choose(env.contains($declared,$name),1,mlir.op("llvm.func",[],[],[Attr("sym_name",$name),
+        RawAttr("function_type",concat("!llvm.func<i32 (",concat($argument,")>")))],[mlir.region_blocks([])]));

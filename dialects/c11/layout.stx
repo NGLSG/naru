@@ -6,39 +6,52 @@
 // otherwise ordinary declaration.  Keeping this bridge separate lets a
 // target dialect replace the layout relation without changing C grammar.
 mod c11.layout;
+use c11.names;
 use c11.types;
 use c11.objects;
 use c11.sema;
 use c11.syntax;
 use c11.declarators;
+use c11.specifiers;
 use c11.constants;
+use c11.header_features;
 use base;
 use tree;
 
 // clang's stddef.h expands offsetof to this builtin on the Windows profile.
 // The type category deliberately accepts records, unions, typedefs and
 // qualified/declared type names through the existing c11.type rules.
-syntax c11.layout.member_path `$member:ident` => [$member];
-syntax c11.layout.member_path `$head:ident . $tail:c11.layout.member_path`
-    => list.prepend($head,$tail);
+syntax c11.layout.member_path `$member:ident` => [c11.names.spelling($member)];
+syntax c11.layout.member_path[10,left] `$path:c11.layout.member_path $access:c11.member_access $member:ident`
+    => list.concat($path,c11.layout.member_path_step($member,$access,[]));
+syntax c11.layout.member_path[20,left] `$path:c11.layout.member_path[$index:c11.expr]`
+    => list.concat($path,[c11.layout.OffsetIndex($index)]);
+effect c11.layout.member_path_step($head,c11.syntax.DirectMember(),$tail) => list.prepend(c11.names.spelling($head),$tail);
+effect c11.layout.member_path_step($head,c11.names.MemberPoint($tags,0),$tail) => list.prepend(c11.names.spelling($head),$tail);
+effect[fallback] c11.layout.member_path_step($head,$access,$tail) => fail("C offsetof member path requires a dot");
 syntax c11.expr `__builtin_offsetof($type:c11.type, $member:c11.layout.member_path)`
     => c11.layout.Offsetof($type,$member);
+effect c11.syntax.type_operand_builtin(c11.syntax.Name("__builtin_offsetof")) => 1;
+effect c11.names.syntax_identifier("__builtin_offsetof") => 1;
+effect c11.header_features.builtin("__builtin_offsetof") => 1;
 
 // C11 permits an alignment annotation before a declaration's specifiers.
 // Both expression and type-name arguments are accepted.  The resolved object
 // type is wrapped after declarator composition and lowered with LLVM
 // `alignment` attributes for globals and allocas.
-syntax c11.specifiers[20,right] `_Alignas($alignment:c11.expr) $spec:c11.specifiers`
+syntax c11.declaration_piece `_Alignas($alignment:c11.expr)`
     when not(c11.layout.typedef_alignment_operand($alignment,syntax.context()))
-    => c11.layout.aligned_spec($spec,$alignment);
-syntax c11.specifiers[20,right] `_Alignas($alignment:c11.type) $spec:c11.specifiers`
-    => c11.layout.aligned_spec($spec,c11.sema.AlignType($alignment));
+    => c11.specifiers.Alignment($alignment);
+syntax c11.declaration_piece `_Alignas($alignment:c11.type)`
+    => c11.specifiers.Alignment(c11.sema.AlignType($alignment));
 
-// A visible typedef identifier selects the type-name form. An ordinary name
-// that shadows it remains an expression and must satisfy the ICE constraint.
+// Frozen typedef and tag-specifier tokens select the type-name form. An
+// ordinary name remains an expression and must satisfy the ICE constraint.
 effect c11.layout.typedef_alignment_operand(c11.syntax.Name($name),$context)
-    => c11.syntax.typedef_visible($context,$name);
-effect[fallback] c11.layout.typedef_alignment_operand($value,$context) => 0;
+    => or(c11.syntax.typedef_visible($context,$name),env.contains($context,c11.names.SpecifierKey($name)));
+effect c11.layout.typedef_alignment_operand(c11.names.NameAt($frame,$name),$context)
+    => c11.names.typedef_reference($frame,$name,$context);
+effect[fallback] c11.layout.typedef_alignment_operand($value,$context) => c11.names.typedef_expression($value,$context);
 
 effect c11.layout.aligned_spec(c11.syntax.Specifiers($type,$storage,$inline),$alignment)
     => c11.layout.AlignedSpec(c11.syntax.Specifiers($type,$storage,$inline),$alignment);
@@ -55,12 +68,12 @@ effect[fallback] c11.layout.aligned_spec($spec,$alignment) => $spec;
 effect c11.layout.align_type($type,$alignment) => c11.types.AlignedType($type,$alignment);
 
 effect c11.syntax.declaration(c11.layout.AlignedSpec(c11.syntax.Specifiers($type,$storage,$inline),$alignment),$decls)
-    => c11.layout.aligned_declaration($type,$storage,$decls,$alignment);
+    => seq(c11.specifiers.validate_decls($decls,$type,$storage,$inline),c11.layout.aligned_declaration($type,$storage,$decls,$alignment));
 effect c11.layout.aligned_declaration($type,$storage,$decls,$alignment)
-    => bind(c11.layout.AlignedDeclarations($out,$base,$class,$alignment),
+    => seq(c11.syntax.file_storage($storage),bind(c11.layout.AlignedDeclarations($out,$base,$class,$alignment),
         list.fold("c11.layout.aligned_declaration_step",$decls,
             c11.layout.AlignedDeclarations([],$type,$storage,$alignment)),
-        c11.syntax.DeclarationGroup(list.concat(c11.syntax.record_items($type),list.reverse($out))));
+        c11.syntax.DeclarationGroup(list.concat(c11.syntax.record_items($type),list.reverse($out)))));
 effect c11.layout.aligned_declaration_step(c11.layout.AlignedDeclarations($out,$base,$storage,$alignment),c11.syntax.Initialized($decl,$value))
     => bind(c11.declarators.Resolved($name,$type),c11.declarators.resolve($decl,c11.syntax.record_base($base)),
         c11.layout.AlignedDeclarations(list.prepend(c11.syntax.make_declaration($name,
@@ -88,19 +101,29 @@ effect c11.layout.aligned_local_step(c11.layout.AlignedLocals($body,$base,$stora
 // Locate a member through the same anonymous-member path search used by
 // lvalue lowering.  This preserves nested anonymous struct/union offsets and
 // the single-member ambiguity diagnostic.
-effect c11.layout.offset_of($type,$members) when eq(size($members),1)
-    => bind($member,list.head($members),
-        c11.layout.offset_result(c11.objects.field_paths($type,$member),$member));
-effect c11.layout.offset_of($type,$members) when lt(1,size($members))
-    => bind($member,list.head($members),
-        bind([$offset,$member_type],c11.layout.offset_member(c11.objects.field_paths($type,$member),$member),
-            add($offset,c11.layout.offset_of($member_type,list.tail($members)))));
-effect c11.layout.offset_member([[$offset,$member_type]],$member) => [$offset,$member_type];
+effect c11.layout.offset_of($type,$members) => c11.layout.offset_of_in($type,$members,env.empty());
+effect c11.layout.offset_of_in($type,$members,$env)
+    => bind(c11.layout.OffsetPath($current,$offset,$scope),list.fold("c11.layout.offset_path_step",$members,
+        c11.layout.OffsetPath($type,0,$env)),$offset);
+effect c11.layout.offset_path_step(c11.layout.OffsetPath($type,$base,$env),c11.layout.OffsetIndex($source))
+    => bind(base.Typed($integer,base.Integer($index)),c11.sema.integer_constant_value($source,$env),
+        seq(choose(lt($index,0),fail("C offsetof array index must not be negative"),1),
+            c11.layout.offset_array(c11.types.unqualified($type),$base,$index,$env)));
+effect c11.layout.offset_path_step(c11.layout.OffsetPath($type,$base,$env),$member) when eq(term.kind($member),1)
+    => bind([$offset,$member_type],c11.layout.offset_member(c11.objects.field_paths(c11.types.unqualified($type),$member),$member),
+        c11.layout.OffsetPath($member_type,add($base,$offset),$env));
+effect c11.layout.offset_array(c11.types.Array($count,$element),$base,$index,$env)
+    => c11.layout.OffsetPath($element,add($base,mul($index,c11.types.bytes($element))),$env);
+effect c11.layout.offset_array(c11.types.FlexibleArray($element),$base,$index,$env)
+    => c11.layout.OffsetPath($element,add($base,mul($index,c11.types.bytes($element))),$env);
+effect[fallback] c11.layout.offset_array($type,$base,$index,$env) => fail("C offsetof indexing requires an array member");
+effect c11.layout.offset_member([[$offset,$member_type]],$member) => seq(c11.layout.offset_allowed($member_type),[$offset,$member_type]);
 effect c11.layout.offset_member([],$member)
     => fail(concat("unknown C aggregate member: ", $member));
 effect[fallback] c11.layout.offset_member($paths,$member)
     => fail(concat("ambiguous C aggregate member: ", $member));
-effect c11.layout.offset_result([[$offset,$member_type]],$member) => $offset;
+effect c11.layout.offset_result([[$offset,$member_type]],$member) => seq(c11.layout.offset_allowed($member_type),$offset);
+effect[fallback] c11.layout.offset_allowed($type) => 1;
 effect c11.layout.offset_result([],$member)
     => fail(concat("unknown C aggregate member: ", $member));
 effect[fallback] c11.layout.offset_result($paths,$member)
@@ -109,7 +132,7 @@ effect[fallback] c11.layout.offset_result($paths,$member)
 effect base.check(c11.layout.Offsetof($type,$member),$env,$expected)
     => bind($complete,c11.sema.complete_type($type,$env),
         c11.sema.contextual(base.Typed(c11.types.size_type(),
-            base.Integer(c11.layout.offset_of($complete,$member))),$expected));
+            base.Integer(c11.layout.offset_of_in($complete,$member,$env))),$expected));
 effect c11.sema.constant(c11.layout.Offsetof($type,$member))
     => base.Typed(c11.types.size_type(),base.Integer(c11.layout.offset_of($type,$member)));
 effect c11.sema.integer_constant_expression(c11.layout.Offsetof($type,$member),$env) => 1;

@@ -1,0 +1,216 @@
+{
+  "format": 1,
+  "target": "windows-x86_64-llp64",
+  "scope": "Deferred independent C compiler object interoperability in both caller/callee directions; not a compiler fallback",
+  "full_conformance_claimed": false,
+  "cases": [
+    {
+      "id": "record-i8",
+      "declarations": "struct S{unsigned char n;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.n+=22;return s;}",
+      "caller": "int main(void){struct S s={20};return pass(s).n;}"
+    },
+    {
+      "id": "record-i16",
+      "declarations": "struct S{short n;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.n+=22;return s;}",
+      "caller": "int main(void){struct S s={20};return pass(s).n;}"
+    },
+    {
+      "id": "record-i32",
+      "declarations": "struct S{int n;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.n+=22;return s;}",
+      "caller": "int main(void){struct S s={20};return pass(s).n;}"
+    },
+    {
+      "id": "record-i64",
+      "declarations": "struct S{int a,b;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.b+=20;return s;}",
+      "caller": "int main(void){struct S s={20,2};struct S r=pass(s);return r.a+r.b;}"
+    },
+    {
+      "id": "record-float-container",
+      "declarations": "struct S{float a,b;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.a+=20;return s;}",
+      "caller": "int main(void){struct S s={20,2};struct S r=pass(s);return (int)(r.a+r.b);}"
+    },
+    {
+      "id": "record-double-container",
+      "declarations": "struct S{double n;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.n+=22;return s;}",
+      "caller": "int main(void){struct S s={20};return (int)pass(s).n;}"
+    },
+    {
+      "id": "record-pointer-container",
+      "declarations": "struct S{int *p;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){return s;}",
+      "caller": "int n=42;int main(void){struct S s={&n};return *pass(s).p;}"
+    },
+    {
+      "id": "record-three-byte-indirect",
+      "declarations": "struct S{unsigned char a,b,c;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.c+=20;return s;}",
+      "caller": "int main(void){struct S s={20,1,1};struct S r=pass(s);return s.c==1?r.a+r.b+r.c:1;}"
+    },
+    {
+      "id": "record-twelve-byte-indirect",
+      "declarations": "struct S{int a,b,c;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.c+=20;return s;}",
+      "caller": "int main(void){struct S s={20,1,1};struct S r=pass(s);return s.c==1?r.a+r.b+r.c:1;}"
+    },
+    {
+      "id": "record-sixteen-byte-indirect",
+      "declarations": "struct S{long long a,b;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.b+=20;return s;}",
+      "caller": "int main(void){struct S s={20,2};struct S r=pass(s);return s.b==2?(int)(r.a+r.b):1;}"
+    },
+    {
+      "id": "union-register",
+      "declarations": "union U{long long a;double b;};union U pass(union U);",
+      "provider": "union U pass(union U u){u.a+=22;return u;}",
+      "caller": "int main(void){union U u={20};return (int)pass(u).a;}"
+    },
+    {
+      "id": "sret-mixed-register-and-stack",
+      "declarations": "struct S{long long a,b;};struct S create(int,double,int,double,int);",
+      "provider": "struct S create(int a,double b,int c,double d,int e){struct S s={a+c+e,(long long)(b+d)};return s;}",
+      "caller": "int main(void){struct S s=create(10,1.0,10,1.0,20);return (int)(s.a+s.b);}"
+    },
+    {
+      "id": "small-function-pointer",
+      "declarations": "struct S{float a,b;};extern struct S(*callback)(struct S);",
+      "provider": "struct S add(struct S s){s.a+=20;return s;}struct S(*callback)(struct S)=add;",
+      "caller": "int main(void){struct S s={20,2};struct S r=callback(s);return (int)(r.a+r.b);}"
+    },
+    {
+      "id": "large-function-pointer",
+      "declarations": "struct S{long long a,b;};extern struct S(*callback)(struct S,int);",
+      "provider": "struct S add(struct S s,int n){s.a+=n;return s;}struct S(*callback)(struct S,int)=add;",
+      "caller": "int main(void){struct S s={20,0};struct S r=callback(s,22);return s.a==20?(int)r.a:1;}"
+    },
+    {
+      "id": "variadic-system-header-aggregate",
+      "declarations": "#include <stdarg.h>\nstruct S{long long a,b;};int read_values(int,...);",
+      "provider": "int read_values(int n,...){va_list ap;va_start(ap,n);struct S s=va_arg(ap,struct S);double d=va_arg(ap,double);va_end(ap);return (int)(s.a+s.b+d);}",
+      "caller": "int main(void){struct S s={20,20};return read_values(2,s,2.0f);}"
+    },
+    {
+      "id": "variadic-small-floating-record",
+      "declarations": "#include <stdarg.h>\nstruct S{float a,b;};int read_values(int,...);",
+      "provider": "int read_values(int n,...){va_list ap;va_start(ap,n);struct S s=va_arg(ap,struct S);va_end(ap);return (int)(s.a+s.b);}",
+      "caller": "int main(void){struct S s={20,22};return read_values(1,s);}"
+    },
+    {
+      "id": "variadic-large-named-parameter",
+      "declarations": "#include <stdarg.h>\nstruct S{long long a,b;};int read_values(struct S,...);",
+      "provider": "int read_values(struct S s,...){va_list ap;va_start(ap,s);int n=va_arg(ap,int);va_end(ap);return (int)s.a+n;}",
+      "caller": "int main(void){struct S s={20,0};return read_values(s,22);}"
+    },
+    {
+      "id": "old-style-aggregate-call",
+      "declarations": "struct S{long long a,b;};struct S pass();",
+      "provider": "struct S pass(s) struct S s;{s.a+=22;return s;}",
+      "caller": "int main(void){struct S s={20,0};return (int)pass(s).a;}"
+    },
+    {
+      "id": "nested-pointer-and-tail-layout",
+      "declarations": "struct S{int *p;int n;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.n+=20;return s;}",
+      "caller": "int n=20;int main(void){struct S s={&n,2};struct S r=pass(s);return *r.p+r.n;}"
+    },
+    {
+      "id": "aligned-record-sixteen",
+      "declarations": "struct __declspec(align(16)) S{char n;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.n+=22;return s;}",
+      "caller": "int main(void){struct S s={20};struct S r=pass(s);return sizeof(s)==16&&s.n==20?r.n:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target __declspec(align) spelling used by real MSVC headers; not counted as ISO syntax."
+    },
+    {
+      "id": "aligned-record-thirtytwo-pointer",
+      "declarations": "struct __declspec(align(32)) S{int *p;int n;};struct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.n+=20;return s;}",
+      "caller": "int value=20;int main(void){struct S s={&value,2};struct S r=pass(s);return sizeof(s)==32&&s.n==2?*r.p+r.n:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target __declspec(align) spelling used by real MSVC headers; not counted as ISO syntax."
+    },
+    {
+      "id": "aligned-union-thirtytwo",
+      "declarations": "union __declspec(align(32)) U{long long n;double d;};union U pass(union U);",
+      "provider": "union U pass(union U u){u.n+=22;return u;}",
+      "caller": "int main(void){union U u={20};union U r=pass(u);return sizeof(u)==32&&u.n==20?(int)r.n:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target __declspec(align) spelling used by real MSVC headers; not counted as ISO syntax."
+    },
+    {
+      "id": "packed-pointer-indirect",
+      "declarations": "#pragma pack(push,1)\nstruct S{char c;int *p;};\n#pragma pack(pop)\nstruct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.c+=2;return s;}",
+      "caller": "int value=20;struct S input={20,&value};int main(void){struct S s=pass(input);return sizeof(s)==9&&input.c==20?s.c+*s.p:1;}"
+    },
+    {
+      "id": "packed-eight-byte-register",
+      "declarations": "#pragma pack(push,1)\nstruct S{short a;int b;short c;};\n#pragma pack(pop)\nstruct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.b+=20;return s;}",
+      "caller": "int main(void){struct S s={20,1,1};struct S r=pass(s);return sizeof(s)==8&&s.b==1?r.a+r.b+r.c:1;}"
+    },
+    {
+      "id": "packed-bitfield-and-pointer",
+      "declarations": "#pragma pack(push,1)\nstruct S{unsigned int a:3,b:5;int *p;};\n#pragma pack(pop)\nstruct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.b=7;s.a+=2;return s;}",
+      "caller": "int value=20;struct S input={0,1,&value};int main(void){struct S r=pass(input);return sizeof(r)==12&&input.b==1&&r.b==7?r.a+*r.p+20:1;}"
+    },
+    {
+      "id": "packed-aligned-record",
+      "declarations": "#pragma pack(push,1)\nstruct __declspec(align(16)) S{char c;int n;};\n#pragma pack(pop)\nstruct S pass(struct S);",
+      "provider": "struct S pass(struct S s){s.n+=20;return s;}",
+      "caller": "int main(void){struct S s={20,2};struct S r=pass(s);return sizeof(s)==16&&s.n==2?r.c+r.n:1;}",
+      "reference_flags": [
+        "-fms-extensions"
+      ],
+      "reference_note": "Target packing composes with explicit aggregate alignment."
+    },
+    {
+      "id": "packed-union-global-image-foreign-reader",
+      "declarations": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};extern union U value;int read_value(void);",
+      "provider": "int n=40;union U value={.p={2,&n}};int read_value(void){return value.p.c+*value.p.p;}",
+      "caller": "int main(void){return sizeof(value)==16&&value.p.c==2&&*value.p.p==40?read_value():1;}"
+    },
+    {
+      "id": "packed-union-global-image-foreign-writer",
+      "declarations": "#pragma pack(push,1)\nstruct P{unsigned char c;int *p;};\n#pragma pack(pop)\nunion U{struct P p;long long n;};extern union U value;int change_value(void);",
+      "provider": "int n=20;union U value={.p={2,&n}};int change_value(void){value.p.c+=20;return *value.p.p;}",
+      "caller": "int main(void){int n=change_value();return value.p.c==22?value.p.c+n:1;}"
+    },
+    {
+      "id": "heterogeneous-union-array-foreign-view",
+      "declarations": "union U{long long n;int *p;};extern union U values[2];int read_values(void);",
+      "provider": "int n=20;union U values[2]={{.p=&n},{.n=22}};int read_values(void){return *values[0].p+(int)values[1].n;}",
+      "caller": "int main(void){return sizeof(values)==16&&*values[0].p==20&&values[1].n==22?read_values():1;}"
+    },
+    {
+      "id": "native-atomic-int-shared-foreign-object",
+      "declarations": "#include <stdatomic.h>\nextern _Atomic int value;int add(void);",
+      "provider": "_Atomic int value=20;int add(void){return atomic_fetch_add_explicit(&value,22,memory_order_acq_rel);}",
+      "caller": "int main(void){int n=atomic_load_explicit(&value,memory_order_acquire);int old=add();return n==20&&old==20?atomic_load(&value):1;}"
+    },
+    {
+      "id": "native-atomic-pointer-shared-foreign-object",
+      "declarations": "#include <stdatomic.h>\nextern _Atomic(int*) value;int *advance(void);",
+      "provider": "int values[2]={20,22};_Atomic(int*) value=values;int *advance(void){return atomic_fetch_add(&value,1);}",
+      "caller": "int main(void){int *old=advance();int *now=atomic_load(&value);return now==old+1?*old+*now:1;}"
+    },
+    {
+      "id": "native-atomic-cas-foreign-function",
+      "declarations": "#include <stdatomic.h>\nextern _Atomic unsigned long long value;_Bool move(unsigned long long*);",
+      "provider": "_Atomic unsigned long long value=20;_Bool move(unsigned long long *p){return atomic_compare_exchange_strong(&value,p,42);}",
+      "caller": "int main(void){unsigned long long expected=1;if(move(&expected)||expected!=20)return 1;if(!move(&expected)||expected!=20)return 2;return (int)atomic_load(&value);}"
+    }
+  ]
+}

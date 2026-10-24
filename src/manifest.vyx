@@ -8,7 +8,9 @@ extern "C" {
     fn naru_atomic_text(path: rawptr, length: i64, text: rawptr, text_length: i64) -> i32;
 }
 
+@[derive(Clone)]
 struct ManifestField { public key: string; public value: string; }
+@[derive(Clone)]
 class Manifest {
     public path: string;
     public values: Dict<string, string>;
@@ -20,6 +22,7 @@ class Manifest {
             fields: Vec::<ManifestField>.new(), dependencies: Vec::<string>.new(), exports: Vec::<string>.new() };
     }
 }
+@[derive(Clone)]
 struct PackageEdge { public owner: i64; public alias: string; public target: i64; }
 class ProjectGraph {
     public packages: Vec<Manifest>;
@@ -90,7 +93,7 @@ fn manifest_value(m: &mut Manifest, stream: &mut Stream, key: string) -> bool {
     let kind = manifest_kind(key);
     if (kind.len == 0) { stream.reject("unsupported project key: " + key); return false; }
     if (m.values.contains("kind:" + key)) { stream.reject("duplicate project key: " + key); return false; }
-    m.values.put("kind:" + key, kind);
+    m.values.put("kind:" + key, str_dup(kind));
     if (kind == "table") {
         manifest_dependency(m, naru_short_name(key));
         if (!stream.expect("{")) { return false; }
@@ -121,7 +124,7 @@ fn manifest_value(m: &mut Manifest, stream: &mut Stream, key: string) -> bool {
         let value = stream.take();
         let empty_allowed = key == "backend.pipeline" || key == "backend.lowering_pipeline" || key == "backend.features" || key == "backend.cpu" || key.starts_with("frontend.");
         if ((value.kind != 3 && !((key == "backend.opt_level" || key == "limits.rule_steps" || (key == "limits.parse_steps" || key == "limits.rule_depth" || key == "limits.parse_depth")) && value.kind == 2)) || (value.text.len == 0 && !empty_allowed)) { stream.reject("project value must be quoted text: " + key); return false; }
-        m.values.put(key, str_dup(value.text));
+        m.values.put(str_dup(key), str_dup(value.text));
         if (key.starts_with("exports.")) { m.exports.push(str_dup(key.substring(8, key.len))); }
     }
     return stream.diagnostic.len == 0;
@@ -138,7 +141,7 @@ fn parse_manifest(e: &mut Engine, path: string) -> Manifest {
             section = manifest_key(&mut stream);
             if (!stream.expect("]")) { break; }
             if (sections.contains(section)) { stream.reject("duplicate project section: " + section); break; }
-            sections.put(section, "1");
+            sections.put(str_dup(section), "1");
             if (section != "package" && section != "language" && section != "backend" && section != "build"
                 && section != "link" && section != "exports" && section != "frontend" && section != "limits" && section != "dependencies" && naru_name_module(section) != "dependencies") {
                 stream.reject("unsupported project section: " + section); break;
@@ -197,7 +200,7 @@ fn graph_package(e: &mut Engine, g: &mut ProjectGraph, requested: string, depth:
     let key = str_to_lower(path);
     var i: i64 = 0;
     while (i < g.packages.len) {
-        let prior = g.packages.get(i);
+        let prior = g.packages.get_ref(i);
         if (same_path(prior.path, path)) {
             if (g.states.get(str_to_lower(prior.path)) == "active") { e.reject("project dependency cycle: " + path); return -1; }
             return i;
@@ -212,15 +215,15 @@ fn graph_package(e: &mut Engine, g: &mut ProjectGraph, requested: string, depth:
     if (name.len == 0 || semantic_version(version) < 0) { e.reject("rule package requires package.name and a major.minor.patch version: " + path); return -1; }
     if (!package_name_valid(name)) { e.reject("invalid package name: " + name); return -1; }
     if (g.identities.contains(name)) { e.reject("conflicting package identity '" + name + "': " + g.identities.get(name) + " and " + path); return -1; }
-    g.identities.put(name, path); g.states.put(key, "active");
-    let id = g.packages.len; g.packages.push(m); e.project_inputs.push(path);
+    g.identities.put(str_dup(name), str_dup(path)); g.states.put(str_dup(key), "active");
+    let id = g.packages.len; g.packages.push(m.clone()); e.project_inputs.push(str_dup(path));
     i = 0;
     while (i < m.exports.len && e.good()) {
         let module_name = m.exports.get(i);
         let exported = naru_absolute_path(naru_join_path(naru_dirname(path), m.values.get("exports." + module_name)));
         if (!exported.ends_with(".stx") || !fileExists(exported) || isDir(exported)) { e.reject("dialect export does not name an existing .stx file: " + exported); return -1; }
         if (e.rule_catalog.contains(module_name) && !same_path(e.rule_catalog.get(module_name), exported)) { e.reject("conflicting dialect export '" + module_name + "'"); return -1; }
-        e.rule_catalog.put(module_name, exported); e.project_inputs.push(exported); i = i + 1;
+        e.rule_catalog.put(module_name, str_dup(exported)); e.project_inputs.push(exported); i = i + 1;
     }
     i = 0;
     while (i < m.dependencies.len && e.good()) {
@@ -229,7 +232,7 @@ fn graph_package(e: &mut Engine, g: &mut ProjectGraph, requested: string, depth:
         if (!m.values.contains(prefix + "path")) { e.reject("dependency requires a local project path: " + alias + " in " + path); return -1; }
         let child = graph_package(e, g, naru_join_path(naru_dirname(path), m.values.get(prefix + "path")), depth + 1);
         if (!e.good() || child < 0) { return -1; }
-        let package = g.packages.get(child);
+        let package = g.packages.get_ref(child);
         if (m.values.contains(prefix + "package") && m.values.get(prefix + "package") != package.values.get("package.name")) { e.reject("dependency package name mismatch: " + alias); return -1; }
         if (m.values.contains(prefix + "version") && !version_matches(package.values.get("package.version"), m.values.get(prefix + "version"))) { e.reject("dependency version mismatch: " + alias + " requires " + m.values.get(prefix + "version") + ", found " + package.values.get("package.version")); return -1; }
         g.edges.push(PackageEdge { owner: id, alias: str_dup(alias), target: child }); i = i + 1;
@@ -237,7 +240,7 @@ fn graph_package(e: &mut Engine, g: &mut ProjectGraph, requested: string, depth:
     g.states.put(key, "done"); g.order.push(id); return id;
 }
 fn project_reference(e: &mut Engine, g: &mut ProjectGraph, owner: i64, reference: string) -> string {
-    let m = g.packages.get(owner);
+    let m = g.packages.get_ref(owner);
     if (reference.ends_with(".stx")) { return naru_absolute_path(naru_join_path(naru_dirname(m.path), reference)); }
     var slash: i64 = -1; var i: i64 = 0;
     while (i < reference.len && slash < 0) { if (str_char_at(reference, i) == 47) { slash = i; } i = i + 1; }
@@ -247,16 +250,16 @@ fn project_reference(e: &mut Engine, g: &mut ProjectGraph, owner: i64, reference
         while (i < g.edges.len) { let edge = g.edges.get(i); if (edge.owner == owner && edge.alias == alias) { target = edge.target; } i = i + 1; }
         if (target < 0) { e.reject("unknown project dependency in dialect reference: " + reference); return ""; }
     }
-    let package = g.packages.get(target);
+    let package = g.packages.get_ref(target);
     if (!package.values.contains("exports." + exported)) { e.reject("unknown dialect export: " + reference + " in " + package.path); return ""; }
     return naru_absolute_path(naru_join_path(naru_dirname(package.path), package.values.get("exports." + exported)));
 }
 public fn read_project(e: &mut Engine, path: string, rules: &mut Vec<string>, settings: &mut Dict<string, string>, g: &mut ProjectGraph) -> bool {
     g.root = graph_package(e, g, path, 0);
     if (!e.good()) { return false; }
-    let m = g.packages.get(g.root);
+    let m = g.packages.get_ref(g.root);
     e.project_inputs.push(naru_join_path(naru_dirname(m.path), "Naru.lock"));
-    let keys = m.values.keys(); var i: i64 = 0;
+    let keys = naru_text_keys(&m.values); var i: i64 = 0;
     while (i < keys.len) { let key = keys.get(i); if (!key.starts_with("kind:")) { settings.put(key, str_dup(m.values.get(key))); } i = i + 1; }
     i = 0;
     while (i < m.fields.len && e.good()) {
@@ -269,7 +272,7 @@ public fn read_project(e: &mut Engine, path: string, rules: &mut Vec<string>, se
 public fn project_backend_options(g: &mut ProjectGraph, options: &mut Vec<string>) {
     var i: i64 = 0;
     while (i < g.order.len) {
-        let m = g.packages.get(g.order.get(i)); var j: i64 = 0;
+        let m = g.packages.get_ref(g.order.get(i)); var j: i64 = 0;
         while (j < m.fields.len) {
             let field = m.fields.get(j); var flag = ""; var path = true;
             if (field.key == "link.objects") { flag = "--link-object"; }
@@ -284,8 +287,8 @@ public fn project_backend_options(g: &mut ProjectGraph, options: &mut Vec<string
         i = i + 1;
     }
     if (g.root < 0) { return; }
-    let root = g.packages.get(g.root);
-    let keys = root.values.keys(); i = 0;
+    let root = g.packages.get_ref(g.root);
+    let keys = naru_text_keys(&root.values); i = 0;
     while (i < keys.len) {
         let key = keys.get(i); let value = root.values.get(key);
         if (key.starts_with("backend.") || key.starts_with("link.")) {
@@ -319,10 +322,10 @@ fn project_relative(path: string, directory: string) -> string {
 }
 public fn project_lock_text(e: &mut Engine, g: &mut ProjectGraph) -> string {
     if (g.root < 0) { return ""; }
-    let directory = naru_dirname(g.packages.get(g.root).path);
+    let directory = naru_dirname(g.packages.get_ref(g.root).path);
     var out = "{\n  \"format\": 1,\n  \"generator\": \"naru\",\n  \"packages\": ["; var i: i64 = 0;
     while (i < g.packages.len && e.good()) {
-        let m = g.packages.get(i);
+        let m = g.packages.get_ref(i);
         out = out + (i > 0 ? "," : "") + "\n    {\"name\": " + json_quote(m.values.get("package.name"))
             + ", \"version\": " + json_quote(m.values.get("package.version")) + ", \"manifest\": " + json_quote(project_relative(m.path, directory))
             + ", \"sha256\": " + json_quote(project_hash(e, m.path)) + "}"; i = i + 1;
@@ -363,7 +366,7 @@ fn project_same_lock(first: string, second: string) -> bool {
 }
 public fn project_lock(e: &mut Engine, g: &mut ProjectGraph, locked: bool) -> bool {
     if (g.root < 0) { if (locked) { e.reject("--locked requires a project"); } return e.good(); }
-    let path = naru_join_path(naru_dirname(g.packages.get(g.root).path), "Naru.lock");
+    let path = naru_join_path(naru_dirname(g.packages.get_ref(g.root).path), "Naru.lock");
     let text = project_lock_text(e, g);
     if (!e.good()) { return false; }
     if (fileExists(path)) {
@@ -371,7 +374,7 @@ public fn project_lock(e: &mut Engine, g: &mut ProjectGraph, locked: bool) -> bo
         if (!e.good()) { return false; }
         if (project_same_lock(existing, text)) { e.project_inputs.push(path); return true; }
     }
-    if (locked) { e.reject("Naru.lock is missing or out of date; run naru resolve --project " + g.packages.get(g.root).path); return false; }
+    if (locked) { e.reject("Naru.lock is missing or out of date; run naru resolve --project " + g.packages.get_ref(g.root).path); return false; }
     if (naru_atomic_text(path.c_str(), path.len, text.c_str(), text.len) != 0) { e.reject("cannot atomically write lockfile: " + path); return false; }
     e.project_inputs.push(path); return true;
 }
@@ -386,25 +389,25 @@ public fn validate_frozen_project(e: &mut Engine, rules: &mut Vec<string>) -> bo
             if (e.rule_hashes.contains(found)) { e.reject("project dialect differs from this frozen compiler: " + path); return false; }
             if (!load_rule_file(e, path)) { return false; }
         }
-        if (!selected.contains(found)) { selected.put(found, path); pending.push(found); }
+        if (!selected.contains(found)) { selected.put(str_dup(found), path); pending.push(found); }
         i = i + 1;
     }
     i = 0;
     while (i < pending.len && e.good()) {
         let name = pending.get(i); let id = naru_module_index(e, name); let m = e.modules.get(id); var edge = e.node(m.imports).first;
         while (edge >= 0) {
-            let value = e.edges.get(edge); let imported = e.node(value.value).text;
+            let value = e.edge(edge); let imported = e.node(value.value).text;
             if (!selected.contains(imported)) {
-                let path = e.rule_catalog.contains(imported) ? e.rule_catalog.get(imported) : naru_rule_module_path(naru_dirname(selected.get(name)), imported);
+                let path = e.rule_catalog.contains(imported) ? e.rule_catalog.get(imported) : naru_import_rule_path(selected.get(name), name, imported);
                 if (e.rule_hashes.contains(imported)) {
                     if (project_hash(e, path) != e.rule_hashes.get(imported)) { e.reject("project dependency differs from frozen dialect: " + imported); return false; }
                 } else if (!load_rule_file(e, path)) { return false; }
                 if (naru_module_index(e, imported) < 0) { e.reject("project dependency does not declare module: " + imported); return false; }
-                selected.put(imported, path); pending.push(imported);
+                selected.put(str_dup(imported), path); pending.push(imported);
             }
             edge = value.next;
         }
-        e.project_inputs.push(selected.get(name)); e.rule_catalog.put(name, selected.get(name)); i = i + 1;
+        e.project_inputs.push(selected.get(name)); e.rule_catalog.put(str_dup(name), selected.get(name)); i = i + 1;
     }
     i = 0;
     while (i < e.modules.len) {

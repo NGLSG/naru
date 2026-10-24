@@ -15,7 +15,7 @@ ISO 7185 标准 Pascal 在 Naru 规则系统上的重构。考据条目:`histori
 - 使用 write/writeln 的程序需要 `--runtime crt-static`(printf 在 CRT 里);
   纯计算的程序无需该参数(freestanding 默认)。
 
-## 已实现(里程碑 1 + 2 + 3)
+## 支持的语法
 
 - 程序头 `program Name;` / `program Name(input, output);`(参数接受并忽略)
 - `var` 声明段(每组一个 `var` 关键字)、`const` 段(编译期只读绑定)、
@@ -38,21 +38,21 @@ ISO 7185 标准 Pascal 在 Naru 规则系统上的重构。考据条目:`histori
 - writeln 参数类型:i32/%d、u32/%u、real/%g、boolean→TRUE/FALSE(%s + llvm.select)、
   字符串(%s);writeln 末尾换行;参数间无分隔符(ISO 语义,字段宽度未实现)
 
-## 与 ISO 7185 的偏离和未实现范围
+## 实现选择与限制
 
 | 偏离 | 理由 |
 | --- | --- |
 | `integer` = 32 位 | ISO 不定宽度;历史宿主是 16 位,现代互操作取 32 |
-| 变量/结果槽零初始化 | ISO 未定义未赋值结果;零初始化给出干净诊断 |
-| writeln 实数用 `%g` | ISO 规定科学计数法与字段宽度;period 格式化是档案考据项 |
+| 变量/结果槽零初始化 | 当前实现选择 |
+| writeln 实数用 `%g` | ISO 格式和字段宽度尚未实现 |
 | const 完整表达式约束 | 目前接受字面量、已声明常量及其负号形式；完整 ISO 常量集合仍需补齐 |
-| case 仅整数字面量/布尔 | const 名与子界待 milestone 3 |
+| case 仅整数字面量/布尔 | const 名与子界尚未支持 |
 | 每组声明要求重复 `var` | 一组多行的缩写未收 |
 | 不支持嵌套过程/过程调用语句以外的前向声明 | 平坦命名,与 base 库一致 |
 | 完整声明顺序和同块作用域约束 | 程序声明收集后检查函数，可能允许源码中的前向可见性；同块局部重名仍需检查 |
 | `halt` 是 Turbo Pascal 扩展 | 非 ISO;作为显式标注的扩展收入 |
 
-## 结构(方言作者备注)
+## 规则实现
 
 - **词法**:`lex_config` 数据 + 通用扫描器 `text.lex`;token 重分类
   (标点→kind 14 不可分割终端、保留字→kind 8、丢弃换行行)用 `list.fold` 迭代。
@@ -70,7 +70,7 @@ ISO 7185 标准 Pascal 在 Naru 规则系统上的重构。考据条目:`histori
 - **字符串提升**:格式串与源字面量经管线步骤 `intern_strings`
   (externc 的 tree.rewrite 机制)去重为 `llvm.mlir.global`,printf 声明为
   `llvm.func @printf(!llvm.ptr, ...)` 外部符号;调用走 `llvm.call` +
-  `var_callee_type`(c11 同款机制)。
+  `var_callee_type`。
 - **函数结果槽**:名字为 `" " + 函数名`(前导空格,不可能与源标识符冲突);
   不要对同一名字二次调用 `symbol()`(check_body 会对 Var 名再净化一次)。
 
@@ -81,9 +81,8 @@ dangling_else(8,最近配对)、factorial(while + if,120→42)、
 hello_world(writeln)、showcase(全特性输出演示)。
 验收对拍(黄金输出 vs 历史结果)在档案侧 `historical/pascal/iso-1983/notes.md` 规划。
 
-## 里程碑 3 候选(按档案 P0/P1)
+## 后续支持
 
-`/` 已转为 f64 实除，div/mod 已检查整数操作数，大小写已在 token 层折叠。
 隐式整→实赋值转换、`set of` 位向量、variant records、case 的 const 名与子界;
 `for` 控制变量赋值检查;一致性数组参数(依赖运行时边界数组)。
 

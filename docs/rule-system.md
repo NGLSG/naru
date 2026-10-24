@@ -2,8 +2,7 @@
 
 The core operates on open terms, relations and generic IR objects. It has no
 inventory of source types, operators, ownership states, source functions or
-class/trait names. Such meanings belong to selected STX libraries. A new type
-need not be anticipated in a compiler enum.
+class/trait names. Such meanings belong to selected STX libraries.
 
 ## Selection and lexical scope
 
@@ -68,8 +67,7 @@ effect rank([$tree,$literals,$captures,$file,$line],$context)
 This is local disambiguation of successful same-span productions, not a general
 GLR/Earley parse forest. Arbitrary indirect left recursion and parent-dependent
 reinterpretation of a previously selected child still require different grammar
-rules or a future generalized parser. No automatic policy can infer a language's
-intended interpretation from syntax alone.
+rules or a future generalized parser.
 
 Prefix literal, capture-led and infix-next-token indexes avoid scanning a whole
 category on each parse. Wildcard/capture-led infix rules still participate, and
@@ -123,10 +121,15 @@ byte columns can process non-UTF-8 data. Tabs remain single columns until expand
 | `source.parse_expression(rows, category[, resolver])` | Parse one complete expression; the four-argument form accepts context before resolver. |
 | `rule.select(candidates, rankRelation, context)` | Return the zero-based unique maximum rank index. Pure callback receives candidate/context; empty rank rejects a candidate. |
 | `target.toolchain(configurationJSON)` | Query target facts and installed SDK paths shared with native linking. Unavailable in pure guards. |
+| `source.clock_snapshot()` | Stable per-Engine `[year, month, day, hour, minute, second, epochSeconds, isUTC]` host facts. Local calendar by default; a valid `SOURCE_DATE_EPOCH` selects UTC. Invalid/unrepresentable values are diagnosed. No source-language spelling policy; unavailable in pure guards. |
 | `text.len / slice / contains / starts / ends` | Text operations; lengths and slice offsets use bytes. |
 | `text.lines(text)` | Split LF, CRLF and CR physical lines in one pass; omit terminators and the synthetic row after a final terminator. Empty input gives `[]`. |
 | `text.line_spans(text)` | Return `[startByte, endByte, oneBasedLine]` for the same physical lines without copying line text. |
 | `text.columns(text, ranges[, unit])` | Extract zero-based half-open `[start,end]` ranges; default unit is `"byte"`, optional `"unicode"` counts validated UTF-8 scalars. Short rows clip to their length. |
+| `text.codepoints(text)` | Decode validated UTF-8 to a list of Unicode scalar integers. Reject malformed, overlong, surrogate and truncated sequences. |
+| `text.from_codepoints(values)` | Encode Unicode scalar integers as UTF-8. Reject values outside `0..0x10ffff` and the surrogate range. |
+| `text.from_bytes(values)` | Build binary text from integer bytes in `0..255`, preserving embedded NUL. No Unicode validation. |
+| `text.is_ascii(text)` | Return 1 when every byte is below 128, otherwise 0. Empty text is ASCII. |
 | `text.expand_tabs(text, width)` | Expand tabs to the next tab stop in Unicode scalar columns; width 1..1024, reset after CR/LF. |
 | `source.location(term)` | `[file, line, column]` source provenance. |
 | `source.modules()` | Loaded module frames `[name, absolutePath, imports, localItems]` in dependency order. |
@@ -286,8 +289,7 @@ AOT freezing compiles syntax/effect patterns, guards, local binders and RHS
 expressions to native Vyx functions while preserving these contracts. Generic
 tools and captured dynamic terms use shared runtime support. Freezing eliminates
 runtime STX loading and static pattern interpretation; it does not eliminate all
-allocations or prove arbitrary language rules correct. Recursive rules may fail
-to converge, and incompatible extensions may be ambiguous.
+allocations. Recursive rules remain subject to execution limits and conflict checks.
 
 `tests/rules.py` validates these contracts, numeric boundaries, user type
 extensions, borrow conflicts, dynamic/AOT result and diagnostic parity, and
@@ -304,10 +306,61 @@ whole-program garbage collection; allocations outside callback boundaries can
 still remain until the compilation ends. The same facility serves dynamic and
 frozen rules without any language-specific object or ownership inventory.
 
-Dynamic effect dispatch indexes relation/arity and the first argument's fixed
+`rule.iterate`, `list.unfold` and `list.fold` also own an allocation scope across
+their callbacks. Batch collection retains the current state; unfolding retains
+both its accumulated output and its current state. The first collection is
+triggered at 8192 logged node/edge/environment-index allocations; later thresholds grow with surviving data to
+avoid repeatedly tracing an expanding output, including many edges sharing
+the same value. Discarded callback chunks and
+callback containers are reclaimed, while chunks from a terminating step are
+still emitted. Recycled slots reset their allocation epoch when removed from
+the log, so a subsequent allocation in the same scope is registered again.
+Shared immutable tails, persistent environment indexes and IR side effects
+retain the same lifetime contract. `tests/iteration.py` checks repeated
+collections, nested loops, rejected steps and discarded IR callback results.
+
+Appending to a borrowed builder records the new edge, including copied edges
+when detaching an immutable list. Reclamation traces the appended suffix and
+its values once, preserving the invariant that a visited edge's entire local
+tail has been retained. It never starts from the old builder's first edge.
+This avoids rescanning a growing IR region at every fold/map callback; nested
+callbacks and later appends in the owning scope retain the same graph. The
+8192-element union acceptance case checks this path through O0/O2 execution.
+
+The native CPU path also combines redundant LLVM aggregate updates before
+scalar replacement of private stack storage at O0. This preparation preserves
+CFG and honors LLVM volatile/escaping-memory semantics; it does not depend on
+source-language names and does not apply to custom device pipelines or MLIR
+output. The remainder of CPU optimization still uses the requested LLVM
+optimization level. Native tests retain each volatile access and verify writes
+through an aggregate address passed to another function.
+
+Ordinary effect dispatch and additive `collect` both index relation/arity and the first argument's fixed
 shape, merging wildcard candidates in source order before matching all eligible
 peers. Entry-name and effect-index caches are invalidated when linking appended
 rules, so an overlay still participates in overload and ambiguity decisions.
+
+The shared candidate cursor constructs the relation/arity key once. It merges
+the matching fixed-shape bucket with wildcard rules by declaration ID; full
+patterns and guards still run before selecting or collecting results. Hash
+collisions can only add candidates. Collection preserves all ordinary matches,
+uses fallback peers only when there are no ordinary matches, and never treats
+overlapping ordinary calls as additive.
+
+`tests/interpreter_perf.py` and `tests/tree_perf.py` measure compiler evaluation time and peak memory using identical rule inputs.
+
+Host builds default to four Vyx workers (`build.ps1 -Jobs N`); independent
+acceptance suites use a bounded worker pool (`test.ps1 -Jobs N`). Performance
+measurements run serially after acceptance suites finish. One mutable Engine
+still evaluates effects in order: its allocation scopes, bindings and emitted
+graph are not shared between concurrently running rule callbacks.
+
+CLI diagnostics and progress use Vyx's `std.log` module from `std/logger`.
+The local Windows package adaptation constructs fmt views inside C++, through
+a DCI pointer/length boundary, and selects spdlog's stderr sink. Semantic terms,
+ASTs, lock JSON and IR remain on stdout. `--log-level debug` includes rule module
+counts and evaluation step counts; `--log-level error` retains error diagnostics.
+The package is statically linked into the executable.
 
 
 External token rows may opt into kind 14, an indivisible terminal. A quoted
@@ -328,7 +381,7 @@ Enumeration consumes the rule budget and works in pure guards and frozen code.
 The `storage` rule library represents a target object image with
 `Scalar(IRType, valueBits, objectBits, kind)` and
 `Aggregate(IRType, objectBits, [[bitOffset, LLVMIndex, childShape], ...])`.
-Kinds are `integer`, `float`, and `pointer`. `storage.reinterpret(value,
+Kinds are `integer`, `float`, `pointer`, and bitcastable `bits`. `storage.reinterpret(value,
 sourceShape, destinationShape)` projects the supplied LLVM values without
 arithmetic conversion. Aggregate members must be ordered, nonoverlapping and
 inside their parent object. Offsets describe low-order image bits explicitly,
@@ -345,6 +398,35 @@ aggregate. The library knows no source-language types. C11 supplies the LLP64
 layout adapter and aligned integer units for union storage. Generic tests in
 `tests/storage.py` cover partial cursors, shrinking, growth, holes and malformed
 source/destination layout facts.
+
+`storage.packed_layout(byteSize, [[byteOffset, childShape], ...])` constructs
+an LLVM packed record with explicit byte-array padding and returns its shape.
+The ordered, nonoverlapping child shapes keep complete scalar fields, including
+unaligned pointers. Semantic members exclude padding; object materialization
+zeros it. The caller supplies the separate allocation/global alignment policy.
+
+Deferred constant images use `storage.Image(shape, producer)`.
+`image_record(byteSize, [[byteOffset, image], ...])` plans an explicitly padded
+record; `image_zero(shape)` and `image_project(image, bitOffset, shape)` plan
+zero and window values. `image_lower(image, environment)` emits them in the
+current IR region. A language contributes `storage.image_value(payload,
+environment)` for `ValueImage(payload)` producers, which must construct pure
+constant values. Exact child windows use an immutable bit-offset index;
+nested projections merge their offsets before emission. Layout planning emits
+no IR and preserves whole symbolic scalar addresses in the selected fields.
+
+`memory_paths.aligned(pointer, alignment, pointerBits)` constructs a power-of-two
+address-alignment test using the caller's pointer width.
+`memory_paths.select(condition, resultTypes, leftRelation, leftArguments,
+rightRelation, rightArguments)` emits SCF regions for ordinary callback
+relations. No-result callbacks yield nothing; one result is an SSA value;
+multiple results use an SSA list. Language policy decides when and how to
+select paths; the facility knows no C types or atomic protocol.
+
+`c11.sema.binding_facts(name, binding, environment)` is an open C-library hook
+after lexical binding capture. Its fallback preserves the environment. A library
+can retain ABI/type facts under opaque keys independently from subsequent name
+shadowing; it must not replace the source reference's lexical identity.
 
 Before native LLVM translation, the backend attaches temporary
 `naru_backend.require_constant` facts to initializer operations. A translation
@@ -374,3 +456,25 @@ inputs and resulting AST hashes. It records repeated time and peak commit for a
 These are compiler frontend measurements, not generated-program runtime results.
 The ranking loop keeps only native scalar scores and immediately reclaims each
 callback's temporary terms; input AST candidates remain borrowed immutable data.
+
+The `allocation` language library plans static allocation sites in a checked
+function body. `allocation.site(node)` supplies
+`Site(identity, allocatorRelation, arguments)` or `NoSite()`;
+`allocation.children(node)` selects the subtrees belonging to the current frame.
+Unknown constructors use their ordinary children by default, and opaque IR and
+environments remain leaves. Language adapters prune type metadata and nested
+function bodies. `allocation.plan_frame(body, entry, environment)` allocates each
+identity once in the entry block and returns the extended environment;
+`allocation.lookup(environment, identity)` retrieves its slot. Repeated facts
+for an identity must have identical allocator and arguments or compilation fails.
+The planner does not evaluate runtime initializers. C11 supplies compound-literal
+sites; another language can supply independent site and boundary facts.
+
+C11 parameter copies use a fold of checked declaration facts. Extensions that introduce
+new parameter constructors provide `c11.sema.parameter_policy(parameter)` with
+`c11.sema.ParameterPolicy(name, type, storageClass)`, alongside their existing
+signature and binding adapters. `register` remains a storage policy independent
+of function types and ABI. The older `parameter_local` hook still constructs the
+legacy explicit `ParameterDeclare` path; ordinary function preparation uses the
+policy hook. Parameter initializer checks and scope updates retain source
+order, and the checked declarations are rebuilt in that order before CFG lowering.

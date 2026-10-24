@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -109,6 +110,29 @@ def digest(path: Path) -> str:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
+def stage_build_manifest(destination: Path) -> None:
+    """Resolve host build dependencies outside the copied core source folder."""
+    source = ROOT / "Vyx.toml"
+    text = source.read_text(encoding="utf-8")
+    config = tomllib.loads(text)
+    local_paths = []
+    for dependency in config.get("dependencies", {}).values():
+        path = dependency.get("path", "") if isinstance(dependency, dict) else ""
+        if path and not path.startswith("std:") and not Path(path).is_absolute():
+            local_paths.append(path)
+    for target in config.get("target", {}).values():
+        for path in target.get("sources", []):
+            resolved = (ROOT / path).resolve()
+            if not Path(path).is_absolute() and resolved.parent != (ROOT / "src").resolve():
+                local_paths.append(path)
+    for path in set(local_paths):
+        absolute = (ROOT / path).resolve()
+        if not absolute.exists():
+            raise ValueError(f"Missing host build dependency: {absolute}")
+        text = text.replace(json.dumps(path), json.dumps(absolute.as_posix()))
+    (destination / "Vyx.toml").write_text(text, encoding="utf-8")
+
+
 def stage_backend(destination: Path, executable: Path, core: Path) -> dict:
     """Ship the in-process backend beside the new compiler, with no CLI tools."""
     bridge = core.parent / "naru_mlir_backend.dll"
@@ -116,6 +140,9 @@ def stage_backend(destination: Path, executable: Path, core: Path) -> dict:
         raise ValueError(f"Native MLIR backend is missing beside the core compiler: {bridge}")
     deployed = executable.parent / bridge.name
     shutil.copy2(bridge, deployed)
+    resource_headers = core.parent / "runtime" / "clang" / "include"
+    if resource_headers.is_dir():
+        shutil.copytree(resource_headers, executable.parent / "runtime" / "clang" / "include", dirs_exist_ok=True)
     backend = destination / "backend"
     backend.mkdir(parents=True, exist_ok=True)
     for source in (ROOT / "backend").glob("*-target.json"):
@@ -176,7 +203,7 @@ def main() -> int:
     for source in (ROOT / "src").iterdir():
         if source.is_file() and source.name != "specialized.vyx":
             shutil.copy2(source, source_dir / source.name)
-    shutil.copy2(ROOT / "Vyx.toml", destination / "Vyx.toml")
+    stage_build_manifest(destination)
     generated = source_dir / "specialized.vyx"
     command = [str(core), "freeze", "-o", str(generated)]
     if project:
@@ -224,6 +251,7 @@ def main() -> int:
     if not executable.is_file():
         raise ValueError(f"Vyx did not produce its reported executable: {executable}")
     info["executable"] = str(executable)
+    info["executable_sha256"] = digest(executable)
     info["backend"] = stage_backend(destination, executable, core)
     marker.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     print(executable)

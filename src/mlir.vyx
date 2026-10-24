@@ -130,7 +130,7 @@ public fn mlir_prepare_block(e: &mut Engine, session: &mut MlirSession, block_id
     var types = Vec::<rawptr>.new();
     var edge = e.node(arguments).first;
     while (edge >= 0 && e.good()) {
-        let item = e.edges.get(edge); let argument = e.node(item.value);
+        let item = e.edge(edge); let argument = e.node(item.value);
         if (argument.kind != 7 || argument.count != 1) { e.reject("invalid MLIR block argument"); return false; }
         if (session.values.contains(item.value)) { e.reject("an SSA value cannot define multiple block arguments"); return false; }
         let type_handle = mlir_type_handle(e, session, e.child(item.value, 0));
@@ -147,7 +147,7 @@ public fn mlir_prepare_block(e: &mut Engine, session: &mut MlirSession, block_id
     edge = e.node(arguments).first;
     var index: i64 = 0;
     while (edge >= 0) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         let value = naru_mlir_block_argument(session.handle, handle, index);
         if (value == null) { mlir_bridge_error(e, session, "cannot obtain block argument"); return false; }
         session.values.put(item.value, value); edge = item.next; index = index + 1;
@@ -158,7 +158,7 @@ public fn mlir_prepare_block(e: &mut Engine, session: &mut MlirSession, block_id
 public fn mlir_import_operation_list(e: &mut Engine, session: &mut MlirSession, list: i64, block: rawptr, region_id: i64) -> bool {
     var edge = e.node(list).first;
     while (edge >= 0 && e.good()) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         if (!mlir_import_operation(e, session, item.value, block, region_id)) { return false; }
         edge = item.next;
     }
@@ -179,13 +179,13 @@ public fn mlir_import_region(e: &mut Engine, session: &mut MlirSession, region_i
         // forward CFG successors and block arguments have real MLIR handles.
         var edge = node.first;
         while (edge >= 0 && e.good()) {
-            let item = e.edges.get(edge);
+            let item = e.edge(edge);
             if (!mlir_prepare_block(e, session, item.value, region_id, region)) { return null; }
             edge = item.next;
         }
         edge = node.first;
         while (edge >= 0 && e.good()) {
-            let item = e.edges.get(edge);
+            let item = e.edge(edge);
             if (!mlir_import_operation_list(e, session, e.child(item.value, 1), session.blocks.get(item.value), region_id)) { return null; }
             edge = item.next;
         }
@@ -223,7 +223,7 @@ public fn mlir_import_operation(e: &mut Engine, session: &mut MlirSession, opera
     session.operations.put(operation_id, null);
     var edge = e.node(operands).first;
     while (edge >= 0 && e.good()) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         if (!session.values.contains(item.value)) {
             e.at_error(node.file, node.line, node.column, "SSA operand has no preceding definition or block argument"); return false;
         }
@@ -234,7 +234,7 @@ public fn mlir_import_operation(e: &mut Engine, session: &mut MlirSession, opera
     }
     edge = e.node(types).first;
     while (edge >= 0 && e.good()) {
-        let item = e.edges.get(edge); let type_handle = mlir_type_handle(e, session, item.value);
+        let item = e.edge(edge); let type_handle = mlir_type_handle(e, session, item.value);
         if (type_handle == null) { return false; }
         if (naru_mlir_op_add_type(session.handle, state, type_handle) != 0) {
             mlir_bridge_error(e, session, "cannot add MLIR result type"); return false;
@@ -243,7 +243,7 @@ public fn mlir_import_operation(e: &mut Engine, session: &mut MlirSession, opera
     }
     edge = e.node(attributes).first;
     while (edge >= 0 && e.good()) {
-        let item = e.edges.get(edge); let attribute = mlir_attribute_handle(e, session, item.value);
+        let item = e.edge(edge); let attribute = mlir_attribute_handle(e, session, item.value);
         if (attribute == null) { return false; }
         let name = e.node(e.child(item.value, 0)).text;
         if (naru_mlir_op_add_attribute(session.handle, state, name.c_str(), name.len, attribute) != 0) {
@@ -253,7 +253,7 @@ public fn mlir_import_operation(e: &mut Engine, session: &mut MlirSession, opera
     }
     edge = e.node(regions).first;
     while (edge >= 0 && e.good()) {
-        let item = e.edges.get(edge); let region = mlir_import_region(e, session, item.value);
+        let item = e.edge(edge); let region = mlir_import_region(e, session, item.value);
         if (region == null) { return false; }
         if (naru_mlir_op_add_region(session.handle, state, region) != 0) {
             mlir_bridge_error(e, session, "cannot add MLIR region"); return false;
@@ -263,7 +263,7 @@ public fn mlir_import_operation(e: &mut Engine, session: &mut MlirSession, opera
     if (node.count == 6) {
         edge = e.node(e.child(operation_id, 5)).first;
         while (edge >= 0 && e.good()) {
-            let item = e.edges.get(edge);
+            let item = e.edge(edge);
             if (!session.blocks.contains(item.value) || session.block_regions.get(item.value) != region_id) {
                 e.at_error(node.file, node.line, node.column, "successor block must belong to the same region"); return false;
             }
@@ -278,7 +278,7 @@ public fn mlir_import_operation(e: &mut Engine, session: &mut MlirSession, opera
     session.operations.put(operation_id, operation);
     edge = e.node(results).first; index = 0;
     while (edge >= 0) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         if (session.values.contains(item.value)) { e.reject("an SSA result has multiple definitions"); return false; }
         let value = naru_mlir_op_result(session.handle, operation, index);
         if (value == null) { mlir_bridge_error(e, session, "cannot obtain MLIR result"); return false; }

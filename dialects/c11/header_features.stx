@@ -1,0 +1,47 @@
+// Compiler-resource header queries and include wrappers are ordinary rule
+// extensions. Unknown capabilities report false rather than claiming that a
+// spelling with an __ prefix is implemented. Actual lookup never loads a file.
+mod c11.header_features;
+use c11.pp;
+use c11.lex;
+use headers;
+
+effect c11.header_features.query_name($name) => text.contains(" __has_include __has_include_next __has_feature __has_extension __has_builtin __has_attribute __has_declspec_attribute __has_warning __building_module __is_identifier ",concat(" ",concat($name," ")));
+effect c11.pp.capability_provider() => c11.pp.MacroProvider("resource-type-facts","c11.header_features.predefine_types");
+effect c11.header_features.predefine_types($macros) => list.fold("c11.pp.predefine",[
+    ["__SIZE_TYPE__","unsigned long long"],["__PTRDIFF_TYPE__","long long"],
+    ["__WCHAR_TYPE__","unsigned short"],["__CHAR16_TYPE__","unsigned short"],["__CHAR32_TYPE__","unsigned int"],
+    ["__INTMAX_TYPE__","long long"],["__UINTMAX_TYPE__","unsigned long long"],
+    ["__SIZEOF_POINTER__","8"],["__SIZEOF_INT__","4"],["__SIZEOF_LONG__","4"],["__SIZEOF_LONG_LONG__","8"],
+    ["__SIZEOF_SHORT__","2"],["__SIZEOF_FLOAT__","4"],["__SIZEOF_DOUBLE__","8"],["__SIZEOF_LONG_DOUBLE__","8"],
+    ["__SIZEOF_SIZE_T__","8"],["__SIZEOF_PTRDIFF_T__","8"],["__SIZEOF_WCHAR_T__","2"],
+    ["__WCHAR_MAX__","65535"],["__WCHAR_UNSIGNED__","1"],["__CHAR_BIT__","8"]],$macros);
+effect c11.pp.defined($macros,$name) when and(c11.header_features.query_name($name),not(env.contains($macros,$name))) => 1;
+effect c11.pp.expand_token($at,$hide,$rest,$macros,$depth)
+    when and(c11.header_features.query_name(c11.lex.spelling($at)),not(env.contains($macros,c11.lex.macro_key($at))))
+    => c11.header_features.invoke(c11.lex.spelling($at),$at,$hide,$rest,$macros,$depth);
+effect c11.header_features.invoke($name,$at,$hide,c11.pp.CursorWork($cursor,$tail),$macros,$depth)
+    => bind($rest,c11.pp.CursorWork($cursor,$tail),bind(c11.pp.MarkedToken($open,$open_hide),c11.pp.work_head($rest),
+        choose(eq(c11.lex.spelling($open),"("),
+            bind([$arguments,$remaining],c11.pp.arguments(c11.pp.work_next($rest),[],[],0,$at),
+                [1,c11.pp.Expansion($remaining,$macros,$depth),
+                    [c11.pp.MarkedToken(c11.lex.made(2,text(c11.header_features.query($name,$arguments,$macros,$at,$depth)),$at),$hide)]]),
+            c11.lex.error($at,"compiler header query requires parentheses"))));
+effect c11.header_features.invoke($name,$at,$hide,c11.pp.EmptyWork(),$macros,$depth) => c11.lex.error($at,"compiler header query requires parentheses");
+effect c11.header_features.query("__has_include",[$tokens],$macros,$at,$depth) => c11.header_features.has_header($tokens,$macros,$at,0);
+effect c11.header_features.query("__has_include_next",[$tokens],$macros,$at,$depth) => c11.header_features.has_header($tokens,$macros,$at,1);
+effect c11.header_features.query($name,[[$token]],$macros,$at,$depth) when not(or(eq($name,"__has_include"),eq($name,"__has_include_next")))
+    => c11.header_features.feature($name,c11.lex.spelling($token));
+effect[fallback] c11.header_features.query($name,$arguments,$macros,$at,$depth) => c11.lex.error($at,"invalid compiler header query argument");
+effect c11.header_features.has_header($tokens,$macros,$at,$next)
+    => bind(c11.pp.Context($path,$options,$stack,$depth),env.get($macros,c11.pp.ContextKey()),
+        bind([$header,$local],c11.pp.header(c11.pp.include_tokens($tokens,$macros),$at),
+            c11.header_features.has_header_at($header,$local,$next,$path,$options,c11.pp.header_cursor($macros),$at)));
+effect c11.header_features.has_header_at($header,$local,1,$path,$options,c11.pp.NoHeaderCursor(),$at) => 0;
+effect[fallback] c11.header_features.has_header_at($header,$local,$next,$path,$options,$cursor,$at)
+    => not(eq(headers.try_resolve($header,headers.routed_directories($header,c11.pp.search_directories($local,$next,$path,$options,$cursor,$at),$options),
+        headers.option($options,"project_directory",".")),headers.MissingHeader()));
+effect c11.header_features.feature("__is_identifier",$word) => not(c11.lex.keyword($word));
+effect c11.header_features.feature("__has_builtin",$word) => c11.header_features.builtin($word);
+effect[fallback] c11.header_features.feature($name,$word) => 0;
+effect[fallback] c11.header_features.builtin($word) => 0;

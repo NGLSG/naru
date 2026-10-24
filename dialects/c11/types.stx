@@ -45,7 +45,8 @@ effect types.repr(PlainChar()) => "i8";
 effect types.repr(Pointer($element)) => "!llvm.ptr";
 effect types.repr(Qualified($type,$const,$volatile,$restrict)) => types.repr($type);
 effect types.repr(Array($count,$element)) => seq(types.extent($count),concat("!llvm.array<",concat(text($count),concat(" x ",concat(types.repr($element),">")))));
-effect types.repr(Record($name,$fields)) => concat("!llvm.struct<(",concat(types.join(list.map("c11.types.field_repr",$fields)),")>"));
+effect types.repr(Record($name,$fields)) => c11.types.record_repr($name,$fields);
+effect[fallback] c11.types.record_repr($name,$fields) => concat("!llvm.struct<(",concat(types.join(list.map("c11.types.field_repr",$fields)),")>"));
 effect types.repr(Union($name,$fields)) => union_repr(Union($name,$fields));
 effect types.repr(FlexibleArray($element)) => concat("!llvm.array<0 x ",concat(types.repr($element),">"));
 effect c11.types.field_repr(Field($name,$type)) => types.repr($type);
@@ -56,20 +57,22 @@ effect[fallback] c11.types.unqualified($type) => $type;
 effect c11.types.qualifiers(Qualified($type,$const,$volatile,$restrict)) => bind([$c,$v,$r],c11.types.qualifiers($type),[or($c,$const),or($v,$volatile),or($r,$restrict)]);
 effect c11.types.qualifiers(AlignedType($type,$alignment)) => c11.types.qualifiers($type);
 effect[fallback] c11.types.qualifiers($type) => [0,0,0];
-effect c11.types.qualify($type,[$const,$volatile,$restrict]) => choose(or($const,or($volatile,$restrict)),Qualified($type,$const,$volatile,$restrict),$type);
+effect c11.types.qualify(Qualified($type,$prior_const,$prior_volatile,$prior_restrict),[$const,$volatile,$restrict])
+    => c11.types.qualify($type,[or($prior_const,$const),or($prior_volatile,$volatile),or($prior_restrict,$restrict)]);
+effect[fallback] c11.types.qualify($type,[$const,$volatile,$restrict]) => choose(or($const,or($volatile,$restrict)),Qualified($type,$const,$volatile,$restrict),$type);
 // Only the immediate pointed-to qualifiers may be added implicitly. Comparing
 // the remaining type recursively prevents the unsafe T** -> const T** case.
 effect c11.types.pointer_assignment($from,$to) => bind([$fc,$fv,$fr],c11.types.qualifiers($from),bind([$tc,$tv,$tr],c11.types.qualifiers($to),
     and(and(or(not($fc),$tc),or(not($fv),$tv)),c11.types.pointer_compatible(c11.types.unqualified($from),c11.types.unqualified($to)))));
-effect[fallback] c11.types.pointer_compatible($a,$b) => or(eq($a,$b),
+effect[fallback] c11.types.pointer_compatible($a,$b) => or(c11.types.compatible($a,$b),
     or(and(eq($a,control.Void()),c11.types.object_pointer_target($b)),
        and(eq($b,control.Void()),c11.types.object_pointer_target($a))));
 effect c11.types.object_pointer_target(FunctionType($result,$params,$variadic,$prototype)) => 0;
 effect[fallback] c11.types.object_pointer_target($type) => 1;
-effect c11.types.pointer_compatible(Record($a,$fields),RecordName($b)) => eq($a,$b);
-effect c11.types.pointer_compatible(RecordName($a),Record($b,$fields)) => eq($a,$b);
-effect c11.types.pointer_compatible(Union($a,$fields),UnionName($b)) => eq($a,$b);
-effect c11.types.pointer_compatible(UnionName($a),Union($b,$fields)) => eq($a,$b);
+effect c11.types.pointer_compatible(Record($a,$fields),RecordName($b)) => c11.types.same_nominal($a,$b);
+effect c11.types.pointer_compatible(RecordName($a),Record($b,$fields)) => c11.types.same_nominal($a,$b);
+effect c11.types.pointer_compatible(Union($a,$fields),UnionName($b)) => c11.types.same_nominal($a,$b);
+effect c11.types.pointer_compatible(UnionName($a),Union($b,$fields)) => c11.types.same_nominal($a,$b);
 effect c11.types.promotion(IntType($rank,$width,$unsigned)) => choose(lt($rank,3),c11.types.integer("int"),IntType($rank,$width,$unsigned));
 effect c11.types.promotion(CBool()) => c11.types.integer("int");
 effect c11.types.promotion(PlainChar()) => c11.types.integer("int");
@@ -107,6 +110,9 @@ effect c11.types.is_arithmetic(FloatType($rank,$format)) => 1;
 effect c11.types.is_arithmetic(CBool()) => 1;
 effect c11.types.is_arithmetic(PlainChar()) => 1;
 effect[fallback] c11.types.is_arithmetic($type) => 0;
+effect c11.types.is_scalar($type) => c11.types.scalar_type(c11.types.unqualified($type));
+effect c11.types.scalar_type(Pointer($element)) => 1;
+effect[fallback] c11.types.scalar_type($type) => c11.types.is_arithmetic($type);
 effect c11.types.bytes(IntType($rank,$width,$unsigned)) => int.div($width,8);
 effect c11.types.bytes(FloatType($rank,"f32")) => 4;
 effect c11.types.bytes(FloatType($rank,"f64")) => 8;
@@ -116,23 +122,39 @@ effect c11.types.bytes(Pointer($element)) => 8;
 effect c11.types.bytes(Qualified($type,$const,$volatile,$restrict)) => c11.types.bytes($type);
 effect c11.types.bytes(AlignedType($type,$alignment)) => c11.types.bytes($type);
 effect c11.types.bytes(Array($count,$element)) => mul($count,c11.types.bytes($element));
-effect c11.types.bytes(Record($name,$fields)) => arg(record_layout($fields),0);
-effect c11.types.bytes(Union($name,$fields)) => arg(union_layout($fields),0);
+effect c11.types.bytes(Record($name,$fields)) => arg(c11.types.named_aggregate_layout("struct",$name,$fields),0);
+effect c11.types.bytes(Union($name,$fields)) => arg(c11.types.named_aggregate_layout("union",$name,$fields),0);
 effect c11.types.bytes(FlexibleArray($element)) => 0;
 effect c11.types.sizeof(FlexibleArray($element)) => fail("sizeof requires a complete C array");
 effect c11.types.sizeof(Qualified($type,$const,$volatile,$restrict)) => c11.types.sizeof($type);
 effect c11.types.sizeof(AlignedType($type,$alignment)) => c11.types.sizeof($type);
 effect[fallback] c11.types.sizeof($type) => c11.types.bytes($type);
 effect c11.types.alignment(Array($count,$element)) => c11.types.alignment($element);
-effect c11.types.alignment(Record($name,$fields)) => arg(record_layout($fields),1);
-effect c11.types.alignment(Union($name,$fields)) => arg(union_layout($fields),1);
+effect c11.types.alignment(Record($name,$fields)) => arg(c11.types.named_aggregate_layout("struct",$name,$fields),1);
+effect c11.types.alignment(Union($name,$fields)) => arg(c11.types.named_aggregate_layout("union",$name,$fields),1);
 effect c11.types.alignment(FlexibleArray($element)) => c11.types.alignment($element);
 effect c11.types.alignment(Qualified($type,$const,$volatile,$restrict)) => c11.types.alignment($type);
 effect c11.types.alignment(AlignedType($type,$alignment)) => c11.types.alignment($type);
 effect[fallback] c11.types.alignment($type) => c11.types.bytes($type);
-effect c11.types.record_layout($fields) => layout.sequential(list.map("c11.types.field_layout",$fields));
-effect c11.types.union_layout($fields) => layout.overlap(list.map("c11.types.field_layout",$fields));
+effect c11.types.record_layout($fields) => c11.types.record_layout_policy($fields);
+effect[fallback] c11.types.named_aggregate_layout("struct",$name,$fields) => c11.types.record_layout($fields);
+effect[fallback] c11.types.named_aggregate_layout("union",$name,$fields) => c11.types.union_layout($fields);
+effect[fallback] c11.types.nominal_identity($name) => $name;
+effect c11.types.same_nominal($a,$b) => eq(c11.types.nominal_identity($a),c11.types.nominal_identity($b));
+effect[fallback] c11.types.record_layout_policy($fields) => layout.sequential(list.map("c11.types.field_layout",$fields));
+effect c11.types.union_layout($fields) => c11.types.union_layout_policy($fields);
+effect[fallback] c11.types.union_layout_policy($fields) => layout.overlap(list.map("c11.types.field_layout",$fields));
 effect c11.types.field_layout(Field($name,$type)) => [c11.types.bytes($type),c11.types.alignment($type)];
+effect[fallback] c11.types.member_alignment($type,$cap) => bind($natural,c11.types.alignment($type),
+    layout.maximum(choose(and(lt(0,$cap),lt($cap,$natural)),$cap,$natural),c11.types.required_alignment($type)));
+effect c11.types.required_alignment(Record($name,$fields)) => c11.types.aggregate_required_alignment($name,$fields);
+effect c11.types.required_alignment(Union($name,$fields)) => c11.types.aggregate_required_alignment($name,$fields);
+effect c11.types.required_alignment(Array($count,$element)) => c11.types.required_alignment($element);
+effect c11.types.required_alignment(FlexibleArray($element)) => c11.types.required_alignment($element);
+effect c11.types.required_alignment(Qualified($type,$c,$v,$r)) => c11.types.required_alignment($type);
+effect[fallback] c11.types.required_alignment($type) => 1;
+effect[fallback] c11.types.aggregate_required_alignment($name,$fields) => list.fold("c11.types.required_field_alignment",$fields,1);
+effect c11.types.required_field_alignment($prior,Field($name,$type)) => layout.maximum($prior,c11.types.required_alignment($type));
 effect c11.types.round_up($value,$alignment) => layout.round_up($value,$alignment);
 // Integer storage units retain the union's target size/alignment and provide
 // pointer-sized relocation slots at every naturally aligned pointer offset.
@@ -142,7 +164,9 @@ effect anchor_member(Anchor($current,$alignment),Field($name,$type)) => choose(l
     Anchor($type,c11.types.alignment($type)),Anchor($current,$alignment));
 effect union_unit($fields) => bind($alignment,arg(c11.types.union_layout($fields),1),
     choose(lt(4,$alignment),8,choose(lt(2,$alignment),4,choose(lt(1,$alignment),2,1))));
-effect union_repr(Union($name,$fields)) => bind($unit,union_unit($fields),
+effect c11.types.union_storage_unit($name,$fields) => bind($alignment,c11.types.alignment(Union($name,$fields)),
+    choose(lt(4,$alignment),8,choose(lt(2,$alignment),4,choose(lt(1,$alignment),2,1))));
+effect union_repr(Union($name,$fields)) => bind($unit,c11.types.union_storage_unit($name,$fields),
     concat("!llvm.array<",concat(text(int.div(c11.types.bytes(Union($name,$fields)),$unit)),concat(" x i",concat(text(mul($unit,8)),">")))));
 effect[fallback] c11.types.bytes($type)
     => fail("sizeof requires a complete supported C object type");
@@ -175,15 +199,21 @@ effect c11.types.first_fit($value,$types) when lt(0,size($types)) => bind(IntTyp
 effect c11.types.real_literal($raw) => bind($last,text.slice($raw,sub(text.len($raw),1),text.len($raw)),
     bind($descriptor,choose(eq($last,"f"),c11.types.floating("float"),choose(eq($last,"l"),c11.types.floating("long double"),c11.types.floating("double"))),
         bind($spelling,choose(or(eq($last,"f"),eq($last,"l")),text.slice($raw,0,sub(text.len($raw),1)),$raw),
-            base.Typed($descriptor,base.Floating(numbers.real($spelling,c11.types.storage($descriptor)))))));
+            base.Typed($descriptor,base.Floating(c11.types.literal_real($spelling,$descriptor))))));
+// C permits rounded subnormal literals. The generic numbers library has a
+// stricter underflow policy, so C supplies its own APFloat status policy while
+// retaining exact format-aware conversion and overflow/invalid diagnostics.
+effect c11.types.literal_real($raw,FloatType($rank,$format)) => bind([$value,$status],float.attr($raw,$format,0),
+    choose(eq(int.and($status,5),0),$value,fail("invalid or overflowing C floating constant")));
 effect c11.types.floating_zero($type) => base.Typed($type,base.Floating(numbers.real("0.0",c11.types.storage($type))));
-effect c11.types.character($raw) => bind($decoded,text.unquote($raw),choose(eq(text.len($decoded),1),
+effect[fallback] c11.types.character($raw) => bind($decoded,text.unquote($raw),choose(eq(text.len($decoded),1),
     base.Typed(c11.types.integer("int"),base.Integer(text.byte($decoded,0))),fail("wide and multicharacter C constants are not implemented")));
 
 effect base.opcode($operation,IntType($rank,$width,$unsigned)) => base.opcode($operation,c11.types.storage(IntType($rank,$width,$unsigned)));
 effect base.opcode($operation,FloatType($rank,$format)) => base.opcode($operation,c11.types.storage(FloatType($rank,$format)));
 effect base.predicate($operation,IntType($rank,$width,$unsigned)) => base.predicate($operation,c11.types.storage(IntType($rank,$width,$unsigned)));
-effect base.predicate($operation,FloatType($rank,$format)) => base.predicate($operation,c11.types.storage(FloatType($rank,$format)));
+effect base.predicate($operation,FloatType($rank,$format)) => choose(eq($operation,"ne"),["arith.cmpf",13],
+    base.predicate($operation,c11.types.storage(FloatType($rank,$format))));
 effect c11.types.cast($from,$to) when and(c11.types.is_arithmetic($from),c11.types.is_arithmetic($to)) => c11.types.cast_storage(c11.types.storage($from),c11.types.storage($to));
 effect c11.types.cast(Pointer($from),Pointer($to)) => "identity";
 effect c11.types.cast_storage(types.Signed($from),types.Signed($to)) => base.integer_cast($from,$to,"arith.extsi");
@@ -197,5 +227,108 @@ effect c11.types.cast_storage(types.Real($from),types.Unsigned($to)) => "arith.f
 effect c11.types.cast_storage(types.Real($from),types.Real($to)) => choose(eq($from,$to),"identity",choose(eq($to,"f32"),"arith.truncf","arith.extf"));
 
 effect c11.types.pointer_compatible(FunctionType($ar,$ap,$av,$ax),FunctionType($br,$bp,$bv,$bx))
-    => and(eq($ar,$br),and(eq($av,$bv),eq(list.map("c11.types.signature_parameter",$ap),list.map("c11.types.signature_parameter",$bp))));
+    => c11.types.compatible(FunctionType($ar,$ap,$av,$ax),FunctionType($br,$bp,$bv,$bx));
 effect c11.types.signature_parameter(base.Param($name,$type)) => c11.types.unqualified($type);
+
+// Language type compatibility is distinct from void-pointer assignment. It
+// preserves nested qualifiers and nominal tag identities, ignores object
+// alignment and parameter spelling, and recursively compares declarators.
+// Other type families (including enums) extend this open relation themselves.
+effect c11.types.compatible($left,$right) when eq($left,$right) => 1;
+effect[fallback] c11.types.compatible($left,$right)
+    => c11.types.compatible_shape(c11.types.compatibility_shape($left),c11.types.compatibility_shape($right));
+effect c11.types.compatibility_shape(AlignedType($type,$alignment)) => c11.types.compatibility_shape($type);
+effect c11.types.compatibility_shape(Qualified($type,$const,$volatile,$restrict))
+    => c11.types.compatibility_qualified(c11.types.unqualified($type),
+        c11.types.qualifiers(Qualified($type,$const,$volatile,$restrict)));
+// In C11 a qualifier applied to an array typedef qualifies its element,
+// rather than creating a separately qualified array type (6.7.3p9).
+effect c11.types.compatibility_qualified(Array($count,$element),$qualifiers)
+    => Array($count,c11.types.qualify($element,$qualifiers));
+effect c11.types.compatibility_qualified(IncompleteArray($element),$qualifiers)
+    => IncompleteArray(c11.types.qualify($element,$qualifiers));
+effect c11.types.compatibility_qualified($type,[0,0,0]) => c11.types.compatibility_shape($type);
+effect[fallback] c11.types.compatibility_qualified($type,[$const,$volatile,$restrict])
+    => Qualified($type,$const,$volatile,$restrict);
+effect[fallback] c11.types.compatibility_shape($type) => $type;
+effect c11.types.compatible_shape(Qualified($a,$ac,$av,$ar),Qualified($b,$bc,$bv,$br))
+    => and(eq([$ac,$av,$ar],[$bc,$bv,$br]),c11.types.compatible($a,$b));
+effect c11.types.compatible_shape(Pointer($a),Pointer($b)) => c11.types.compatible($a,$b);
+effect c11.types.compatible_shape(Array($ac,$a),Array($bc,$b)) => and(eq($ac,$bc),c11.types.compatible($a,$b));
+effect c11.types.compatible_shape(IncompleteArray($a),Array($count,$b)) => c11.types.compatible($a,$b);
+effect c11.types.compatible_shape(Array($count,$a),IncompleteArray($b)) => c11.types.compatible($a,$b);
+effect c11.types.compatible_shape(IncompleteArray($a),IncompleteArray($b)) => c11.types.compatible($a,$b);
+effect c11.types.compatible_shape(Record($a,$af),Record($b,$bf)) => c11.types.same_nominal($a,$b);
+effect c11.types.compatible_shape(Record($a,$fields),RecordName($b)) => c11.types.same_nominal($a,$b);
+effect c11.types.compatible_shape(RecordName($a),Record($b,$fields)) => c11.types.same_nominal($a,$b);
+effect c11.types.compatible_shape(Union($a,$af),Union($b,$bf)) => c11.types.same_nominal($a,$b);
+effect c11.types.compatible_shape(Union($a,$fields),UnionName($b)) => c11.types.same_nominal($a,$b);
+effect c11.types.compatible_shape(UnionName($a),Union($b,$fields)) => c11.types.same_nominal($a,$b);
+effect c11.types.compatible_shape(FunctionType($ar,$ap,$av,1),FunctionType($br,$bp,$bv,1))
+    => and(c11.types.compatible($ar,$br),and(eq($av,$bv),c11.types.compatible_parameters($ap,$bp)));
+effect c11.types.compatible_shape(FunctionType($ar,$ap,$av,0),FunctionType($br,$bp,$bv,0))
+    => c11.types.compatible($ar,$br);
+effect c11.types.compatible_shape(FunctionType($ar,$ap,$av,0),FunctionType($br,$bp,$bv,1))
+    => and(c11.types.compatible($ar,$br),and(not($bv),c11.types.unpromoted_parameters($bp)));
+effect c11.types.compatible_shape(FunctionType($ar,$ap,$av,1),FunctionType($br,$bp,$bv,0))
+    => and(c11.types.compatible($ar,$br),and(not($av),c11.types.unpromoted_parameters($ap)));
+effect c11.types.compatible_shape(FunctionType($ar,$ap,$av,2),FunctionType($br,$bp,$bv,1))
+    => and(c11.types.compatible($ar,$br),and(not($bv),c11.types.compatible_parameters(c11.types.promoted_parameters($ap),$bp)));
+effect c11.types.compatible_shape(FunctionType($ar,$ap,$av,1),FunctionType($br,$bp,$bv,2))
+    => and(c11.types.compatible($ar,$br),and(not($av),c11.types.compatible_parameters($ap,c11.types.promoted_parameters($bp))));
+effect c11.types.compatible_shape(FunctionType($ar,$ap,$av,2),FunctionType($br,$bp,$bv,0)) => c11.types.compatible($ar,$br);
+effect c11.types.compatible_shape(FunctionType($ar,$ap,$av,0),FunctionType($br,$bp,$bv,2)) => c11.types.compatible($ar,$br);
+effect c11.types.compatible_shape(FunctionType($ar,$ap,$av,2),FunctionType($br,$bp,$bv,2)) => c11.types.compatible($ar,$br);
+effect promoted_parameters($params) => list.map("c11.types.promoted_parameter",$params);
+effect promoted_parameter(base.Param($name,$type)) => base.Param($name,c11.types.default_argument(c11.types.unqualified($type)));
+effect[fallback] c11.types.compatible_shape($a,$b) => eq($a,$b);
+effect c11.types.compatible_parameters([],[]) => 1;
+effect c11.types.compatible_parameters($a,$b) when and(lt(0,size($a)),lt(0,size($b)))
+    => and(c11.types.compatible(c11.types.signature_parameter(list.head($a)),c11.types.signature_parameter(list.head($b))),
+        c11.types.compatible_parameters(list.tail($a),list.tail($b)));
+effect[fallback] c11.types.compatible_parameters($a,$b) => 0;
+effect c11.types.unpromoted_parameters([]) => 1;
+effect c11.types.unpromoted_parameters($params) when lt(0,size($params))
+    => bind($type,c11.types.signature_parameter(list.head($params)),
+        and(c11.types.unpromoted_parameter($type),c11.types.unpromoted_parameters(list.tail($params))));
+effect c11.types.unpromoted_parameter($type) when c11.types.is_arithmetic($type)
+    => c11.types.compatible($type,c11.types.default_argument($type));
+effect[fallback] c11.types.unpromoted_parameter($type) => 1;
+
+// Composite types belong to declarations, not to the final symbol's ABI.
+// Open shape rules allow future type families to contribute the same policy.
+effect c11.types.composite($left,$right) when eq($left,$right) => $left;
+effect[fallback] c11.types.composite($left,$right) => choose(c11.types.compatible($left,$right),
+    c11.types.composite_shape(c11.types.compatibility_shape($left),c11.types.compatibility_shape($right)),
+    fail("incompatible C types in composite declaration"));
+effect c11.types.composite_shape(Qualified($a,$c,$v,$r),Qualified($b,$c,$v,$r))
+    => Qualified(c11.types.composite($a,$b),$c,$v,$r);
+effect c11.types.composite_shape(Pointer($a),Pointer($b)) => Pointer(c11.types.composite($a,$b));
+effect c11.types.composite_shape(Array($n,$a),Array($n,$b)) => Array($n,c11.types.composite($a,$b));
+effect c11.types.composite_shape(Array($n,$a),IncompleteArray($b)) => Array($n,c11.types.composite($a,$b));
+effect c11.types.composite_shape(IncompleteArray($a),Array($n,$b)) => Array($n,c11.types.composite($a,$b));
+effect c11.types.composite_shape(IncompleteArray($a),IncompleteArray($b)) => IncompleteArray(c11.types.composite($a,$b));
+effect c11.types.composite_shape(RecordName($a),Record($b,$fields)) when c11.types.same_nominal($a,$b) => Record($b,$fields);
+effect c11.types.composite_shape(UnionName($a),Union($b,$fields)) when c11.types.same_nominal($a,$b) => Union($b,$fields);
+effect c11.types.composite_shape(FunctionType($ar,$ap,$av,1),FunctionType($br,$bp,$bv,1))
+    => FunctionType(c11.types.composite($ar,$br),c11.types.composite_parameters($ap,$bp),$av,1);
+effect c11.types.composite_shape(FunctionType($ar,$ap,$av,0),FunctionType($br,$bp,$bv,1))
+    => FunctionType(c11.types.composite($ar,$br),$bp,$bv,1);
+effect c11.types.composite_shape(FunctionType($ar,$ap,$av,1),FunctionType($br,$bp,$bv,0))
+    => FunctionType(c11.types.composite($ar,$br),$ap,$av,1);
+effect c11.types.composite_shape(FunctionType($ar,$ap,$av,0),FunctionType($br,$bp,$bv,0))
+    => FunctionType(c11.types.composite($ar,$br),[],0,0);
+effect c11.types.composite_shape(FunctionType($ar,$ap,$av,2),FunctionType($br,$bp,$bv,1))
+    => FunctionType(c11.types.composite($ar,$br),$bp,$bv,1);
+effect c11.types.composite_shape(FunctionType($ar,$ap,$av,1),FunctionType($br,$bp,$bv,2))
+    => FunctionType(c11.types.composite($ar,$br),$ap,$av,1);
+effect c11.types.composite_shape(FunctionType($ar,$ap,$av,2),FunctionType($br,$bp,$bv,0))
+    => FunctionType(c11.types.composite($ar,$br),$ap,0,2);
+effect c11.types.composite_shape(FunctionType($ar,$ap,$av,0),FunctionType($br,$bp,$bv,2))
+    => FunctionType(c11.types.composite($ar,$br),$bp,0,2);
+effect[fallback] c11.types.composite_shape($a,$b) => $a;
+effect c11.types.composite_parameters([],[]) => [];
+effect c11.types.composite_parameters($a,$b) when and(lt(0,size($a)),lt(0,size($b)))
+    => bind(base.Param($name,$at),list.head($a),bind(base.Param($other,$bt),list.head($b),
+        list.prepend(base.Param($name,c11.types.composite(c11.types.unqualified($at),c11.types.unqualified($bt))),
+            c11.types.composite_parameters(list.tail($a),list.tail($b)))));

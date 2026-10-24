@@ -11,19 +11,32 @@ __pycache__/
 *.o
 *.pdb
 *.lib
+*.dll
+*.exp
+*.ilk
+*.log
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.local.json
+*.local.toml
 
 # Editors / harness state
 .idea/
 .vs/
 .orbit/
 
-# Web
-web/node_modules/
-web/dist/
-web/tmp/
+# Website is maintained separately
+/web/
 
 # Vendored / generated backend dependencies
 backend/native/build/
 backend/native/lld/build/
 backend/native/lld/source/
 backend/native/lld/libraries.json
+packages/vyx-logger/vendor/
+packages/vyx-logger/contracts/
+packages/vyx-logger/.cache/
+packages/vyx-logger/out/

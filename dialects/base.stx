@@ -3,6 +3,7 @@ mod base;
 use types;
 use numbers;
 use pipeline;
+use allocation;
 
 syntax expr `$n:int` => Int($n);
 syntax expr[fallback] `$n:number` => Literal($n);
@@ -61,7 +62,8 @@ syntax item[fallback] `fn $name:ident($params:parameters) -> $result:typename $b
 
 // A complete source group can be checked before any IR is constructed.
 effect analyze_program($items) => check_items($items, declarations($items, env.empty()));
-effect emit_program($items) => lower_items(analyze_program(prepare_module($items)));
+effect emit_program($items) => bind($checked,analyze_program(prepare_module($items)),seq(emit_runtime($checked),lower_items($checked)));
+effect[fallback] emit_runtime($checked) => [];
 // Optional library-wide preparation (for example, hoisting static data). The
 // core does not interpret these terms; libraries extend this phase relation.
 effect[fallback] prepare_module($items) => pipeline.run($items);
@@ -292,9 +294,19 @@ effect lower_function_attrs(CheckedFunction($name, $params, $result, $body),$att
                     concat(") -> ", result_repr($result))))]), [function_region($params,$body,$result,env.empty())]);
 // Function dialects share binding, storage planning and CFG lowering.
 effect function_region($params,$body,$result,$policy) => bind($block,mlir.block(list.map("base.bound_type",$params)),
-    bind($scope,prepare_storage($body,$block,bind_ssa($params,$block,0,$policy)),
+    bind($scope,allocation.plan_frame($body,$block,prepare_storage($body,$block,bind_ssa($params,$block,0,$policy))),
         mlir.region_blocks(lower_flow($body,$scope,$block,function_continuation($result)))));
-effect return_in($environment,$values) => mlir.op(choose(env.contains($environment,ReturnOpKey()),env.get($environment,ReturnOpKey()),"func.return"),$values,[],[],[]);
+// Type descriptions and nested functions cannot introduce runtime sites
+// in the current frame. Other languages may add independent facts.
+effect allocation.children(Typed($descriptor,$value)) => [$value];
+effect allocation.children(CheckedFunction($name,$params,$result,$body)) => [];
+effect return_in($environment,$values) => bind($returned,base.return_values($environment,$values),
+    seq(base.before_return($environment),mlir.op(choose(env.contains($environment,ReturnOpKey()),env.get($environment,ReturnOpKey()),"func.return"),$returned,[],[],[])));
+effect[fallback] base.return_values($environment,$values) => $values;
+effect[fallback] base.before_return($environment) => 1;
+effect base.jump_in($environment,$target) => seq(base.before_jump($environment,$target),jump($target));
+effect[fallback] base.before_jump($environment,$target) => 1;
+effect[fallback] base.flow_targets($environment,$targets) => $environment;
 effect[fallback] finish_context($continuation,$environment) => finish($continuation);
 effect[fallback] function_continuation($result) => NoContinuation();
 effect[fallback] result_repr($descriptor) => types.repr($descriptor);
@@ -315,12 +327,12 @@ effect lower(Typed($descriptor, Read($identity)), $environment) => env.get($envi
 effect lower(Typed($descriptor, Load($identity)), $environment)
     => storage_load($descriptor, env.get($environment, $identity));
 effect lower(Typed($descriptor, Converted(Typed($source, $value))), $environment)
-    => lower_cast(cast_opcode($source, $descriptor), lower(Typed($source, $value), $environment), $descriptor);
+    => base.emit_cast(cast_opcode($source, $descriptor), lower(Typed($source, $value), $environment), $descriptor, $environment);
 effect lower(Typed($descriptor, Binary($operation, $a, $b)), $environment)
-    => mlir.op(opcode($operation, $descriptor), [lower($a, $environment), lower($b, $environment)], [types.repr($descriptor)], [], []);
+    => base.emit_binary(opcode($operation, $descriptor), lower($a, $environment), lower($b, $environment), $descriptor, $environment);
 effect lower(Typed($descriptor, Comparison($predicate, Typed($operand_type, $a), $b)), $environment)
     => bind([$operation, $code], predicate($predicate, $operand_type),
-        mlir.op($operation, [lower(Typed($operand_type, $a), $environment), lower($b, $environment)], ["i1"], [Attr("predicate", $code, "i64")], []));
+        base.emit_comparison($operation, $code, lower(Typed($operand_type, $a), $environment), lower($b, $environment), $environment));
 effect lower(Typed(Signed($width), Unary("neg", $value)), $environment)
     => mlir.op("arith.subi", [lower(Typed(Signed($width), Integer(0)), $environment), lower($value, $environment)], [types.repr(Signed($width))], [], []);
 effect lower(Typed(Index(), Unary("neg", $value)), $environment)
@@ -420,3 +432,12 @@ effect integer_cast($from, $to, $extend)
 effect lower_cast("identity", $value, $descriptor) => $value;
 effect lower_cast($operation, $value, $descriptor) when not(eq($operation, "identity"))
     => mlir.op($operation, [$value], [types.repr($descriptor)], [], []);
+
+// Emission policy is carried by the lexical lowering environment. Libraries
+// may preserve rounding and exceptions without replacing expression grammar
+// or changing other languages that compose this module.
+effect[fallback] base.emit_binary($operation,$a,$b,$descriptor,$environment)
+    => mlir.op($operation,[$a,$b],[types.repr($descriptor)],[],[]);
+effect[fallback] base.emit_comparison($operation,$predicate,$a,$b,$environment)
+    => mlir.op($operation,[$a,$b],["i1"],[Attr("predicate",$predicate,"i64")],[]);
+effect[fallback] base.emit_cast($operation,$value,$descriptor,$environment) => base.lower_cast($operation,$value,$descriptor);

@@ -33,6 +33,7 @@ export interface ArchiveCatalog {
   entries: ArchiveEntry[]
   families: string[]
   documentCount: number
+  originalsWithheld: boolean
 }
 
 export type WikiBlock =
@@ -42,7 +43,7 @@ export type WikiBlock =
   | { kind: 'note'; title: string; text: string }
 
 export interface WikiSection { id: string; title: string; blocks: WikiBlock[]; refs: string[] }
-export interface WikiReference { key: string; title: string; file?: string; url?: string; locator: string }
+export interface WikiReference { key: string; title: string; file?: string; url?: string; locator: string; unavailable?: string }
 export interface WikiFamily {
   name: string; fullName: string; subtitle: string; lead: string; origin: string; people: string
   model: string; setting: string; related: string[]; sections: WikiSection[]; references: WikiReference[]

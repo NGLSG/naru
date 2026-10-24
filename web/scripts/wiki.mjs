@@ -19,6 +19,12 @@ const descriptions = {
   custom_device: ['后端与示例', '自定义设备方言示例'], native_device: ['后端与示例', '设备后端示例'], alternate: ['后端与示例', '替代表面语法'], money: ['后端与示例', '金额运算规则'],
 }
 const implementations = {
+  basic: { name: 'Dartmouth BASIC · 1964', module: 'basic', frontend: 'basic.frontend', status: '规则存在 · 分阶段验收',
+    summary: '行号程序以 base、控制流和 CFG 规则组合；版本依据与差异记录在 basic.md。',
+    features: ['行号与控制转移', 'LET / PRINT / INPUT', 'FOR / NEXT 与 GOSUB', 'READ / DATA、数组及 DEF FN'],
+    limits: ['尚未声称完整 DTSS 环境兼容。', '1968 第四版不是独立实现模式，MAT 等扩展需分别验收。'],
+    files: ['dialects/basic.stx', 'docs/basic.md'], examples: ['examples/basic/sum.bas'],
+    command: '.\\target\\naru.exe build --project examples\\basic --target exe -o target\\basic-sum.exe' },
   b: { name: 'B · 1972 目标', module: 'b', frontend: 'b.frontend', status: '规则存在 · 忠实度待补齐',
     summary: '独立 B 词法和字模型，组合 base、types、numbers、pipeline、tree、cfg。',
     features: ['无类型 i64 字表达式', '17 种历史赋值形式', 'auto / extrn 与向量', 'if / while、函数与递归', 'goto / 标签、字符与字符串设施'],
@@ -82,7 +88,14 @@ export async function readWiki() {
     report = { url: expose(reportPath).url, recordedAt: (await stat(path.join(projectRoot, reportPath))).mtime.toISOString(),
       passed: raw.passed, total: raw.total, cases: raw.results.map(item => ({ name: item.name, passed: item.passed })) }
   } catch (error) { if (error.code !== 'ENOENT') throw error }
-  return { catalog: { families, versions, modules, implementations: resolved, report, editedAt }, available }
+  const publishedFamilies = structuredClone(families)
+  if (!report) for (const family of Object.values(publishedFamilies)) for (const reference of family.references) {
+    if (reference.url === urlFor(reportPath)) {
+      delete reference.url
+      reference.unavailable = '该历史报告未随此源码快照分发。'
+    }
+  }
+  return { catalog: { families: publishedFamilies, versions, modules, implementations: resolved, report, editedAt }, available }
 }
 
 export function wikiPlugin() {

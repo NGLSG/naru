@@ -19,20 +19,23 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--compiler', type=Path, default=ROOT/'target/naru.exe')
+    parser.add_argument('--variants', nargs='+', choices=['image','windows'], default=['image','windows'])
     parser.add_argument('--sizes', type=int, nargs='+', default=[32,128,512])
     parser.add_argument('--repeat', type=int, default=2)
     parser.add_argument('--report', type=Path, default=ROOT/'target/storage-perf.json')
     args = parser.parse_args()
     if args.repeat < 1 or any(n < 2 or n > 16384 for n in args.sizes):
         parser.error('positive repeats and array sizes in 2..16384 are required')
-    compiler = ROOT/'target/naru.exe'
+    compiler = args.compiler.resolve()
+    variants = list(dict.fromkeys(args.variants))
     paths = [compiler,compiler.parent/'naru_mlir_backend.dll',Path(__file__),*sorted((ROOT/'dialects').rglob('*.stx'))]
     fingerprint = lambda: {str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
     before = fingerprint(); results = []
     with tempfile.TemporaryDirectory(prefix='naru storage comparison ') as directory:
         work = Path(directory)
         snapshots = {}
-        for variant in ('image','windows'):
+        for variant in variants:
             rules = work/variant/'dialects'
             for path in (ROOT/'dialects').rglob('*.stx'):
                 out = rules/path.relative_to(ROOT/'dialects'); out.parent.mkdir(parents=True,exist_ok=True)
@@ -51,7 +54,7 @@ def main() -> int:
             source.write_text(f'union U {{int a[{count}];double d;}};int main(void){{int first=20,second=22;union U u={{{{first,second}}}};return u.a[0]+u.a[1];}}\n')
             for repeat in range(args.repeat):
                 # Alternate order to avoid always giving one variant a warm host.
-                for variant in (('image','windows') if repeat % 2 == 0 else ('windows','image')):
+                for variant in (variants if repeat % 2 == 0 else list(reversed(variants))):
                     output = work/'program.exe'; build_report = work/'build.json'
                     record = dict(elements=count,repeat=repeat,variant=variant,passed=False)
                     try:
@@ -74,7 +77,7 @@ def main() -> int:
         assert snapshot_hashes == {v:{str(p.relative_to(r)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(r.rglob('*.stx'))} for v,r in snapshots.items()}
     summary = []
     for count in args.sizes:
-        for variant in ('image','windows'):
+        for variant in variants:
             rows = [r for r in results if r['elements']==count and r['variant']==variant and r['passed']]
             summary.append(dict(elements=count,variant=variant,successful_samples=len(rows),
                 median_seconds=statistics.median(r['seconds'] for r in rows) if rows else None,

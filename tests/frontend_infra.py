@@ -78,6 +78,29 @@ def main() -> int:
             result = call(*options)
             assert result.returncode in (1, 2), result.stdout + result.stderr
             assert contains in result.stdout + result.stderr, result.stdout + result.stderr
+        check('Unicode scalars decode ASCII BMP and supplementary UTF8', lambda: evaluate(
+            'text.codepoints("Aα😀")', '[65,945,128512]'))
+        check('Unicode encoding preserves all UTF8 width boundaries and NUL', lambda: evaluate(
+            'text.codepoints(text.from_codepoints([0,127,128,2047,2048,55295,57344,65535,65536,1114111]))',
+            '[0,127,128,2047,2048,55295,57344,65535,65536,1114111]'))
+        check('binary text preserves NUL and non-UTF8 bytes', lambda: evaluate(
+            'bind($s,text.from_bytes([0,128,255]),[text.len($s),text.byte($s,0),text.byte($s,1),text.byte($s,2)])',
+            '[3,0,128,255]'))
+        check('ASCII predicate distinguishes UTF8 and binary text', lambda: evaluate(
+            '[text.is_ascii(""),text.is_ascii("abc"),text.is_ascii("α"),text.is_ascii(text.from_bytes([255]))]',
+            '[1,1,0,0]'))
+        for values in ('[192,128]', '[237,160,128]', '[244,144,128,128]', '[240,159]', '[128]'):
+            check('malformed UTF8 is rejected '+values, lambda values=values: rejection(
+                'eval', *rule('tests/fixtures/frontend_infra.stx'), '--expr',
+                'text.codepoints(text.from_bytes('+values+'))', contains='UTF-8'))
+        for value in ('-1', '55296', '57343', '1114112'):
+            check('invalid Unicode scalar is rejected '+value, lambda value=value: rejection(
+                'eval', *rule('tests/fixtures/frontend_infra.stx'), '--expr',
+                'text.from_codepoints(['+value+'])', contains='invalid Unicode scalar'))
+        for value in ('-1', '256'):
+            check('invalid byte is rejected '+value, lambda value=value: rejection(
+                'eval', *rule('tests/fixtures/frontend_infra.stx'), '--expr',
+                'text.from_bytes(['+value+'])', contains='byte value outside'))
         check('captured values fit their exact evaluation budget', lambda: evaluate(
             'frontend_infra.identity([1,2])', '[1,2]', '--rule-budget', '5'))
         check('captured values still charge an evaluation step', lambda: rejection(

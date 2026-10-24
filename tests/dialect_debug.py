@@ -27,7 +27,7 @@ def rule_fingerprints() -> dict[str, str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--dialect', action='append', choices=['b', 'pascal', 'c11'])
+    parser.add_argument('--dialect', action='append', choices=['b', 'pascal', 'c11', 'basic'])
     parser.add_argument('--case', action='append')
     parser.add_argument('--opt', action='append', choices=['0', '2'])
     parser.add_argument('--report', type=Path, default=ROOT / 'target/dialect-debug.json')
@@ -51,7 +51,7 @@ def main() -> int:
             continue
         if args.case and case['name'] not in args.case:
             continue
-        suffix = {'b': 'b', 'pascal': 'pas', 'c11': 'c'}[dialect]
+        suffix = {'b': 'b', 'pascal': 'pas', 'c11': 'c', 'basic': 'bas'}[dialect]
         source = work / (case['name'] + '.' + suffix)
         content = (ROOT / case['source_file']).read_text(encoding='utf-8') if 'source_file' in case else case['source']
         source.write_text(content + '\n', encoding='utf-8')
@@ -81,7 +81,7 @@ def main() -> int:
                     common += ['--rules', str(ROOT / extra)]
                 if case.get('check_only'):
                     common += ['--relation', 'analyze']
-                elif dialect in ('b', 'c11'):
+                elif dialect in ('b', 'c11', 'basic'):
                     common += ['--unit', 'program', '--relation',
                                'c11.emit_program' if dialect == 'c11' else 'emit_program']
                 command = [str(compiler), 'check' if case.get('check_only') else 'build', str(source), *common,
@@ -99,7 +99,8 @@ def main() -> int:
                 else:
                     assert build.returncode == 0, build.stdout + build.stderr
                     stage = 'execute'
-                    native = execute([str(exe)], cwd=work, timeout=3, memory_limit=64 * 1024**2)
+                    native = execute([str(exe)], cwd=work, timeout=3, memory_limit=64 * 1024**2,
+                                     stdin_data=(case['stdin'].encode() if 'stdin' in case else None))
                     record.update(exit=native.returncode, stdout=native.stdout)
                     assert native.returncode == case.get('exit', 42), f'Wrong exit: {native.returncode}'
                     assert native.stdout == case.get('stdout', ''), repr(native.stdout)

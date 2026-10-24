@@ -7,6 +7,7 @@ use std.fs;
 // Program-module metadata is separate from compiler-rule modules. Its only
 // responsibility is the source file dependency graph; dialects own declarations
 // and value-symbol semantics.
+@[derive(Clone)]
 struct SourceUnit {
     public path: string;
     public key: string;
@@ -112,7 +113,7 @@ public fn source_load(e: &mut Engine, graph: &mut SourceGraph, path: string, exp
         imports: imports, state: 1 });
     var edge = e.node(imports).first;
     while (edge >= 0 && e.good()) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         let imported = e.node(item.value);
         let imported_path = source_module_path(naru_dirname(absolute), imported.text);
         if (!source_load(e, graph, imported_path, imported.text, entry,
@@ -128,7 +129,7 @@ public fn source_load(e: &mut Engine, graph: &mut SourceGraph, path: string, exp
     e.add_child(e.source_modules, metadata);
     edge = e.node(local_items).first;
     while (edge >= 0) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         e.add_child(graph.items, item.value);
         edge = item.next;
     }

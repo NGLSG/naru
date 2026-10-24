@@ -1,0 +1,18 @@
+// C spelling over neutral per-engine host time facts. Never evaluated at
+// freeze time: a new compiler run obtains its own stable translation snapshot.
+mod c11.translation;
+use c11.pp;
+
+effect c11.pp.translation_macros($macros,$options)
+    => bind([$year,$month,$day,$hour,$minute,$second,$epoch,$utc],source.clock_snapshot(),
+        list.fold("c11.pp.predefine",[["__DATE__",text.quote(c11.translation.date($year,$month,$day))],
+            ["__TIME__",text.quote(c11.translation.time($hour,$minute,$second))]],$macros));
+effect c11.translation.date($year,$month,$day)
+    => concat(arg(["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"],sub($month,1)),
+        concat(" ",concat(c11.translation.padded($day,2," "),concat(" ",c11.translation.padded($year,4,"0")))));
+effect c11.translation.time($hour,$minute,$second) => concat(c11.translation.padded($hour,2,"0"),
+    concat(":",concat(c11.translation.padded($minute,2,"0"),concat(":",c11.translation.padded($second,2,"0")))));
+effect c11.translation.padded($number,$width,$padding) => bind($value,text($number),
+    choose(lt(text.len($value),$width),concat($padding,c11.translation.padded_text($value,sub($width,1),$padding)),$value));
+effect c11.translation.padded_text($value,$width,$padding) => choose(lt(text.len($value),$width),
+    concat($padding,c11.translation.padded_text($value,sub($width,1),$padding)),$value);

@@ -3,8 +3,17 @@ use c11.lex;
 use c11.types;
 use c11.syntax;
 use c11.sema;
+use c11.names;
+use c11.scopes;
+use c11.objects;
 use base;
 use control;
+use c11.specifiers;
+use c11.pp;
+// Target-reserved declaration words must not become an unnamed parameter's
+// declarator identifier or a K&R parameter name during scope classification.
+effect c11.lex.extension_keyword($word) when c11.msvc.reserved_word($word) => 1;
+effect c11.msvc.reserved_word($word) => text.contains(" __restrict __restrict__ __cdecl __stdcall __declspec __inline __forceinline __int8 __int16 __int32 __int64 ",concat(" ",concat($word," ")));
 // The real Windows SDK uses i64/Ui64 integer constants in <limits.h>.
 // Normalize the extension suffix to the C11 candidate policy; exact value
 // parsing and representability checks are shared with all other constants.
@@ -14,17 +23,20 @@ effect c11.types.suffix($raw,$end)
         [text.slice($raw,0,sub($end,choose($unsigned,4,3))),choose($unsigned,"ull","ll")]);
 // Compiler-specific spellings used by the installed Windows headers. These
 // are selected C dialect rules, not Naru core terminals or backend shortcuts.
-syntax c11.specifier `__int8` => c11.types.integer("signed char");
-syntax c11.specifier `unsigned __int8` => c11.types.integer("unsigned char");
-syntax c11.specifier `__int16` => c11.types.integer("short");
-syntax c11.specifier `unsigned __int16` => c11.types.integer("unsigned short");
-syntax c11.specifier `__int32` => c11.types.integer("int");
-syntax c11.specifier `unsigned __int32` => c11.types.integer("unsigned int");
-syntax c11.specifier `__int64` => c11.types.integer("long long");
-syntax c11.specifier `unsigned __int64` => c11.types.integer("unsigned long long");
+syntax c11.atom_type `__int8` => c11.types.integer("signed char");
+syntax c11.atom_type `unsigned __int8` => c11.types.integer("unsigned char");
+syntax c11.atom_type `__int16` => c11.types.integer("short");
+syntax c11.atom_type `unsigned __int16` => c11.types.integer("unsigned short");
+syntax c11.atom_type `__int32` => c11.types.integer("int");
+syntax c11.atom_type `unsigned __int32` => c11.types.integer("unsigned int");
+syntax c11.atom_type `__int64` => c11.types.integer("long long");
+syntax c11.atom_type `unsigned __int64` => c11.types.integer("unsigned long long");
 // Windows x64 has one native C calling convention for these spellings.
-syntax c11.specifier[25,left] `$type:c11.specifier __cdecl` => $type;
-syntax c11.specifier[25,left] `$type:c11.specifier __stdcall` => $type;
+syntax c11.type_piece `__cdecl` => CallingConvention();
+syntax c11.type_piece `__stdcall` => CallingConvention();
+syntax c11.qualifier `__restrict` => c11.specifiers.Qualifier(0,0,1);
+syntax c11.qualifier `__restrict__` => c11.specifiers.Qualifier(0,0,1);
+effect c11.specifiers.part($state,CallingConvention()) => $state;
 syntax c11.declarator[20,right] `__stdcall $decl:c11.declarator` => $decl;
 syntax c11.abstract_decl[20,right] `__stdcall $decl:c11.abstract_decl` => $decl;
 // These annotations do not change the x64 ABI. Keep them in the parse tree;
@@ -38,6 +50,7 @@ syntax c11.msvc.advisory `allocator` => Advisory("allocator");
 syntax c11.msvc.advisory `deprecated` => Advisory("deprecated");
 syntax c11.msvc.advisory `dllexport` => Advisory("dllexport");
 syntax c11.msvc.advisory `dllimport` => Advisory("dllimport");
+syntax c11.msvc.advisory `selectany` => Advisory("selectany");
 syntax c11.msvc.advisory `deprecated($message:c11.msvc.strings)` => Deprecated($message);
 syntax c11.item `__declspec($attribute:c11.msvc.advisory) $item:c11.item` => DecoratedItem($attribute,$item);
 effect c11.syntax.commit($context,DecoratedItem($attribute,$item)) => seq(validate_advisory($attribute,$item),
@@ -45,11 +58,17 @@ effect c11.syntax.commit($context,DecoratedItem($attribute,$item)) => seq(valida
 effect apply_advisory(Advisory("noinline"),$items) => list.map("c11.msvc.mark_noinline",$items);
 effect apply_advisory(Advisory("dllexport"),$items) => list.map("c11.msvc.mark_export",$items);
 effect apply_advisory(Advisory("dllimport"),$items) => list.map("c11.msvc.mark_import",$items);
+effect apply_advisory(Advisory("selectany"),$items) => list.map("c11.msvc.mark_selectany",$items);
+effect c11.msvc.mark_selectany($item) => c11.syntax.InlineObject($item);
+effect validate_leaf_advisory(Advisory("selectany"),c11.syntax.Global($symbol,$type,$value)) => 1;
 effect mark_export($item) => DllSymbol("export",$item);
 effect mark_import($item) => DllSymbol("import",$item);
 effect validate_leaf_advisory(Advisory($name),c11.syntax.Global($symbol,$type,$value)) when or(eq($name,"dllexport"),eq($name,"dllimport")) => 1;
 effect validate_leaf_advisory(Advisory($name),c11.syntax.ExternalGlobal($symbol,$type)) when or(eq($name,"dllexport"),eq($name,"dllimport")) => 1;
 effect c11.sema.item_name(DllSymbol($storage,$item)) => c11.sema.item_name($item);
+effect c11.scopes.file_binding($context,DllSymbol($storage,$item)) => c11.scopes.file_binding($context,$item);
+effect c11.objects.declared_names(DllSymbol($storage,$item)) => c11.objects.declared_names($item);
+effect c11.objects.point_item(DllSymbol($storage,$item),$tags) => DllSymbol($storage,c11.objects.point_item($item,$tags));
 effect c11.sema.declare(DllSymbol($storage,$item),$rest,$env) => bind($name,c11.sema.item_name($item),
     choose(choose(env.contains($env,DllStorageKey($name)),not(eq(env.get($env,DllStorageKey($name)),$storage)),0),fail("conflicting C DLL storage declarations"),
         c11.sema.declare($item,$rest,env.put($env,DllStorageKey($name),$storage))));
@@ -65,33 +84,22 @@ effect validate_advisory($attribute,DecoratedItem($other,$item)) => validate_adv
 effect[fallback] validate_advisory($attribute,$item) => validate_leaf_advisory($attribute,$item);
 effect validate_leaf_advisory(Deprecated($message),$item) => 1;
 effect validate_leaf_advisory(Advisory("deprecated"),$item) => 1;
-effect validate_leaf_advisory(Advisory($name),c11.syntax.Function($symbol,$params,$result,$body)) when not(eq($name,"deprecated")) => 1;
-effect validate_leaf_advisory(Advisory($name),c11.syntax.VariadicFunction($symbol,$params,$result,$body)) when not(eq($name,"deprecated")) => 1;
-effect validate_leaf_advisory(Advisory($name),c11.syntax.Prototype($symbol,$params,$result,$variadic)) when not(eq($name,"deprecated")) => 1;
+effect validate_leaf_advisory(Advisory($name),c11.syntax.Function($symbol,$params,$result,$body)) when and(not(eq($name,"deprecated")),not(eq($name,"selectany"))) => 1;
+effect validate_leaf_advisory(Advisory($name),c11.syntax.VariadicFunction($symbol,$params,$result,$body)) when and(not(eq($name,"deprecated")),not(eq($name,"selectany"))) => 1;
+effect validate_leaf_advisory(Advisory($name),c11.syntax.Prototype($symbol,$params,$result,$variadic)) when and(not(eq($name,"deprecated")),not(eq($name,"selectany"))) => 1;
 effect[fallback] validate_leaf_advisory($attribute,$item) => fail("MSVC function annotation requires a function declaration");
-syntax c11.item `__pragma(pack(push, $alignment:number))` => PackPush(int.parse($alignment));
-syntax c11.item `__pragma(pack(push))` => PackPush(8);
-syntax c11.item `__pragma(pack(pop))` => PackPop();
-// The current C layout profile implements the Windows default packing. Other
-// packing is rejected explicitly until layout carries an alignment cap.
-effect c11.syntax.commit($context,PackPush($alignment)) => choose(eq($alignment,8),
-    [env.put($context,PackStackKey(),list.prepend($alignment,choose(env.contains($context,PackStackKey()),env.get($context,PackStackKey()),[]))),[]],
-    fail("C record packing other than 8 is not yet implemented"));
-effect c11.syntax.commit($context,PackPop()) => choose(env.contains($context,PackStackKey()),
-    choose(lt(0,size(env.get($context,PackStackKey()))),[env.put($context,PackStackKey(),list.tail(env.get($context,PackStackKey()))),[]],fail("unmatched C pack(pop)")),
-    fail("unmatched C pack(pop)"));
-
 effect validate_advisory($attribute,c11.syntax.DeclarationGroup($items)) => bind(AdvisoryState($result,$annotation),
     list.fold("c11.msvc.validate_item",$items,AdvisoryState(1,$attribute)),$result);
 effect validate_item(AdvisoryState($result,$attribute),$item) => AdvisoryState(validate_advisory($attribute,$item),$attribute);
-effect validate_advisory($attribute,c11.syntax.Internal($item)) => validate_advisory($attribute,$item);
+effect validate_advisory($attribute,c11.syntax.Internal($item)) => choose(eq($attribute,Advisory("selectany")),
+    fail("MSVC selectany object requires external linkage"),validate_advisory($attribute,$item));
 effect validate_advisory($attribute,c11.syntax.HeaderInline($item)) => validate_advisory($attribute,$item);
 effect validate_advisory($attribute,c11.syntax.NoInline($item)) => validate_advisory($attribute,$item);
 
 syntax c11.msvc.advisory `noinline` => Advisory("noinline");
-syntax c11.specifiers[20,right] `__inline $spec:c11.specifiers` => header_inline($spec);
-syntax c11.specifiers[20,right] `__forceinline $spec:c11.specifiers` => header_inline($spec);
-effect header_inline(c11.syntax.Specifiers($type,$storage,$inline)) => c11.syntax.Specifiers($type,$storage,2);
+syntax c11.declaration_piece `__inline` => c11.specifiers.Inline(2);
+syntax c11.declaration_piece `__forceinline` => c11.specifiers.Inline(2);
+effect header_inline(c11.syntax.Specifiers($type,$storage,$inline)) => c11.syntax.Specifiers($type,$storage,c11.specifiers.add_inline($inline,2));
 syntax c11.declarator[20,right] `__cdecl $decl:c11.declarator` => $decl;
 syntax c11.abstract_decl[20,right] `__cdecl $decl:c11.abstract_decl` => $decl;
 
@@ -99,6 +107,10 @@ syntax c11.abstract_decl[20,right] `__cdecl $decl:c11.abstract_decl` => $decl;
 // LLVM supplies the target register/stack save area; the header's va_arg and
 // va_end macros retain their actual system implementation.
 effect c11.sema.named_call("__va_start",[$address,c11.syntax.Name($last)],$env,$expected)
+    => c11.msvc.va_start($address,$last,$env,$expected);
+effect c11.sema.named_call("__va_start",[$address,c11.names.NameAt($frame,$last)],$env,$expected)
+    => seq(c11.sema.lookup_at($frame,$last,$env),c11.msvc.va_start($address,$last,$env,$expected));
+effect c11.msvc.va_start($address,$last,$env,$expected)
     => choose(env.contains($env,c11.sema.VariadicLastKey()),
         choose(eq(env.get($env,c11.sema.VariadicLastKey()),$last),
             c11.sema.contextual(base.Typed(control.Void(),VaStart(c11.sema.convert(base.check($address,$env,base.Any()),
@@ -109,15 +121,16 @@ effect c11.sema.explicit_convert($value,control.Void()) => base.Typed(control.Vo
 effect base.lower(base.Typed(control.Void(),Discard($value)),$env) => base.lower($value,$env);
 effect base.lower(base.Typed(control.Void(),VaStart($address)),$env) => mlir.op("llvm.intr.vastart",[base.lower($address,$env)],[],[],[]);
 
-// Warning pragmas are compile-time diagnostics annotations and can occur
-// inside expression macros in the real SDK. Preserve all other __pragma forms.
+// Warning/optimization pragmas are advisory annotations in this target profile.
+// Strict floating operations preserve the exception-generating calculations in
+// the real UCRT fenv inline bodies even when an optimize(off) hint is ignored.
 effect tokens($tokens) => bind(Pragmas($out,$prefix,$mode,$depth,$at),
     list.fold("c11.msvc.pragma_step",$tokens,Pragmas([],[],0,0,[])),
-    choose(eq($mode,4),c11.lex.error($at,"unterminated MSVC warning pragma"),list.reverse(list.concat($prefix,$out))));
+    choose(eq($mode,4),c11.lex.error($at,"unterminated MSVC annotation pragma"),list.reverse(list.concat($prefix,$out))));
 effect pragma_step(Pragmas($out,$prefix,0,$depth,$at),$token) => choose(eq(c11.lex.spelling($token),"__pragma"),
     Pragmas($out,[$token],1,0,$token),Pragmas(list.prepend($token,$out),[],0,0,[]));
 effect pragma_step(Pragmas($out,$prefix,$mode,$depth,$at),$token) when and(lt(0,$mode),lt($mode,4))
-    => choose(eq(c11.lex.spelling($token),choose(eq($mode,2),"warning","(")),
+    => choose(choose(eq($mode,2),or(eq(c11.lex.spelling($token),"warning"),eq(c11.lex.spelling($token),"optimize")),eq(c11.lex.spelling($token),"(")),
         Pragmas($out,list.prepend($token,$prefix),add($mode,1),choose(eq($mode,3),2,0),$at),
         Pragmas(list.prepend($token,list.concat($prefix,$out)),[],0,0,[]));
 effect pragma_step(Pragmas($out,$prefix,4,$depth,$at),$token) => bind($next,

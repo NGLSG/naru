@@ -16,8 +16,8 @@ syntax item `fn $name:ident<$variables:type_parameters>() -> $result:typename $b
     => Template($name, $variables, [], $result, $body, []);
 syntax item `fn $name:ident<$variables:type_parameters>($params:parameters) -> $result:typename where $requires:requirements $body:block`
     => Template($name, $variables, $params, $result, $body, $requires);
-syntax expr `$name:ident<$types:type_list>($arguments:arguments)` => GenericCall($name, $types, $arguments);
-syntax expr `$name:ident<$types:type_list>()` => GenericCall($name, $types, []);
+syntax expr[fallback] `$name:ident<$types:type_list>($arguments:arguments)` => GenericCall($name, $types, $arguments);
+syntax expr[fallback] `$name:ident<$types:type_list>()` => GenericCall($name, $types, []);
 
 effect pipeline.steps() => pipeline.Step("generics", [], "generics.prepare");
 effect prepare($items) => bind([$values, $templates], gather($items, [], env.empty()),
@@ -49,8 +49,11 @@ effect instance(Template($name, $variables, $params, $result, $body, $requires),
     => bind($substitution, substitutions($variables, $types, env.empty()),
         seq(check_requirements(tree.rewrite($requires, "generics.substitute", $substitution)),
             [base.Call($symbol, $arguments), State($templates, env.put($cache, Instance($name, $types), $symbol),
-                list.concat($queue, [tree.rewrite(base.TypedFunction($symbol, $params, $result, $body), "generics.substitute", $substitution)]),
+                list.concat($queue, [tree.rewrite(generics.specialize_item($symbol, $params, $result, $body), "generics.substitute", $substitution)]),
                 add($count, 1))]));
+// Function families provide their own source item without changing type
+// substitution, constraints, instance caching or recursive instantiation.
+effect[fallback] specialize_item($name,$params,$result,$body) => base.TypedFunction($name,$params,$result,$body);
 effect substitutions([], [], $environment) => $environment;
 effect substitutions($variables, $types, $environment) when and(eq(size($variables), size($types)), lt(0, size($types)))
     => choose(env.contains($environment, list.head($variables)), fail("duplicate generic type parameter"),

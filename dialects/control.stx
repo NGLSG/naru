@@ -4,6 +4,7 @@ use types;
 
 syntax typename `void` => Void();
 syntax body `return;` => ReturnVoid();
+syntax statement `return;` => ReturnVoidStatement();
 syntax statement `break;` => BreakStatement();
 syntax statement `continue;` => ContinueStatement();
 syntax statement `unless $condition:expr $body:block` => base.Branch(Not($condition), $body, base.End());
@@ -16,6 +17,7 @@ syntax expr[48,left] `$a:expr << $b:expr` => Shift("left", $a, $b);
 syntax expr[48,left] `$a:expr >> $b:expr` => Shift("right", $a, $b);
 
 effect base.continue(BreakStatement(), $next) => Break();
+effect base.continue(ReturnVoidStatement(), $next) => ReturnVoid();
 effect base.continue(ContinueStatement(), $next) => Continue();
 effect base.continue(Expression($value), $next) => Evaluate($value, $next);
 effect base.continue(For($name, $begin, $end, $body), $next)
@@ -50,7 +52,7 @@ effect[fallback] range_continues($body, $increment) => $body;
 
 effect base.loop_scope($environment) => env.put($environment, "control.loop", 1);
 effect base.loop_values($environment, $head, $exit)
-    => env.put(env.put($environment, "control.head", $head), "control.exit", $exit);
+    => base.flow_targets(env.put(env.put($environment, "control.head", $head), "control.exit", $exit),[$head,$exit]);
 effect base.check_body(Break(), $environment, $result) => choose(or(env.contains($environment, "control.loop"),env.contains($environment,"control.break")), Break(), fail("break outside a loop or switch"));
 effect base.check_body(Continue(), $environment, $result) => choose(env.contains($environment, "control.loop"), Continue(), fail("continue outside a loop"));
 effect base.check_body(ReturnVoid(), $environment, $result) => choose(eq($result, Void()), ReturnVoid(), fail("empty return requires void"));
@@ -66,9 +68,9 @@ effect base.prepare_storage(Continue(), $entry, $environment) => $environment;
 effect base.prepare_storage(ReturnVoid(), $entry, $environment) => $environment;
 effect base.prepare_storage(Evaluate($value, $next), $entry, $environment) => base.prepare_storage($next, $entry, $environment);
 effect base.lower_flow(Break(), $environment, $block, $continuation)
-    => seq(mlir.in_block($block, base.jump(env.get($environment, "control.exit"))), [$block]);
+    => seq(mlir.in_block($block, base.jump_in($environment,env.get($environment, "control.exit"))), [$block]);
 effect base.lower_flow(Continue(), $environment, $block, $continuation)
-    => seq(mlir.in_block($block, base.jump(env.get($environment, "control.head"))), [$block]);
+    => seq(mlir.in_block($block, base.jump_in($environment,env.get($environment, "control.head"))), [$block]);
 effect base.lower_flow(ReturnVoid(), $environment, $block, $continuation)
     => seq(mlir.in_block($block, base.return_in($environment,[])), [$block]);
 effect base.lower_flow(Evaluate($value, $next), $environment, $block, $continuation)

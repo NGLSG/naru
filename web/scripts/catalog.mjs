@@ -64,6 +64,7 @@ async function findDocuments(directory, prefix = '') {
 }
 
 export async function readCatalog(root = historicalRoot) {
+  const sourcePreview = await readSourcePreview(root)
   const indexes = await findIndexes(root)
   const entries = await Promise.all(indexes.map(async index => {
     const directory = path.dirname(index)
@@ -87,7 +88,15 @@ export async function readCatalog(root = historicalRoot) {
       documents, indexUrl: archiveUrl(id, 'INDEX.md'), indexMarkdown: markdown, notesMarkdown }
   }))
   entries.sort((a, b) => a.year - b.year || a.id.localeCompare(b.id))
-  return { entries, families: [...new Set(entries.map(entry => entry.family))], documentCount: entries.reduce((sum, entry) => sum + entry.documents.length, 0) }
+  return { entries, families: [...new Set(entries.map(entry => entry.family))], documentCount: entries.reduce((sum, entry) => sum + entry.documents.length, 0), originalsWithheld: Boolean(sourcePreview) }
+}
+
+export async function readSourcePreview(root = historicalRoot) {
+  try {
+    const record = JSON.parse(await readFile(path.join(root, 'source-preview.json'), 'utf8'))
+    if (record.format !== 1 || !Array.isArray(record.omitted_originals) || record.omitted_originals.some(file => typeof file !== 'string' || !file.startsWith('historical/') || file.split('/').includes('..'))) throw new Error('Invalid source-preview original inventory')
+    return record
+  } catch (error) { if (error.code !== 'ENOENT') throw error }
 }
 
 export function archivePlugin() {

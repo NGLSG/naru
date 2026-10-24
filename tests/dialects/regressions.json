@@ -1,97 +1,662 @@
 [
-  {"name":"b_baseline","dialect":"b","source":"main(){return(42);}"},
-  {"name":"b_not","dialect":"b","source":"main(){return(!0+41);}"},
-  {"name":"b_comparison_word","dialect":"b","source":"main(){auto x;x=2<3;return(x+41);}"},
-  {"name":"b_complement","dialect":"b","source":"main(){auto x;x=~0;return(x+43);}"},
-  {"name":"b_vector_read","dialect":"b","source":"main(){auto v[8];*(v+1)=42;return(v[1]);}"},
-  {"name":"b_vector_write","dialect":"b","source":"main(){auto v[8];v[1]=42;return(*(v+1));}"},
-  {"name":"b_vector_zero","dialect":"b","source":"main(){auto v[0];*v=42;return(*v);}"},
-  {"name":"b_ternary_yes","dialect":"b","source":"main(){auto x,y;x=0;y=1?(x=42):(x=7);return(x);}"},
-  {"name":"b_ternary_no","dialect":"b","source":"main(){auto x,y;x=0;y=0?(x=7):(x=42);return(x);}"},
-  {"name":"b_compound_comparison","dialect":"b","source":"main(){auto x;x=2;x=<3;return(x+41);}"},
-  {"name":"b_strings_items","dialect":"b","source":"first(){return(char(\"A\",0));}main(){return(char(\"B\",0)-24);}"},
-  {"name":"b_string_mutation","dialect":"b","source":"main(){auto s;s=\"A\";lchar(s,0,66);return(char(s,0)-24);}"},
-  {"name":"b_char_unsigned","dialect":"b","source":"main(){auto v[1];lchar(v,0,255);return(char(v,0)-213);}"},
-  {"name":"b_octal_global","dialect":"b","source":"x 052;main(){extrn x;return(x);}"},
-  {"name":"b_invalid_octal","dialect":"b","source":"main(){return(09);}","reject":"invalid B octal digit"},
-  {"name":"b_extrn_list","dialect":"b","source":"main(){extrn one,two;return(two);}","check_only":true},
-  {"name":"b_comparison_overwrite","dialect":"b","source":"main(){auto x;x=1024;x=2<3;return(x+41);}"},
-  {"name":"b_comparison_return","dialect":"b","source":"main(){return(2<3);}","exit":1},
-  {"name":"b_shift_left","dialect":"b","source":"main(){return((21<<1));}"},
-  {"name":"b_shift_zero_fill","dialect":"b","source":"main(){return((-1>>63)+41);}"},
-  {"name":"b_global_negative","dialect":"b","source":"x -1;main(){extrn x;return(x+43);}"},
-  {"name":"b_exit","dialect":"b","source":"main(){exit();return(7);}","exit":0},
-  {"name":"b_global_vector_rebind_diagnostic","dialect":"b","source":"v[1] 7,42;main(){extrn v;v=v+1;return(*v);}","reject":"B external vector address slots are not implemented"},
-  {"name":"b_example_vector","dialect":"b","source_file":"examples/b/vector.b","exit":55},
-  {"name":"b_example_pointer","dialect":"b","source_file":"examples/b/ptr.b","exit":43},
-  {"name":"b_example_global_vector","dialect":"b","source_file":"examples/b/vecglob.b","exit":30},
-  {"name":"b_example_recursion","dialect":"b","source_file":"examples/b/recursion.b","exit":120},
-  {"name":"b_example_goto","dialect":"b","source_file":"examples/b/goto.b","exit":55},
-  {"name":"pascal_case_continuation","dialect":"pascal","source":"program p;var x:integer;begin x:=0;case 1 of 1:x:=7;2:x:=9 end;halt(x+35) end."},
-  {"name":"pascal_case_selector_once","dialect":"pascal","source":"program p;function selector():integer;begin write('S');selector:=2 end;begin case selector() of 1:write('A');2:write('B') end;halt(42) end.","stdout":"SB"},
-  {"name":"pascal_case_boolean","dialect":"pascal","source":"program p;var x:integer;begin x:=0;case true of false:x:=1;true:x:=42 end;halt(x) end."},
-  {"name":"pascal_case_duplicate","dialect":"pascal","source":"program p;begin case 1 of 1:halt(42);1:halt(7) end end.","reject":"duplicate Pascal case label"},
-  {"name":"pascal_casefold","dialect":"pascal","source":"PROGRAM P;VAR Answer:INTEGER;BEGIN aNsWeR:=42;HALT(ANSWER) END."},
-  {"name":"c11_sizeof_unevaluated","dialect":"c11","source":"int main(void){int x=42;int n=sizeof(x++);return x;}"},
-  {"name":"c11_generic_unevaluated","dialect":"c11","source":"int main(void){int x=42;int y=_Generic(x++,int:1,default:2);return x;}"},
-  {"name":"c11_ternary_lazy","dialect":"c11","source":"int main(void){int x=0;int y=1?(x=42):(x=7);return x;}"},
-  {"name":"c11_unsigned_compare","dialect":"c11","source":"int main(void){unsigned int x=1;return (-1<x)?7:42;}"},
-  {"name":"c11_continue_step","dialect":"c11","source":"int main(void){int i,s=0;for(i=0;i<5;i++){if(i<2)continue;s+=i;}return s+33;}"},
-  {"name":"c11_short_circuit","dialect":"c11","source":"int main(void){int x=42;int y=(0&&x++)+(1||x++);return x;}"},
-  {"name":"c11_conditional_null","dialect":"c11","source":"int main(void){int x=42;int *p=1?&x:0;return *p;}"},
-  {"name":"c11_conditional_qualifiers","dialect":"c11","source":"int main(void){int x=42;int *p=&x;const int *q=&x;const int *r=1?p:q;return *r;}"},
-  {"name":"c11_conditional_void_type","dialect":"c11","source":"int main(void){int x=0;int *p=&x;void *q=&x;return _Generic(1?p:q,void *:42,default:7);}"},
-  {"name":"c11_sizeof_member_array","dialect":"c11","source":"struct S{int a[3];};int main(void){struct S s;return sizeof(s.a)+30;}"},
-  {"name":"c11_sizeof_string","dialect":"c11","source":"int main(void){return sizeof(\"abc\")+38;}"},
-  {"name":"pascal_const_assignment","dialect":"pascal","source":"program p;const answer=42;begin answer:=7;halt(answer) end.","reject":"assignment requires a mutable var binding"},
-  {"name":"pascal_for_max","dialect":"pascal","source":"program p;var i,n:integer;begin n:=0;for i:=2147483647 to 2147483647 do n:=n+1;halt(n+41) end."},
-  {"name":"pascal_for_min","dialect":"pascal","source":"program p;var i,n:integer;begin n:=0;for i:=-2147483648 downto -2147483648 do n:=n+1;halt(n+41) end."},
-  {"name":"pascal_for_nested","dialect":"pascal","source":"program p;var i,j,n:integer;begin n:=0;for i:=1 to 3 do for j:=1 to 2 do n:=n+1;halt(n+36) end."},
-  {"name":"pascal_for_bounds_order","dialect":"pascal","source":"program p;var i:integer;function initial():integer;begin write('A');initial:=1 end;function final():integer;begin write('B');final:=1 end;begin for i:=initial() to final() do write('C');halt(42) end.","stdout":"ABC"},
-  {"name":"pascal_real_division","dialect":"pascal","source":"program p;begin write(5/2);halt(42) end.","stdout":"2.5"},
-  {"name":"pascal_div_real_rejected","dialect":"pascal","source":"program p;begin halt(5.0 div 2.0) end.","reject":"Pascal div/mod require integer operands"},
-  {"name":"pascal_strings_case_preserved","dialect":"pascal","source":"PROGRAM P;BEGIN WRITE('MiXeD');HALT(42) END.","stdout":"MiXeD"},
-  {"name":"pascal_example_showcase","dialect":"pascal","source_file":"examples/pascal/showcase.pas","exit":0,"stdout":"int: 42 triple: 126\nn = 7\nbooleans: TRUE FALSE\nreal: 2.5\none\ntwo\nthree\n"},
-  {"name":"c11_conditional_null_left","dialect":"c11","source":"int main(void){int x=42;int *p=0?0:&x;return *p;}"},
-  {"name":"c11_conditional_null_void","dialect":"c11","source":"int main(void){int x=42;int *p=&x;return _Generic(1?p:(void*)0,int *:42,default:7);}"},
-  {"name":"c11_conditional_record","dialect":"c11","source":"struct S{int x;};int main(void){struct S a={42},b={7};struct S s=1?a:b;return s.x;}"},
-  {"name":"c11_conditional_void","dialect":"c11","source":"int x;void yes(void){x=42;}void no(void){x=7;}int main(void){1?yes():no();return x;}"},
-  {"name":"c11_sizeof_string_escape","dialect":"c11","source":"int main(void){return sizeof(\"a\\nb\")+38;}"},
-  {"name":"c11_string_array_address","dialect":"c11","source":"int main(void){char (*p)[4]=&\"abc\";return sizeof(*p)+38;}"},
-  {"name":"c11_const_discard","dialect":"c11","source":"int main(void){int x=42;const int *p=&x;int *q=p;return *q;}","reject":"discarded qualifiers"},
-  {"name":"c11_pointer_nonzero","dialect":"c11","source":"int main(void){int x=42;int *p=1?&x:7;return *p;}","reject":"conditional C operands"},
-  {"name":"c11_function_void_pointer","dialect":"c11","source":"int f(void){return 42;}int main(void){void *p=f;return 42;}","reject":"incompatible C pointer conversion"},
-  {"name":"c11_function_pointer_interop","dialect":"c11","source":"int f(void){return 42;}int main(void){void *p=f;int (*q)(void)=(int (*)(void))p;return q();}","extra_rules":["dialects/c11/function-pointer-interop.stx"]},
-  {"name":"c11_function_null_compare","dialect":"c11","source":"int f(void){return 42;}int main(void){return (f==(void*)0)?7:42;}"},
-  {"name":"c11_function_null_assignment","dialect":"c11","source":"int f(void){return 42;}int main(void){int (*p)(void)=f;p=(void*)0;return p==0?42:7;}"},
-  {"name":"c11_function_null_static","dialect":"c11","source":"int (*p)(void)=(void*)0;int main(void){return p==0?42:7;}"},
-  {"name":"c11_function_null_wrong_type","dialect":"c11","source":"int (*p)(void)=(int*)0;int main(void){return 42;}","reject":"incompatible C pointer conversion"},
-  {"name":"c11_ordered_function_pointers","dialect":"c11","source":"int f(void){return 42;}int main(void){return (f<f)?7:42;}","reject":"C pointer comparison requires compatible types"},
-  {"name":"c11_ordered_void_pointers","dialect":"c11","source":"int main(void){int x;void *p=&x;return (p<p)?7:42;}","reject":"C pointer comparison requires compatible types","standard_constraint":"WG14 N1570 6.5.8p2: ordered pointer operands require compatible object types; void is not an object type"},
-  {"name":"c11_null_ice_local","dialect":"c11","source":"int main(void){int *p=3*7-21;return p==0?42:7;}"},
-  {"name":"c11_null_ice_assignment","dialect":"c11","source":"int main(void){int x=42;int *p=&x;p=2-2;return p==0?42:7;}"},
-  {"name":"c11_null_ice_comparison","dialect":"c11","source":"int main(void){int *p=0;return (p==(2-2))&&((8-8)==p)?42:7;}"},
-  {"name":"c11_null_ice_conditional","dialect":"c11","source":"int main(void){int x=42;int *p=1?&x:(2-2);return *p;}"},
-  {"name":"c11_null_ice_call","dialect":"c11","source":"int f(int *p){return p==0?42:7;}int main(void){return f(2-2);}"},
-  {"name":"c11_null_ice_return","dialect":"c11","source":"int *f(void){return 2-2;}int main(void){return f()==0?42:7;}"},
-  {"name":"c11_null_ice_void_function","dialect":"c11","source":"int main(void){int (*p)(void)=(void*)(2-2);return p==0?42:7;}"},
-  {"name":"c11_null_ice_enum","dialect":"c11","source":"enum {A=21};int main(void){int *p=A-A;return p==0?42:7;}"},
-  {"name":"c11_null_ice_sizeof","dialect":"c11","source":"int main(void){int x;int *p=sizeof(x)-sizeof(x);return p==0?42:7;}"},
-  {"name":"c11_null_ice_select","dialect":"c11","source":"int main(void){int *p=1?0:7;return p==0?42:7;}"},
-  {"name":"c11_null_runtime_zero","dialect":"c11","source":"int main(void){int x=0;int *p=x;return 42;}","reject":"C pointer conversion requires a null pointer constant"},
-  {"name":"c11_null_runtime_comparison","dialect":"c11","source":"int main(void){int x=0;int *p=0;return p==x?42:7;}","reject":"C pointer comparison requires a null pointer constant"},
-  {"name":"pascal_global_const","dialect":"pascal","source":"program scope; const answer=42; function value:integer;begin value:=answer end;begin halt(value()) end."},
-  {"name":"pascal_global_variable","dialect":"pascal","source":"program scope; var answer:integer; procedure setvalue;begin answer:=42 end; begin setvalue();halt(answer) end."},
-  {"name":"pascal_global_read_write","dialect":"pascal","source":"program scope; var answer:integer; function step:integer;begin answer:=answer+1;step:=answer end;begin answer:=40;halt(step()+step()-41) end."},
-  {"name":"pascal_global_boolean_real","dialect":"pascal","source":"program scope; var flag:boolean; var value:real; procedure setup;begin flag:=true;value:=5/2 end;begin setup();if flag then write(value);halt(42) end.","stdout":"2.5"},
-  {"name":"pascal_global_shadow","dialect":"pascal","source":"program scope;var answer:integer;function local:integer;var answer:integer;begin answer:=7;local:=answer end;begin answer:=42;local();halt(answer) end."},
-  {"name":"pascal_global_const_alias","dialect":"pascal","source":"program scope;const original=42;const answer=original;function value:integer;begin value:=answer end;begin halt(value()) end."},
-  {"name":"pascal_local_const","dialect":"pascal","source":"program scope;const answer=7;function value:integer;const answer=42;begin value:=answer end;begin halt(value()) end."},
-  {"name":"pascal_global_const_runtime","dialect":"pascal","source":"program scope;const answer=selector();function selector:integer;begin selector:=42 end;begin halt(answer) end.","reject":"Pascal const requires a literal"},
-  {"name":"pascal_local_const_assignment","dialect":"pascal","source":"program scope;function value:integer;const answer=42;begin answer:=7;value:=answer end;begin halt(value()) end.","reject":"assignment requires a mutable var binding"},
-  {"name":"pascal_global_duplicate","dialect":"pascal","source":"program scope;var answer:integer;const answer=42;begin halt(answer) end.","reject":"duplicate Pascal declaration"},
-  {"name":"c11_null_ice_bool_char","dialect":"c11","source":"int main(void){int *p=(_Bool)0;int *q=1?p:(char)0;return q==(char)0?42:7;}"},
-  {"name":"c11_null_ice_lazy_select","dialect":"c11","source":"int main(void){int *p=0?(1/0):0;return p==0?42:7;}"},
-  {"name":"c11_null_runtime_effect","dialect":"c11","source":"int main(void){int x=0;int *p=(x=0);return 42;}","reject":"C pointer conversion requires a null pointer constant"},
-  {"name":"c11_null_runtime_const_object","dialect":"c11","source":"int main(void){const int x=0;int *p=x;return 42;}","reject":"C pointer conversion requires a null pointer constant"}
+  {
+    "name": "b_baseline",
+    "dialect": "b",
+    "source": "main(){return(42);}"
+  },
+  {
+    "name": "b_not",
+    "dialect": "b",
+    "source": "main(){return(!0+41);}"
+  },
+  {
+    "name": "b_comparison_word",
+    "dialect": "b",
+    "source": "main(){auto x;x=2<3;return(x+41);}"
+  },
+  {
+    "name": "b_complement",
+    "dialect": "b",
+    "source": "main(){auto x;x=~0;return(x+43);}"
+  },
+  {
+    "name": "b_vector_read",
+    "dialect": "b",
+    "source": "main(){auto v[8];*(v+1)=42;return(v[1]);}"
+  },
+  {
+    "name": "b_vector_write",
+    "dialect": "b",
+    "source": "main(){auto v[8];v[1]=42;return(*(v+1));}"
+  },
+  {
+    "name": "b_vector_zero",
+    "dialect": "b",
+    "source": "main(){auto v[0];*v=42;return(*v);}"
+  },
+  {
+    "name": "b_ternary_yes",
+    "dialect": "b",
+    "source": "main(){auto x,y;x=0;y=1?(x=42):(x=7);return(x);}"
+  },
+  {
+    "name": "b_ternary_no",
+    "dialect": "b",
+    "source": "main(){auto x,y;x=0;y=0?(x=7):(x=42);return(x);}"
+  },
+  {
+    "name": "b_compound_comparison",
+    "dialect": "b",
+    "source": "main(){auto x;x=2;x=<3;return(x+41);}"
+  },
+  {
+    "name": "b_strings_items",
+    "dialect": "b",
+    "source": "first(){return(char(\"A\",0));}main(){return(char(\"B\",0)-24);}"
+  },
+  {
+    "name": "b_string_mutation",
+    "dialect": "b",
+    "source": "main(){auto s;s=\"A\";lchar(s,0,66);return(char(s,0)-24);}"
+  },
+  {
+    "name": "b_char_unsigned",
+    "dialect": "b",
+    "source": "main(){auto v[1];lchar(v,0,255);return(char(v,0)-213);}"
+  },
+  {
+    "name": "b_octal_global",
+    "dialect": "b",
+    "source": "x 052;main(){extrn x;return(x);}"
+  },
+  {
+    "name": "b_invalid_octal",
+    "dialect": "b",
+    "source": "main(){return(09);}",
+    "reject": "invalid B octal digit"
+  },
+  {
+    "name": "b_extrn_list",
+    "dialect": "b",
+    "source": "main(){extrn one,two;return(two);}",
+    "check_only": true
+  },
+  {
+    "name": "b_comparison_overwrite",
+    "dialect": "b",
+    "source": "main(){auto x;x=1024;x=2<3;return(x+41);}"
+  },
+  {
+    "name": "b_comparison_return",
+    "dialect": "b",
+    "source": "main(){return(2<3);}",
+    "exit": 1
+  },
+  {
+    "name": "b_shift_left",
+    "dialect": "b",
+    "source": "main(){return((21<<1));}"
+  },
+  {
+    "name": "b_shift_zero_fill",
+    "dialect": "b",
+    "source": "main(){return((-1>>63)+41);}"
+  },
+  {
+    "name": "b_global_negative",
+    "dialect": "b",
+    "source": "x -1;main(){extrn x;return(x+43);}"
+  },
+  {
+    "name": "b_exit",
+    "dialect": "b",
+    "source": "main(){exit();return(7);}",
+    "exit": 0
+  },
+  {
+    "name": "b_global_vector_rebind_diagnostic",
+    "dialect": "b",
+    "source": "v[1] 7,42;main(){extrn v;v=v+1;return(*v);}",
+    "reject": "B external vector address slots are not implemented"
+  },
+  {
+    "name": "b_example_vector",
+    "dialect": "b",
+    "source_file": "examples/b/vector.b",
+    "exit": 55
+  },
+  {
+    "name": "b_example_pointer",
+    "dialect": "b",
+    "source_file": "examples/b/ptr.b",
+    "exit": 43
+  },
+  {
+    "name": "b_example_global_vector",
+    "dialect": "b",
+    "source_file": "examples/b/vecglob.b",
+    "exit": 30
+  },
+  {
+    "name": "b_example_recursion",
+    "dialect": "b",
+    "source_file": "examples/b/recursion.b",
+    "exit": 120
+  },
+  {
+    "name": "b_example_goto",
+    "dialect": "b",
+    "source_file": "examples/b/goto.b",
+    "exit": 55
+  },
+  {
+    "name": "pascal_case_continuation",
+    "dialect": "pascal",
+    "source": "program p;var x:integer;begin x:=0;case 1 of 1:x:=7;2:x:=9 end;halt(x+35) end."
+  },
+  {
+    "name": "pascal_case_selector_once",
+    "dialect": "pascal",
+    "source": "program p;function selector():integer;begin write('S');selector:=2 end;begin case selector() of 1:write('A');2:write('B') end;halt(42) end.",
+    "stdout": "SB"
+  },
+  {
+    "name": "pascal_case_boolean",
+    "dialect": "pascal",
+    "source": "program p;var x:integer;begin x:=0;case true of false:x:=1;true:x:=42 end;halt(x) end."
+  },
+  {
+    "name": "pascal_case_duplicate",
+    "dialect": "pascal",
+    "source": "program p;begin case 1 of 1:halt(42);1:halt(7) end end.",
+    "reject": "duplicate Pascal case label"
+  },
+  {
+    "name": "pascal_casefold",
+    "dialect": "pascal",
+    "source": "PROGRAM P;VAR Answer:INTEGER;BEGIN aNsWeR:=42;HALT(ANSWER) END."
+  },
+  {
+    "name": "c11_sizeof_unevaluated",
+    "dialect": "c11",
+    "source": "int main(void){int x=42;int n=sizeof(x++);return x;}"
+  },
+  {
+    "name": "c11_generic_unevaluated",
+    "dialect": "c11",
+    "source": "int main(void){int x=42;int y=_Generic(x++,int:1,default:2);return x;}"
+  },
+  {
+    "name": "c11_ternary_lazy",
+    "dialect": "c11",
+    "source": "int main(void){int x=0;int y=1?(x=42):(x=7);return x;}"
+  },
+  {
+    "name": "c11_unsigned_compare",
+    "dialect": "c11",
+    "source": "int main(void){unsigned int x=1;return (-1<x)?7:42;}"
+  },
+  {
+    "name": "c11_continue_step",
+    "dialect": "c11",
+    "source": "int main(void){int i,s=0;for(i=0;i<5;i++){if(i<2)continue;s+=i;}return s+33;}"
+  },
+  {
+    "name": "c11_short_circuit",
+    "dialect": "c11",
+    "source": "int main(void){int x=42;int y=(0&&x++)+(1||x++);return x;}"
+  },
+  {
+    "name": "c11_conditional_null",
+    "dialect": "c11",
+    "source": "int main(void){int x=42;int *p=1?&x:0;return *p;}"
+  },
+  {
+    "name": "c11_conditional_qualifiers",
+    "dialect": "c11",
+    "source": "int main(void){int x=42;int *p=&x;const int *q=&x;const int *r=1?p:q;return *r;}"
+  },
+  {
+    "name": "c11_conditional_void_type",
+    "dialect": "c11",
+    "source": "int main(void){int x=0;int *p=&x;void *q=&x;return _Generic(1?p:q,void *:42,default:7);}"
+  },
+  {
+    "name": "c11_sizeof_member_array",
+    "dialect": "c11",
+    "source": "struct S{int a[3];};int main(void){struct S s;return sizeof(s.a)+30;}"
+  },
+  {
+    "name": "c11_sizeof_string",
+    "dialect": "c11",
+    "source": "int main(void){return sizeof(\"abc\")+38;}"
+  },
+  {
+    "name": "pascal_const_assignment",
+    "dialect": "pascal",
+    "source": "program p;const answer=42;begin answer:=7;halt(answer) end.",
+    "reject": "assignment requires a mutable var binding"
+  },
+  {
+    "name": "pascal_for_max",
+    "dialect": "pascal",
+    "source": "program p;var i,n:integer;begin n:=0;for i:=2147483647 to 2147483647 do n:=n+1;halt(n+41) end."
+  },
+  {
+    "name": "pascal_for_min",
+    "dialect": "pascal",
+    "source": "program p;var i,n:integer;begin n:=0;for i:=-2147483648 downto -2147483648 do n:=n+1;halt(n+41) end."
+  },
+  {
+    "name": "pascal_for_nested",
+    "dialect": "pascal",
+    "source": "program p;var i,j,n:integer;begin n:=0;for i:=1 to 3 do for j:=1 to 2 do n:=n+1;halt(n+36) end."
+  },
+  {
+    "name": "pascal_for_bounds_order",
+    "dialect": "pascal",
+    "source": "program p;var i:integer;function initial():integer;begin write('A');initial:=1 end;function final():integer;begin write('B');final:=1 end;begin for i:=initial() to final() do write('C');halt(42) end.",
+    "stdout": "ABC"
+  },
+  {
+    "name": "pascal_real_division",
+    "dialect": "pascal",
+    "source": "program p;begin write(5/2);halt(42) end.",
+    "stdout": "2.5"
+  },
+  {
+    "name": "pascal_div_real_rejected",
+    "dialect": "pascal",
+    "source": "program p;begin halt(5.0 div 2.0) end.",
+    "reject": "Pascal div/mod require integer operands"
+  },
+  {
+    "name": "pascal_strings_case_preserved",
+    "dialect": "pascal",
+    "source": "PROGRAM P;BEGIN WRITE('MiXeD');HALT(42) END.",
+    "stdout": "MiXeD"
+  },
+  {
+    "name": "pascal_example_showcase",
+    "dialect": "pascal",
+    "source_file": "examples/pascal/showcase.pas",
+    "exit": 0,
+    "stdout": "int: 42 triple: 126\nn = 7\nbooleans: TRUE FALSE\nreal: 2.5\none\ntwo\nthree\n"
+  },
+  {
+    "name": "c11_conditional_null_left",
+    "dialect": "c11",
+    "source": "int main(void){int x=42;int *p=0?0:&x;return *p;}"
+  },
+  {
+    "name": "c11_conditional_null_void",
+    "dialect": "c11",
+    "source": "int main(void){int x=42;int *p=&x;return _Generic(1?p:(void*)0,int *:42,default:7);}"
+  },
+  {
+    "name": "c11_conditional_record",
+    "dialect": "c11",
+    "source": "struct S{int x;};int main(void){struct S a={42},b={7};struct S s=1?a:b;return s.x;}"
+  },
+  {
+    "name": "c11_conditional_void",
+    "dialect": "c11",
+    "source": "int x;void yes(void){x=42;}void no(void){x=7;}int main(void){1?yes():no();return x;}"
+  },
+  {
+    "name": "c11_sizeof_string_escape",
+    "dialect": "c11",
+    "source": "int main(void){return sizeof(\"a\\nb\")+38;}"
+  },
+  {
+    "name": "c11_string_array_address",
+    "dialect": "c11",
+    "source": "int main(void){char (*p)[4]=&\"abc\";return sizeof(*p)+38;}"
+  },
+  {
+    "name": "c11_const_discard",
+    "dialect": "c11",
+    "source": "int main(void){int x=42;const int *p=&x;int *q=p;return *q;}",
+    "reject": "discarded qualifiers"
+  },
+  {
+    "name": "c11_pointer_nonzero",
+    "dialect": "c11",
+    "source": "int main(void){int x=42;int *p=1?&x:7;return *p;}",
+    "reject": "conditional C operands"
+  },
+  {
+    "name": "c11_function_void_pointer",
+    "dialect": "c11",
+    "source": "int f(void){return 42;}int main(void){void *p=f;return 42;}",
+    "reject": "incompatible C pointer conversion"
+  },
+  {
+    "name": "c11_function_pointer_interop",
+    "dialect": "c11",
+    "source": "int f(void){return 42;}int main(void){void *p=f;int (*q)(void)=(int (*)(void))p;return q();}",
+    "extra_rules": [
+      "dialects/c11/function-pointer-interop.stx"
+    ]
+  },
+  {
+    "name": "c11_function_null_compare",
+    "dialect": "c11",
+    "source": "int f(void){return 42;}int main(void){return (f==(void*)0)?7:42;}"
+  },
+  {
+    "name": "c11_function_null_assignment",
+    "dialect": "c11",
+    "source": "int f(void){return 42;}int main(void){int (*p)(void)=f;p=(void*)0;return p==0?42:7;}"
+  },
+  {
+    "name": "c11_function_null_static",
+    "dialect": "c11",
+    "source": "int (*p)(void)=(void*)0;int main(void){return p==0?42:7;}"
+  },
+  {
+    "name": "c11_function_null_wrong_type",
+    "dialect": "c11",
+    "source": "int (*p)(void)=(int*)0;int main(void){return 42;}",
+    "reject": "incompatible C pointer conversion"
+  },
+  {
+    "name": "c11_ordered_function_pointers",
+    "dialect": "c11",
+    "source": "int f(void){return 42;}int main(void){return (f<f)?7:42;}",
+    "reject": "C pointer comparison requires compatible types"
+  },
+  {
+    "name": "c11_ordered_void_pointers",
+    "dialect": "c11",
+    "source": "int main(void){int x;void *p=&x;return (p<p)?7:42;}",
+    "reject": "C pointer comparison requires compatible types",
+    "standard_constraint": "WG14 N1570 6.5.8p2: ordered pointer operands require compatible object types; void is not an object type"
+  },
+  {
+    "name": "c11_null_ice_local",
+    "dialect": "c11",
+    "source": "int main(void){int *p=3*7-21;return p==0?42:7;}"
+  },
+  {
+    "name": "c11_null_ice_assignment",
+    "dialect": "c11",
+    "source": "int main(void){int x=42;int *p=&x;p=2-2;return p==0?42:7;}"
+  },
+  {
+    "name": "c11_null_ice_comparison",
+    "dialect": "c11",
+    "source": "int main(void){int *p=0;return (p==(2-2))&&((8-8)==p)?42:7;}"
+  },
+  {
+    "name": "c11_null_ice_conditional",
+    "dialect": "c11",
+    "source": "int main(void){int x=42;int *p=1?&x:(2-2);return *p;}"
+  },
+  {
+    "name": "c11_null_ice_call",
+    "dialect": "c11",
+    "source": "int f(int *p){return p==0?42:7;}int main(void){return f(2-2);}"
+  },
+  {
+    "name": "c11_null_ice_return",
+    "dialect": "c11",
+    "source": "int *f(void){return 2-2;}int main(void){return f()==0?42:7;}"
+  },
+  {
+    "name": "c11_null_ice_void_function",
+    "dialect": "c11",
+    "source": "int main(void){int (*p)(void)=(void*)(2-2);return p==0?42:7;}"
+  },
+  {
+    "name": "c11_null_ice_enum",
+    "dialect": "c11",
+    "source": "enum {A=21};int main(void){int *p=A-A;return p==0?42:7;}"
+  },
+  {
+    "name": "c11_null_ice_sizeof",
+    "dialect": "c11",
+    "source": "int main(void){int x;int *p=sizeof(x)-sizeof(x);return p==0?42:7;}"
+  },
+  {
+    "name": "c11_null_ice_select",
+    "dialect": "c11",
+    "source": "int main(void){int *p=1?0:7;return p==0?42:7;}"
+  },
+  {
+    "name": "c11_null_runtime_zero",
+    "dialect": "c11",
+    "source": "int main(void){int x=0;int *p=x;return 42;}",
+    "reject": "C pointer conversion requires a null pointer constant"
+  },
+  {
+    "name": "c11_null_runtime_comparison",
+    "dialect": "c11",
+    "source": "int main(void){int x=0;int *p=0;return p==x?42:7;}",
+    "reject": "C pointer comparison requires a null pointer constant"
+  },
+  {
+    "name": "pascal_global_const",
+    "dialect": "pascal",
+    "source": "program scope; const answer=42; function value:integer;begin value:=answer end;begin halt(value()) end."
+  },
+  {
+    "name": "pascal_global_variable",
+    "dialect": "pascal",
+    "source": "program scope; var answer:integer; procedure setvalue;begin answer:=42 end; begin setvalue();halt(answer) end."
+  },
+  {
+    "name": "pascal_global_read_write",
+    "dialect": "pascal",
+    "source": "program scope; var answer:integer; function step:integer;begin answer:=answer+1;step:=answer end;begin answer:=40;halt(step()+step()-41) end."
+  },
+  {
+    "name": "pascal_global_boolean_real",
+    "dialect": "pascal",
+    "source": "program scope; var flag:boolean; var value:real; procedure setup;begin flag:=true;value:=5/2 end;begin setup();if flag then write(value);halt(42) end.",
+    "stdout": "2.5"
+  },
+  {
+    "name": "pascal_global_shadow",
+    "dialect": "pascal",
+    "source": "program scope;var answer:integer;function local:integer;var answer:integer;begin answer:=7;local:=answer end;begin answer:=42;local();halt(answer) end."
+  },
+  {
+    "name": "pascal_global_const_alias",
+    "dialect": "pascal",
+    "source": "program scope;const original=42;const answer=original;function value:integer;begin value:=answer end;begin halt(value()) end."
+  },
+  {
+    "name": "pascal_local_const",
+    "dialect": "pascal",
+    "source": "program scope;const answer=7;function value:integer;const answer=42;begin value:=answer end;begin halt(value()) end."
+  },
+  {
+    "name": "pascal_global_const_runtime",
+    "dialect": "pascal",
+    "source": "program scope;const answer=selector();function selector:integer;begin selector:=42 end;begin halt(answer) end.",
+    "reject": "Pascal const requires a literal"
+  },
+  {
+    "name": "pascal_local_const_assignment",
+    "dialect": "pascal",
+    "source": "program scope;function value:integer;const answer=42;begin answer:=7;value:=answer end;begin halt(value()) end.",
+    "reject": "assignment requires a mutable var binding"
+  },
+  {
+    "name": "pascal_global_duplicate",
+    "dialect": "pascal",
+    "source": "program scope;var answer:integer;const answer=42;begin halt(answer) end.",
+    "reject": "duplicate Pascal declaration"
+  },
+  {
+    "name": "c11_null_ice_bool_char",
+    "dialect": "c11",
+    "source": "int main(void){int *p=(_Bool)0;int *q=1?p:(char)0;return q==(char)0?42:7;}"
+  },
+  {
+    "name": "c11_null_ice_lazy_select",
+    "dialect": "c11",
+    "source": "int main(void){int *p=0?(1/0):0;return p==0?42:7;}"
+  },
+  {
+    "name": "c11_null_runtime_effect",
+    "dialect": "c11",
+    "source": "int main(void){int x=0;int *p=(x=0);return 42;}",
+    "reject": "C pointer conversion requires a null pointer constant"
+  },
+  {
+    "name": "c11_null_runtime_const_object",
+    "dialect": "c11",
+    "source": "int main(void){const int x=0;int *p=x;return 42;}",
+    "reject": "C pointer conversion requires a null pointer constant"
+  },
+  {
+    "name": "basic_let_print",
+    "dialect": "basic",
+    "source": "10 LET A = 2 + 3\n20 PRINT A\n30 END\n",
+    "exit": 0,
+    "stdout": "5\n"
+  },
+  {
+    "name": "basic_for_sum",
+    "dialect": "basic",
+    "source": "10 LET S = 0\n20 FOR I = 1 TO 10\n30 LET S = S + I\n40 NEXT I\n50 PRINT S\n60 END\n",
+    "exit": 0,
+    "stdout": "55\n"
+  },
+  {
+    "name": "basic_goto_if",
+    "dialect": "basic",
+    "source": "10 LET I = 0\n20 LET I = I + 1\n30 IF I < 5 THEN 20\n40 PRINT I\n50 END\n",
+    "exit": 0,
+    "stdout": "5\n"
+  },
+  {
+    "name": "basic_goto_forward",
+    "dialect": "basic",
+    "source": "10 GOTO 30\n20 PRINT 999\n30 PRINT 42\n40 END\n",
+    "exit": 0,
+    "stdout": "42\n"
+  },
+  {
+    "name": "basic_nested_for",
+    "dialect": "basic",
+    "source": "10 LET T = 0\n20 FOR I = 1 TO 3\n30 FOR J = 1 TO 4\n40 LET T = T + 1\n50 NEXT J\n60 NEXT I\n70 PRINT T\n80 END\n",
+    "exit": 0,
+    "stdout": "12\n"
+  },
+  {
+    "name": "basic_step",
+    "dialect": "basic",
+    "source": "10 LET N = 0\n20 FOR K = 1 TO 5 STEP 2\n30 LET N = N + K\n40 NEXT K\n50 PRINT N\n60 END\n",
+    "exit": 0,
+    "stdout": "9\n"
+  },
+  {
+    "name": "basic_rem_and_string",
+    "dialect": "basic",
+    "source": "10 REM A COMMENT\n20 PRINT \"HI\"\n30 PRINT 6 * 7\n40 END\n",
+    "exit": 0,
+    "stdout": "HI\n42\n"
+  },
+  {
+    "name": "basic_cramer",
+    "dialect": "basic",
+    "source": "10 LET A = 2\n20 LET B = 3\n30 LET C = 8\n40 LET D = 1\n50 LET E = -1\n60 LET F = -1\n70 LET DET = A * E - B * D\n80 LET X = (C * E - B * F) / DET\n90 LET Y = (A * F - C * D) / DET\n100 PRINT X\n110 PRINT Y\n120 END\n",
+    "exit": 0,
+    "stdout": "1\n2\n"
+  },
+  {
+    "name": "basic_dim_array",
+    "dialect": "basic",
+    "source": "10 DIM A(5)\n20 FOR I = 0 TO 5\n30 LET A(I) = I * I\n40 NEXT I\n50 LET S = 0\n60 FOR I = 0 TO 5\n70 LET S = S + A(I)\n80 NEXT I\n90 PRINT S\n100 END\n",
+    "exit": 0,
+    "stdout": "55\n"
+  },
+  {
+    "name": "basic_array_2d",
+    "dialect": "basic",
+    "source": "10 DIM M(2, 2)\n20 LET M(1, 1) = 7\n30 PRINT M(1, 1)\n40 END\n",
+    "exit": 0,
+    "stdout": "7\n"
+  },
+  {
+    "name": "basic_read_data",
+    "dialect": "basic",
+    "source": "10 DATA 3, 4, 5\n20 READ A, B, C\n30 PRINT A + B + C\n40 END\n",
+    "exit": 0,
+    "stdout": "12\n"
+  },
+  {
+    "name": "basic_restore",
+    "dialect": "basic",
+    "source": "10 DATA 1, 2\n20 READ A\n30 RESTORE\n40 READ B\n50 PRINT A + B\n60 END\n",
+    "exit": 0,
+    "stdout": "2\n"
+  },
+  {
+    "name": "basic_gosub",
+    "dialect": "basic",
+    "source": "10 LET X = 0\n20 GOSUB 100\n30 PRINT X\n40 END\n100 LET X = 42\n110 RETURN\n",
+    "exit": 0,
+    "stdout": "42\n"
+  },
+  {
+    "name": "basic_gosub_nested",
+    "dialect": "basic",
+    "source": "10 LET R = 0\n20 GOSUB 100\n30 PRINT R\n40 END\n100 GOSUB 200\n110 RETURN\n200 LET R = R + 42\n210 RETURN\n",
+    "exit": 0,
+    "stdout": "42\n"
+  },
+  {
+    "name": "basic_def_fn",
+    "dialect": "basic",
+    "source": "10 DEF FNS(X) = X * X\n20 PRINT FNS(7)\n30 END\n",
+    "exit": 0,
+    "stdout": "49\n"
+  },
+  {
+    "name": "basic_math_functions",
+    "dialect": "basic",
+    "source": "10 PRINT SQR(16)\n20 PRINT INT(3.7)\n30 PRINT ABS(0 - 5)\n40 END\n",
+    "exit": 0,
+    "stdout": "4\n3\n5\n"
+  },
+  {
+    "name": "basic_power",
+    "dialect": "basic",
+    "source": "10 PRINT 2 ^ 5\n20 END\n",
+    "exit": 0,
+    "stdout": "32\n"
+  },
+  {
+    "name": "basic_power_precedence",
+    "dialect": "basic",
+    "source": "10 PRINT 2 ^ 2 / 2\n20 END\n",
+    "exit": 0,
+    "stdout": "2\n"
+  },
+  {
+    "name": "basic_print_zones",
+    "dialect": "basic",
+    "source": "10 PRINT 1, 2\n20 PRINT 3; 4\n30 END\n",
+    "exit": 0,
+    "stdout": "1               2\n34\n"
+  },
+  {
+    "name": "basic_negative_step",
+    "dialect": "basic",
+    "source": "10 FOR I = 5 TO 1 STEP -1\n20 PRINT I\n30 NEXT I\n40 END\n",
+    "exit": 0,
+    "stdout": "5\n4\n3\n2\n1\n"
+  },
+  {
+    "name": "basic_input",
+    "dialect": "basic",
+    "source": "10 INPUT A\n20 INPUT B\n30 PRINT A + B\n40 END\n",
+    "stdin": "20\n22\n",
+    "exit": 0,
+    "stdout": "42\n"
+  }
 ]

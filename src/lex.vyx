@@ -6,6 +6,7 @@ use std.string;
 // kind: EOF=0, identifier=1, decimal=2, string=3, quotation=4, punctuation=5,
 // numeric spelling=6, literal-only word=8. External rule frontends can reserve
 // their own words without adding a keyword inventory to the compiler core.
+@[derive(Clone)]
 struct Token {
     public kind: i32;
     public text: string;
@@ -19,7 +20,15 @@ class Stream {
     public pos: i64;
     public path: string;
     public diagnostic: string;
-    public fn peek() -> Token { return self.tokens.get(self.pos); }
+    // Lookahead does not own token bytes. Parsing never resizes this vector;
+    // consumers that retain text beyond the stream intern or duplicate it.
+    public fn peek() -> Token {
+        let t = self.tokens.get_ref(self.pos);
+        return Token { kind: t.kind,
+            text: str_from_parts(t.text.c_str(),t.text.len,t.text.len,0),
+            file: str_from_parts(t.file.c_str(),t.file.len,t.file.len,0),
+            line: t.line, column: t.column };
+    }
     public fn take() -> Token {
         let t = self.peek();
         if (t.kind != 0) { self.pos = self.pos + 1; }
@@ -121,7 +130,7 @@ public fn tokenize(source: string, path: string) -> Stream {
             kind = c == 34 ? 3 : 4;
             offset = offset + 1; column = column + 1;
             var closed = false;
-            var quoted = StringBuilder.create();
+            var quoted = std.string.StringBuilder.create();
             while (offset < source.len && !closed && s.diagnostic.len == 0) {
                 let q = str_char_at(source, offset);
                 if (q == c) { closed = true; offset = offset + 1; column = column + 1; }

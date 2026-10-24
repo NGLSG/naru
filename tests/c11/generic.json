@@ -1,0 +1,610 @@
+{
+  "format": 1,
+  "standard": "ISO C11 WG14 N1570; DR 423/481 controlling conversions recorded as target policy",
+  "target": "windows-x86_64-llp64",
+  "scope": "Generic value categories, unevaluated selection and supported type compatibility; VM/atomic and full function models remain pending",
+  "cases": [
+    {
+      "id": "qualified-array-typedef-compatible",
+      "source": "typedef int A[2];int main(void){const A a={20,22};return _Generic(&a,const int(*)[2]:42,default:1);}",
+      "exit": 42,
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2;6.7.3p9"
+    },
+    {
+      "id": "qualified-nested-array-typedef-compatible",
+      "source": "typedef int A[2][2];int main(void){const A a={{20,22},{0,0}};return _Generic(&a,const int(*)[2][2]:42,default:1);}",
+      "exit": 42,
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2;6.7.3p9"
+    },
+    {
+      "id": "qualified-array-typedef-distinct",
+      "source": "typedef int A[2];int main(void){const A a={20,22};return _Generic(&a,int(*)[2]:1,default:42);}",
+      "exit": 42,
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2;6.7.3p9"
+    },
+    {
+      "id": "duplicate-qualified-array-typedef",
+      "source": "typedef int A[2];int main(void){return _Generic(1,const A*:42,const int(*)[2]:1,default:42);}",
+      "reject": "duplicate compatible C generic association type",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2;6.7.3p9"
+    },
+    {
+      "id": "control-volatile-no-load",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3;6.7.3p7",
+      "source": "int main(void){volatile int n=20;return _Generic(n,int:42,default:n);}",
+      "exit": 42,
+      "volatile_loads": 0
+    },
+    {
+      "id": "selected-volatile-one-load",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3;6.7.3p7",
+      "source": "int main(void){volatile int n=20;return _Generic(1,int:n)+22;}",
+      "exit": 42,
+      "volatile_loads": 1
+    },
+    {
+      "id": "two-distinct-enum-matches",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2;6.7.2.2p4",
+      "source": "enum E{A=42};enum F{B=1};typedef enum E T;typedef enum F U;int main(void){return _Generic(1,T:42,U:1,default:42);}",
+      "reject": "multiple compatible C generic associations for the controlling type"
+    },
+    {
+      "id": "two-distinct-enum-pointer-matches",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2;6.7.2.2p4",
+      "source": "enum E{A=42};enum F{B=1};typedef enum E T;typedef enum F U;int main(void){int *p=0;return _Generic(p,T*:42,U*:1,default:42);}",
+      "reject": "multiple compatible C generic associations for the controlling type"
+    },
+    {
+      "id": "compatible-nonprototype-function-pointer",
+      "reference_flags": ["-Wno-strict-prototypes"],
+      "reference_note": "Nonprototype function types are valid but obsolescent in C11 (6.11.6); suppress only Clang's deprecation diagnostic while retaining pedantic-errors for constraints.",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2;6.7.6.3p15",
+      "source": "typedef int(*F)();int main(void){F p=0;return _Generic(p,int(*)(int):42,default:1);}",
+      "exit": 42
+    },
+    {
+      "id": "compatible-prototype-to-nonprototype-pointer",
+      "reference_flags": ["-Wno-strict-prototypes"],
+      "reference_note": "Nonprototype function types are valid but obsolescent in C11 (6.11.6); suppress only Clang's deprecation diagnostic while retaining pedantic-errors for constraints.",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2;6.7.6.3p15",
+      "source": "typedef int(*F)(int);int main(void){F p=0;return _Generic(p,int(*)():42,default:1);}",
+      "exit": 42
+    },
+    {
+      "id": "incompatible-nonprototype-promoted-parameter",
+      "reference_flags": ["-Wno-strict-prototypes"],
+      "reference_note": "Nonprototype function types are valid but obsolescent in C11 (6.11.6); suppress only Clang's deprecation diagnostic while retaining pedantic-errors for constraints.",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2;6.7.6.3p15",
+      "source": "typedef int(*F)();int main(void){F p=0;return _Generic(p,int(*)(short):1,default:42);}",
+      "exit": 42
+    },
+    {
+      "id": "incompatible-nonprototype-variadic-parameter",
+      "reference_flags": ["-Wno-strict-prototypes"],
+      "reference_note": "Nonprototype function types are valid but obsolescent in C11 (6.11.6); suppress only Clang's deprecation diagnostic while retaining pedantic-errors for constraints.",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2;6.7.6.3p15",
+      "source": "typedef int(*F)();int main(void){F p=0;return _Generic(p,int(*)(int,...):1,default:42);}",
+      "exit": 42
+    },
+    {
+      "id": "incompatible-pointer-recursive-qualifier",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2;6.7.6.3p15",
+      "source": "int main(void){const int *p=0;return _Generic(&p,int**:1,const int**:42,default:2);}",
+      "exit": 42
+    },
+    {
+      "id": "function-parameter-array-adjustment",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2;6.7.6.3p15",
+      "source": "typedef int(*F)(int a[2]);int main(void){F p=0;return _Generic(p,int(*)(int*):42,default:1);}",
+      "exit": 42
+    },
+    {
+      "id": "selected-object-assignment",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a=20;_Generic(a,int:a,default:a)=42;return a;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-object-increment",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a=41;return ++_Generic(a,int:a);}",
+      "exit": 42
+    },
+    {
+      "id": "selected-object-compound-assignment",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a=20;_Generic(a,int:a)+=22;return a;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-object-postincrement",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a=41;int old=_Generic(a,int:a)++;return old==41?a:1;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-object-address",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a=42;int *p=&_Generic(a,int:a);return *p;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-object-qualified-address",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){const int a=42;const int *p=&_Generic(1,int:a);return *p;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-default-lvalue",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a=20;_Generic(0.0,int:a,default:a)=42;return a;}",
+      "exit": 42
+    },
+    {
+      "id": "nested-selected-lvalue",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a=20;_Generic(1,int:_Generic(0.0,default:a))=42;return a;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-dereference-lvalue",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a=20;int *p=&a;_Generic(p,int*:*p)=42;return a;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-dereference-null-address",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int *p=0;return &_Generic(1,int:*p)==p?42:1;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-array-sizeof",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a[3]={20,22,0};return sizeof(_Generic(1,int:a))==12?42:1;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-array-address",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a[2]={20,22};int (*p)[2]=&_Generic(1,int:a);return (*p)[0]+(*p)[1];}",
+      "exit": 42
+    },
+    {
+      "id": "selected-array-subscript",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a[2]={20,22};_Generic(1,int:a)[0]+=2;return a[0]+a[1]-2;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-string-sizeof",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){return sizeof(_Generic(1,int:\"abc\"))==4?42:1;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-array-no-control-evaluation",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int n=0,a[2]={20,22};int *p=_Generic(n++,int:a,default:a);return n==0?p[0]+p[1]:1;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-aggregate-member-assignment",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "struct S{int n;};int main(void){struct S a={20};_Generic(1,int:a).n=42;return a.n;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-aggregate-member-address",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "struct S{int n;};int main(void){struct S a={42};int *p=&_Generic(1,int:a).n;return *p;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-function-call",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int answer(int n){return n+22;}int main(void){return _Generic(1,int:answer)(20);}",
+      "exit": 42
+    },
+    {
+      "id": "selected-function-address",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int answer(int n){return n+22;}int main(void){int (*p)(int)=&_Generic(1,int:answer);return p(20);}",
+      "exit": 42
+    },
+    {
+      "id": "selected-function-control-decay",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int answer(void){return 42;}int main(void){return _Generic(answer,int(*)(void):answer,default:answer)();}",
+      "exit": 42
+    },
+    {
+      "id": "control-unqualified-lvalue",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){const volatile int a=20;return _Generic(a,int:42,const int:1,volatile int:2,const volatile int:3);}",
+      "exit": 42
+    },
+    {
+      "id": "control-small-integer-no-promotion",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){short a=20;return _Generic(a,short:42,int:1);}",
+      "exit": 42
+    },
+    {
+      "id": "control-array-decay",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a[2]={20,22};return _Generic(a,int*:42,default:1);}",
+      "exit": 42
+    },
+    {
+      "id": "control-pointer-top-qualifier",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a=42;int *const p=&a;return _Generic(p,int*:42,default:1);}",
+      "exit": 42
+    },
+    {
+      "id": "control-retains-pointee-qualifier",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a=42;const int *p=&a;return _Generic(p,const int*:42,int*:1);}",
+      "exit": 42
+    },
+    {
+      "id": "control-qualified-cast-policy",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){return _Generic((const int)20,int:42,const int:1);}",
+      "exit": 42
+    },
+    {
+      "id": "control-call-unevaluated",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int n;int bump(void){++n;return n;}int main(void){int a=_Generic(bump(),int:42,default:bump());return n==0?a:1;}",
+      "exit": 42
+    },
+    {
+      "id": "unselected-arms-not-lowered",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int n;int bump(void){++n;return n;}int main(void){int a=_Generic(1,int:42,default:bump());return n==0?a:1;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-address-only-once",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a[2]={20,42};int i=0;int *p=&_Generic(1,int:a[i++]);return i==1?*p+22:1;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-void-expression",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int n;void bump(void){n=42;}int main(void){_Generic(1,int:bump(),default:(void)0);return n;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-void-cast-effects",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int n=20;_Generic(1,int:(void)(n+=22));return n;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-static-address",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "static int a=42;static int *p=&_Generic(1,int:a,default:a);int main(void){return *p;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-static-array-address",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "static int a[2]={20,22};static int (*p)[2]=&_Generic(1,int:a);int main(void){return (*p)[0]+(*p)[1];}",
+      "exit": 42
+    },
+    {
+      "id": "selected-ice-unselected-call",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int f(void){return 1;}_Static_assert(_Generic(1,int:42,default:f())==42,\"ICE\");int main(void){return 42;}",
+      "exit": 42
+    },
+    {
+      "id": "selected-enum-ice",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int f(void){return 1;}enum E{A=_Generic(1,int:42,default:f())};int main(void){return A;}",
+      "exit": 42
+    },
+    {
+      "id": "compatible-function-parameter-spelling",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "typedef int (*F)(int x);int answer(int n){return n+22;}int main(void){F p=answer;return _Generic(p,int(*)(int other):42,default:1);}",
+      "exit": 42
+    },
+    {
+      "id": "compatible-function-top-param-qualifier",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "typedef int (*F)(const int x);int answer(int n){return n+22;}int main(void){F p=answer;return _Generic(p,int(*)(int):42,default:1);}",
+      "exit": 42
+    },
+    {
+      "id": "compatible-incomplete-array-pointer",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a[2];return _Generic(&a,int(*)[]:42,default:1);}",
+      "exit": 42
+    },
+    {
+      "id": "distinct-qualified-associations",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a=42;return _Generic(&a,int*:42,const int*:1,volatile int*:2,void*:3);}",
+      "exit": 42
+    },
+    {
+      "id": "distinct-void-object-pointers",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "int main(void){int a=42;void *p=&a;return _Generic(p,void*:42,int*:1);}",
+      "exit": 42
+    },
+    {
+      "id": "same-nominal-record",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "struct S{int n;};int main(void){struct S s={42};return _Generic(s,struct S:42,default:1);}",
+      "exit": 42
+    },
+    {
+      "id": "distinct-records",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "struct S{int n;};struct T{int n;};int main(void){struct S s={42};return _Generic(s,struct S:42,struct T:1);}",
+      "exit": 42
+    },
+    {
+      "id": "enum-compatible-int-target-policy",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "enum E{A=42};int main(void){enum E a=A;return _Generic(a,int:42,default:1);}",
+      "exit": 42
+    },
+    {
+      "id": "int-compatible-enum-target-policy",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p3-p4",
+      "source": "enum E{A=42};typedef enum E T;int main(void){return _Generic(1,T:42,default:1);}",
+      "exit": 42
+    },
+    {
+      "id": "duplicate-compatible-function-pointers",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2",
+      "source": "int main(void){return _Generic(1,int(*)(int a):42,int(*)(int b):1,default:42);}",
+      "reject": "duplicate compatible C generic association type"
+    },
+    {
+      "id": "duplicate-compatible-typedef",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2",
+      "source": "typedef int T;int main(void){return _Generic(1,T:42,int:1);}",
+      "reject": "duplicate compatible C generic association type"
+    },
+    {
+      "id": "duplicate-compatible-array-pointers",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2",
+      "source": "int main(void){return _Generic(1,int(*)[]:42,int(*)[2]:1,default:42);}",
+      "reject": "duplicate compatible C generic association type"
+    },
+    {
+      "id": "duplicate-compatible-enum-integer",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2",
+      "source": "enum E{A=42};typedef enum E T;int main(void){return _Generic(1,T:42,int:1);}",
+      "reject": "duplicate compatible C generic association type"
+    },
+    {
+      "id": "duplicate-default",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2",
+      "source": "int main(void){return _Generic(1,default:42,default:1);}",
+      "reject": "multiple default C generic associations"
+    },
+    {
+      "id": "no-match-no-default",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2",
+      "source": "int main(void){return _Generic(0.0,int:42);}",
+      "reject": "no compatible C generic association"
+    },
+    {
+      "id": "void-association-rejected",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2",
+      "source": "int main(void){return _Generic(1,void:42,default:42);}",
+      "reject": "C generic association requires a complete object type"
+    },
+    {
+      "id": "function-association-rejected",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2",
+      "source": "int main(void){return _Generic(1,int(void):42,default:42);}",
+      "reject": "C generic association requires a complete object type"
+    },
+    {
+      "id": "incomplete-array-association-rejected",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p2",
+      "source": "int main(void){return _Generic(1,int[]:42,default:42);}",
+      "reject": "C generic association requires a complete object type"
+    },
+    {
+      "id": "selected-const-assignment-rejected",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p4;6.5.16p2",
+      "source": "int main(void){const int a=42;_Generic(1,int:a)=20;return a;}",
+      "reject": "assignment to a const C object"
+    },
+    {
+      "id": "selected-nonlvalue-assignment-rejected",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p4;6.5.16p2",
+      "source": "int main(void){_Generic(1,int:42)=20;return 42;}",
+      "reject": "C assignment requires a modifiable lvalue"
+    },
+    {
+      "id": "selected-nonlvalue-address-rejected",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1.1p4;6.5.3.2p1",
+      "source": "int main(void){return &_Generic(1,int:42)==0?1:42;}",
+      "reject": "C address requires an lvalue or function designator"
+    },
+    {
+      "id": "unselected-invalid-assignment-rejected",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.16p2",
+      "source": "int main(void){return _Generic(1,int:42,default:(1=2));}",
+      "reject": "C assignment requires a modifiable lvalue"
+    },
+    {
+      "id": "unselected-undeclared-identifier-rejected",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.1p2",
+      "source": "int main(void){return _Generic(1,int:42,default:missing);}",
+      "reject": "missing"
+    },
+    {
+      "id": "unselected-cast-constraint-rejected",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.4p2",
+      "source": "struct S{int n;};int main(void){struct S s={42};return _Generic(1,int:42,default:(int)s);}",
+      "reject": "C cast requires a scalar"
+    },
+    {
+      "id": "selected-register-address-rejected",
+      "feature": "generic",
+      "work_item": "generic-assertion-and-alignment",
+      "clause": "6.5.3.2p1",
+      "source": "int main(void){register int a=42;int *p=&_Generic(1,int:a);return *p;}",
+      "reject": "register"
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+mod c11.storage;
+use base;
+use control;
+use c11.syntax;
+use c11.scopes;
+use c11.sema;
+use c11.types;
+use c11.declarators;
+use c11.objects;
+use allocation;
+
+effect allocation.children(RegisterReference($type,$identity)) => [];
+
+// Storage policy composes with declarations and references; it is not a type
+// qualifier and never changes function compatibility or the target ABI.
+effect c11.syntax.file_storage($storage) when or(eq($storage,"auto"),eq($storage,"register"))
+    => fail("C file declaration cannot use auto or register");
+effect automatic_subject($type) => automatic_type(c11.types.unqualified($type));
+effect automatic_type(c11.types.FunctionType($result,$params,$variadic,$prototype))
+    => fail("C automatic storage class requires an object");
+effect automatic_type(c11.types.AlignedType($type,$alignment)) => automatic_subject($type);
+effect[fallback] automatic_type($type) => 1;
+effect c11.syntax.local_declaration($name,$type,$value,"auto",$body)
+    => seq(automatic_subject($type),c11.syntax.Declare($name,$type,$value,$body));
+effect c11.syntax.local_declaration($name,$type,$value,"register",$body)
+    => seq(automatic_subject($type),RegisterDeclare($name,$type,$value,$body));
+effect c11.syntax.append(RegisterDeclare($name,$type,$value,$rest),$next)
+    => RegisterDeclare($name,$type,$value,c11.syntax.append($rest,$next));
+effect c11.sema.for_continues(RegisterDeclare($name,$type,$value,$rest),$step)
+    => RegisterDeclare($name,$type,$value,c11.sema.for_continues($rest,$step));
+effect base.check_body(RegisterDeclare($name,$type,$value,$next),$env,$result)
+    => c11.sema.check_declaration_policy($name,$type,$value,$next,$env,$result,0,"register");
+effect c11.sema.declaration_slot($type,$identity,"register") => RegisterSlot($type,$identity);
+effect c11.sema.read(RegisterSlot($type,$identity)) => c11.sema.object_read($type,RegisterReference($type,$identity));
+effect c11.sema.slot_type(RegisterSlot($type,$identity)) => $type;
+effect c11.sema.slot_reference(RegisterSlot($type,$identity)) => RegisterReference($type,$identity);
+effect c11.sema.unqualified_reference(RegisterReference($type,$identity)) => RegisterReference(c11.types.unqualified($type),$identity);
+effect c11.sema.reference_pointer(RegisterReference($type,$identity),$env) => c11.sema.local_pointer($type,$identity,$env);
+effect c11.sema.address(RegisterSlot($type,$identity)) => fail("cannot take the address of a C register object");
+effect c11.sema.address_allowed(RegisterReference($type,$identity)) => fail("cannot take the address of a C register object");
+effect c11.sema.array_decay_allowed(RegisterReference($type,$identity)) => fail("C register array conversion is undefined");
+// Storage properties apply recursively to aggregate members. A pointer stored
+// in a register object still permits addressing its separate pointed-to object.
+effect c11.sema.address_allowed(c11.sema.IndirectReference($type,base.Typed($pointer_type,c11.objects.ByteAddress($parent,$offset))))
+    => c11.sema.address_allowed($parent);
+effect c11.sema.array_decay_allowed(c11.sema.IndirectReference($type,base.Typed($pointer_type,c11.objects.ByteAddress($parent,$offset))))
+    => c11.sema.array_decay_allowed($parent);
+effect c11.sema.call($name,$arguments,RegisterSlot($type,$identity),$env,$expected)
+    => c11.sema.indirect_call(c11.sema.read(RegisterSlot($type,$identity)),$arguments,$env,$expected);
+
+syntax c11.parameter_storage `register` => "register";
+syntax c11.parameter_storage `auto` => "auto";
+syntax c11.parameter_storage `static` => "static";
+syntax c11.parameter_storage `extern` => "extern";
+syntax c11.parameter_storage `typedef` => "typedef";
+effect parameter_storage("register",base.Param($name,$type)) => choose(eq($type,control.Void()),
+    fail("C register parameter must have object type"),RegisterParam($name,$type));
+effect[fallback] parameter_storage($storage,$param) => fail("C parameter storage class must be register");
+effect base.param_type(RegisterParam($name,$type)) => $type;
+effect c11.sema.function_parameter(RegisterParam($name,$type),$env) => RegisterParam($name,c11.sema.complete_type($type,$env));
+effect c11.sema.parameter_type(RegisterParam($name,$type)) => c11.types.unqualified($type);
+effect c11.types.signature_parameter(RegisterParam($name,$type)) => c11.types.unqualified($type);
+effect c11.sema.parameter_repr(RegisterParam($name,$type)) => c11.sema.parameter_repr(base.Param($name,$type));
+effect base.bind_param(RegisterParam($name,$type),$rest,$env,$seen) => base.bind_param(base.Param($name,$type),$rest,$env,$seen);
+effect c11.sema.parameter_local(RegisterParam($name,$type),$body) => RegisterParameterDeclare($name,$type,$body);
+effect base.check_body(RegisterParameterDeclare($name,$type,$next),$env,$result)
+    => c11.sema.check_declaration_policy($name,$type,c11.syntax.Name($name),$next,$env,$result,1,"register");
+effect c11.scopes.parameter_binding($context,RegisterParam($name,$type)) => c11.scopes.parameter_binding($context,base.Param($name,$type));
+effect c11.scopes.add_parameter_name($seen,RegisterParam($name,$type)) => c11.scopes.add_parameter_name($seen,base.Param($name,$type));
+
+effect c11.sema.parameter_policy(RegisterParam($name,$type)) => c11.sema.ParameterPolicy($name,$type,"register");
+effect c11.objects.declaration_parameter(RegisterParam($name,$type),$tags)
+    => RegisterParam($name,c11.objects.declaration_type($type,$tags));
+effect c11.sema.old_abi_parameter(RegisterParam($name,$type)) => base.Param($name,c11.types.default_argument(c11.types.unqualified($type)));
+effect c11.types.promoted_parameter(RegisterParam($name,$type)) => base.Param($name,c11.types.default_argument(c11.types.unqualified($type)));

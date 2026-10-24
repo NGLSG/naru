@@ -1,0 +1,13 @@
+10 REM SOLVE 2X + 3Y = 8, X - Y = -1 BY CRAMER RULE
+20 LET A = 2
+30 LET B = 3
+40 LET C = 8
+50 LET D = 1
+60 LET E = -1
+70 LET F = -1
+80 LET DET = A * E - B * D
+90 LET X = (C * E - B * F) / DET
+100 LET Y = (A * F - C * D) / DET
+110 PRINT X
+120 PRINT Y
+130 END

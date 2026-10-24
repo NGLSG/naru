@@ -1,0 +1,62 @@
+mod name_scope_contract;
+use name_scope;
+
+effect distinct_namespaces()
+    => bind($root,name_scope.root(),bind($frame,name_scope.put(name_scope.put($root,"tag","S",Tag("struct",Incomplete())),"ordinary","S",Variable(42)),
+        [eq(name_scope.value(name_scope.lookup($frame,"tag","S")),Tag("struct",Incomplete())),
+            eq(name_scope.value(name_scope.lookup($frame,"ordinary","S")),Variable(42)),
+            not(eq(name_scope.binding_identity(name_scope.lookup($frame,"tag","S")),
+                name_scope.binding_identity(name_scope.lookup($frame,"ordinary","S")))),
+            eq(name_scope.lookup($frame,"other","S"),name_scope.Missing())]));
+
+effect parent_shadowing()
+    => bind($outer,name_scope.put(name_scope.root(),"tag","S",Tag("struct",Complete(4))),
+        bind($child,name_scope.child($outer),bind($inner,name_scope.put($child,"tag","S",Tag("union",Complete(8))),
+            [name_scope.contains($child,"tag","S"),not(name_scope.contains_local($child,"tag","S")),
+                name_scope.contains_local($inner,"tag","S"),
+                not(eq(name_scope.binding_identity(name_scope.lookup($outer,"tag","S")),
+                    name_scope.binding_identity(name_scope.lookup($inner,"tag","S")))),
+                eq(name_scope.value(name_scope.lookup($outer,"tag","S")),Tag("struct",Complete(4))),
+                eq(name_scope.local($child,"tag","S"),name_scope.Missing()),
+                eq(size(name_scope.local_bindings($child)),0),
+                eq(size(name_scope.visible_bindings($child)),1)])));
+
+effect same_declaration_completion()
+    => bind($before,name_scope.put(name_scope.root(),"tag","S",Tag("struct",Incomplete())),
+        bind($after,name_scope.put($before,"tag","S",Tag("struct",Complete(4))),
+            [eq(name_scope.binding_identity(name_scope.lookup($before,"tag","S")),
+                name_scope.binding_identity(name_scope.lookup($after,"tag","S"))),
+                eq(name_scope.value(name_scope.lookup($before,"tag","S")),Tag("struct",Incomplete())),
+                eq(name_scope.value(name_scope.lookup($after,"tag","S")),Tag("struct",Complete(4))),
+                eq(name_scope.frame_identity($before),name_scope.frame_identity($after)),
+                eq(name_scope.declaration_identity($before,"tag","S"),
+                    name_scope.binding_identity(name_scope.local($after,"tag","S")))]));
+
+// A language may assign each prototype its own frame. The generic module only
+// creates distinct identities and leaves those language boundaries to callers.
+effect sibling_prototypes()
+    => bind($file,name_scope.root(),bind($first,name_scope.put(name_scope.child($file),"tag","S",Tag("struct",Incomplete())),
+        bind($second,name_scope.put(name_scope.child($file),"tag","S",Tag("struct",Incomplete())),
+            [not(eq(name_scope.binding_identity(name_scope.lookup($first,"tag","S")),
+                name_scope.binding_identity(name_scope.lookup($second,"tag","S")))),
+                not(name_scope.contains($file,"tag","S")),
+                not(eq(name_scope.frame_identity($first),name_scope.frame_identity($second))),
+                not(eq(name_scope.frame_identity($file),name_scope.frame_identity($first)))])));
+
+effect own_ordinary_policy()
+    => bind($outer,name_scope.put(name_scope.root(),"ordinary","Answer",Constant(20)),
+        bind($inner,claim(name_scope.child($outer),"Answer",Constant(22)),
+            [eq(name_scope.value(name_scope.lookup($outer,"ordinary","Answer")),Constant(20)),
+                eq(name_scope.value(name_scope.lookup($inner,"ordinary","Answer")),Constant(22))]));
+effect claim($scope,$name,$value) => choose(name_scope.contains_local($scope,"ordinary",$name),
+    fail("duplicate name in the current ordinary namespace"),name_scope.put($scope,"ordinary",$name,$value));
+effect duplicate_ordinary()
+    => claim(claim(name_scope.root(),"Answer",Constant(20)),"Answer",Variable(22));
+
+effect snapshot_is_stable()
+    => bind($before,name_scope.put(name_scope.root(),Historical("label"),HistoricalName(7),Definition("old")),
+        bind($child,name_scope.child($before),
+            bind($after,name_scope.put($before,Historical("label"),HistoricalName(7),Definition("new")),
+                [eq(name_scope.value(name_scope.lookup($before,Historical("label"),HistoricalName(7))),Definition("old")),
+                    eq(name_scope.value(name_scope.lookup($after,Historical("label"),HistoricalName(7))),Definition("new")),
+                    eq(name_scope.value(name_scope.lookup($child,Historical("label"),HistoricalName(7))),Definition("old"))])));

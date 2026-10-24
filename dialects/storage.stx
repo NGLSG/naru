@@ -3,6 +3,61 @@
 // language types here. The current adapters select little-endian byte order.
 mod storage;
 
+// Build an explicitly padded LLVM record from ordered byte-offset/shape pairs.
+// Keep whole scalar fields (especially symbolic pointers) even when unaligned.
+// Padding has no semantic member and materialize initializes it to zero.
+effect packed_layout($bytes,$segments)
+    => bind(PackedLayout($end,$index,$types,$members),list.fold("storage.packed_segment",$segments,PackedLayout(0,0,[],[])),
+        bind(PackedLayout($limit,$count,$padded,$parts),packed_padding(PackedLayout($end,$index,$types,$members),$bytes),
+            Aggregate(concat("!llvm.struct<packed (",concat(text.join(list.reverse($padded),", "),")>")),mul($bytes,8),list.reverse($parts))));
+effect packed_padding(PackedLayout($end,$index,$types,$members),$offset)
+    => choose(lt($offset,$end),fail("packed storage segments overlap or exceed the object"),
+        choose(eq($offset,$end),PackedLayout($end,$index,$types,$members),
+            PackedLayout($offset,add($index,1),list.prepend(concat("!llvm.array<",concat(text(sub($offset,$end))," x i8>")),$types),$members)));
+effect packed_segment($state,[$offset,$shape])
+    => seq(choose(and(lt(0,width($shape)),eq(int.rem(width($shape),8),0)),1,fail("packed storage member requires a positive whole-byte shape")),
+        bind(PackedLayout($end,$index,$types,$members),packed_padding($state,$offset),
+            PackedLayout(add($offset,int.div(width($shape),8)),add($index,1),list.prepend(repr($shape),$types),
+                list.prepend([mul($offset,8),$index,$shape],$members))));
+
+// Deferred object images separate layout planning from IR emission. A language
+// contributes image_value(payload, environment); all other producers are shared.
+effect image_shape(Image($shape,$producer)) => $shape;
+effect image_zero($shape) => Image($shape,ZeroImage());
+effect image_is_zero(Image($shape,ZeroImage())) => 1;
+effect[fallback] image_is_zero($image) => 0;
+effect image_project($image,$offset,$shape)
+    => seq(window_range(image_shape($image),$offset,$shape),
+        choose(image_is_zero($image),image_zero($shape),bind($direct,storage.image_direct($image,$offset,$shape),
+            choose(eq(size($direct),1),list.head($direct),Image($shape,ProjectImage($image,$offset))))));
+// Reuse an exact child producer instead of re-emitting its entire parent image.
+// Collapse nested windows before emission, retaining the parent range check.
+effect image_direct(Image($source,ProjectImage($parent,$base)),$offset,$shape)
+    => [image_project($parent,add($base,$offset),$shape)];
+effect image_direct(Image($source,RecordImage($parts,$windows)),$offset,$shape)
+    => choose(env.contains($windows,$offset),bind($image,env.get($windows,$offset),
+        choose(eq(image_shape($image),$shape),[$image],[])),[]);
+effect[fallback] image_direct($image,$offset,$shape) => [];
+effect image_record($bytes,$entries)
+    => bind($shape,packed_layout($bytes,list.map("storage.image_segment_shape",$entries)),
+        bind(ImagePositions($cursor,$out,$windows),list.fold("storage.image_position",arg($shape,2),ImagePositions(list.cursor($entries),[],env.empty())),
+            Image($shape,RecordImage(list.reverse($out),$windows))));
+effect image_segment_shape([$offset,$image]) => [$offset,image_shape($image)];
+effect image_position(ImagePositions($cursor,$out,$windows),[$offset,$index,$shape])
+    => bind($image,arg(list.cursor.head($cursor),1),ImagePositions(list.cursor.tail($cursor),
+        list.prepend([$index,$image],$out),env.put($windows,$offset,$image)));
+effect image_lower(Image($shape,$producer),$env) => seq(integer_type(width($shape)),storage.image_emit($producer,$shape,$env));
+effect image_emit(ZeroImage(),$shape,$env) => mlir.op("llvm.mlir.zero",[],[repr($shape)],[],[]);
+effect image_emit(ValueImage($payload),$shape,$env) => storage.image_value($payload,$env);
+effect image_emit(ProjectImage($parent,$offset),$shape,$env)
+    => storage.project(image_lower($parent,$env),image_shape($parent),$offset,$shape);
+effect image_emit(RecordImage($parts,$windows),$shape,$env)
+    => bind(ImageAssembly($value,$type,$environment),list.fold("storage.image_insert",$parts,
+        ImageAssembly(mlir.op("llvm.mlir.zero",[],[repr($shape)],[],[]),repr($shape),$env)),$value);
+effect image_insert(ImageAssembly($value,$repr,$env),[$index,$image])
+    => ImageAssembly(mlir.op("llvm.insertvalue",[$value,image_lower($image,$env)],[$repr],[position($index)],[]),$repr,$env);
+effect[fallback] image_value($payload,$env) => fail("no language emitter for deferred storage image payload");
+
 // Scalar(IR type, value bits, object bits, integer|float|pointer)
 // Aggregate(IR type, object bits, [[bit offset, LLVM index, child shape], ...])
 effect width(Scalar($repr,$value_bits,$object_bits,$kind)) => $object_bits;
@@ -22,6 +77,32 @@ effect resize($value,$from,$to) => choose(eq($from,$to),$value,
 effect reinterpret($value,$source,$destination)
     => seq(integer_type(width($source)),seq(integer_type(width($destination)),
         arg(materialize(list.cursor(fragments($value,$source)),$destination,0),0)));
+// Select or replace one object window without creating an object-sized
+// integer. Whole pointer fragments outside the window retain relocations.
+effect project($value,$source,$offset,$destination)
+    => seq(window_range($source,$offset,$destination),
+        arg(materialize(list.cursor(fragments($value,$source)),$destination,$offset),0));
+effect overlay($value,$shape,$offset,$replacement,$replacement_shape)
+    => seq(window_range($shape,$offset,$replacement_shape),
+        bind(Outside($before,$after,$low,$high),list.fold("storage.outside_fragment",fragments($value,$shape),
+            Outside([],[],$offset,add($offset,width($replacement_shape)))),
+            bind(Shifted($parts,$base),list.fold("storage.shift_fragment",fragments($replacement,$replacement_shape),Shifted([],$offset)),
+                arg(materialize(list.cursor(list.concat(list.reverse($before),
+                    list.concat(list.reverse($parts),list.reverse($after)))),$shape,0),0))));
+effect window_range($source,$offset,$destination)
+    => choose(and(not(lt($offset,0)),not(lt(width($source),add($offset,width($destination))))),1,
+        fail("storage window is outside the object"));
+effect outside_fragment(Outside($before,$after,$low,$high),Fragment($offset,$shape,$value))
+    => bind($end,add($offset,width($shape)),
+        choose(not(lt($low,$end)),Outside(list.prepend(Fragment($offset,$shape,$value),$before),$after,$low,$high),
+            choose(not(lt($offset,$high)),Outside($before,list.prepend(Fragment($offset,$shape,$value),$after),$low,$high),
+                Outside(choose(lt($offset,$low),list.prepend(fragment_slice($offset,$shape,$value,$offset,$low),$before),$before),
+                    choose(lt($high,$end),list.prepend(fragment_slice($offset,$shape,$value,$high,$end),$after),$after),$low,$high))));
+effect fragment_slice($offset,$shape,$value,$low,$high)
+    => bind($bits,sub($high,$low),Fragment($low,Scalar(integer_type($bits),$bits,$bits,"integer"),
+        resize(shift("llvm.lshr",pack($value,$shape),sub($low,$offset),width($shape)),width($shape),$bits)));
+effect shift_fragment(Shifted($out,$base),Fragment($offset,$shape,$value))
+    => Shifted(list.prepend(Fragment(add($base,$offset),$shape,$value),$out),$base);
 effect fragments($value,$shape) => list.unfold("storage.fragment_step",[Source($value,$shape,0)],1000000);
 effect fragment_step([]) => [0,[],[]];
 effect fragment_step($pending) when lt(0,size($pending)) => fragment_node(list.head($pending),list.tail($pending));
@@ -73,6 +154,8 @@ effect window_fragment($cursor,$image,$base,$end,$bits,$offset,$shape,$value)
 effect pack($value,Scalar($repr,$bits,$object_bits,"integer")) => resize($value,$bits,$object_bits);
 effect pack($value,Scalar($repr,$bits,$object_bits,"float"))
     => resize(mlir.op("llvm.bitcast",[$value],[integer_type($bits)],[],[]),$bits,$object_bits);
+effect pack($value,Scalar($repr,$bits,$object_bits,"bits"))
+    => resize(mlir.op("llvm.bitcast",[$value],[integer_type($bits)],[],[]),$bits,$object_bits);
 effect pack($value,Scalar($repr,$bits,$object_bits,"pointer"))
     => resize(mlir.op("llvm.ptrtoint",[$value],[integer_type($bits)],[],[]),$bits,$object_bits);
 effect pack($value,Aggregate($repr,$bits,$members))
@@ -88,6 +171,8 @@ effect position($index) => RawAttr("position",concat("array<i64: ",concat(text($
 
 effect unpack($image,Scalar($repr,$bits,$object_bits,"integer")) => resize($image,$object_bits,$bits);
 effect unpack($image,Scalar($repr,$bits,$object_bits,"float"))
+    => mlir.op("llvm.bitcast",[resize($image,$object_bits,$bits)],[$repr],[],[]);
+effect unpack($image,Scalar($repr,$bits,$object_bits,"bits"))
     => mlir.op("llvm.bitcast",[resize($image,$object_bits,$bits)],[$repr],[],[]);
 effect unpack($image,Scalar($repr,$bits,$object_bits,"pointer"))
     => mlir.op("llvm.inttoptr",[resize($image,$object_bits,$bits)],[$repr],[],[]);

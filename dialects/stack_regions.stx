@@ -1,0 +1,30 @@
+// Scoped native dynamic storage. Frontends supply identities and legal jump
+// paths; this module supplies target stack marks and exit cleanup.
+mod stack_regions;
+use base;
+
+effect stack_regions.active($env) => choose(env.contains($env,ActiveKey()),env.get($env,ActiveKey()),[]);
+effect stack_regions.depth($env) => size(stack_regions.active($env));
+effect stack_regions.begin($env,$identity) => env.put($env,ActiveKey(),list.prepend(
+    Mark($identity,mlir.op("llvm.intr.stacksave",[],["!llvm.ptr"],[],[])),stack_regions.active($env)));
+effect stack_regions.continuation($value,$env) => Continuation($value,stack_regions.depth($env));
+effect stack_regions.restore_to($env,$depth) => bind(Restore($marks,$remaining),rule.iterate("stack_regions.restore_step",Restore(stack_regions.active($env),$depth),1000000),env.put($env,ActiveKey(),$marks));
+effect stack_regions.restore_marks($marks,$depth) => seq(rule.iterate("stack_regions.restore_step",Restore($marks,$depth),1000000),1);
+effect stack_regions.restore_step(Restore($marks,$depth)) when not(lt($depth,size($marks))) => [0,Restore($marks,$depth)];
+effect stack_regions.restore_step(Restore($marks,$depth)) when lt($depth,size($marks))
+    => seq(mlir.op("llvm.intr.stackrestore",[arg(list.head($marks),1)],[],[],[]),[1,Restore(list.tail($marks),$depth)]);
+effect base.finish_context(Continuation($value,$depth),$env)
+    => base.finish_context($value,stack_regions.restore_to($env,$depth));
+effect base.before_return($env) when env.contains($env,ActiveKey()) => stack_regions.restore_marks(stack_regions.active($env),0);
+effect base.flow_targets($env,$targets) => bind(Targets($scope,$depth),list.fold("stack_regions.target",$targets,Targets($env,stack_regions.depth($env))),$scope);
+effect stack_regions.target(Targets($env,$depth),$target) => Targets(env.put($env,TargetDepthKey($target),$depth),$depth);
+effect base.before_jump($env,$target) when env.contains($env,TargetDepthKey($target))
+    => stack_regions.restore_marks(stack_regions.active($env),env.get($env,TargetDepthKey($target)));
+effect stack_regions.restore_path($env,$identities)
+    => seq(rule.iterate("stack_regions.path_step",Path(stack_regions.active($env),$identities),1000000),1);
+effect stack_regions.path_step(Path([],$identities)) => [0,Path([],$identities)];
+effect stack_regions.path_step(Path($marks,$identities)) when lt(0,size($marks))
+    => choose(stack_regions.member(arg(list.head($marks),0),$identities),[0,Path($marks,$identities)],
+        seq(mlir.op("llvm.intr.stackrestore",[arg(list.head($marks),1)],[],[],[]),[1,Path(list.tail($marks),$identities)]));
+effect stack_regions.member($identity,$identities) => arg(list.fold("stack_regions.same",$identities,[0,$identity]),0);
+effect stack_regions.same([$found,$identity],$next) => [or($found,eq($identity,$next)),$identity];

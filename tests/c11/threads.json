@@ -1,0 +1,167 @@
+{
+  "format": 1,
+  "standard": "ISO C11 threads through actual MSVC target headers and runtime",
+  "target": "windows-x86_64-llp64",
+  "status": "implemented_source_pending_consolidated_acceptance",
+  "full_conformance_claimed": false,
+  "reference_note": "Real threads.h and target runtime only. Concurrent data use mutexes or _Atomic. Retry stress is probabilistic and cannot replace a forced-failure gate.",
+  "cases": [
+    {
+      "id": "thread-create-join",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.5.1;7.26.5.6",
+      "source": "#include <threads.h>\nint worker(void *p){return *(int*)p+22;}int main(void){thrd_t t;int n=20,r=0;if(thrd_create(&t,worker,&n)!=thrd_success)return 1;if(thrd_join(t,&r)!=thrd_success)return 2;return r;}"
+    },
+    {
+      "id": "thread-current-equal",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.5.2;7.26.5.4",
+      "source": "#include <threads.h>\nint main(void){thrd_t a=thrd_current(),b=thrd_current();return thrd_equal(a,b)?42:1;}"
+    },
+    {
+      "id": "thread-distinct-identities",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26",
+      "source": "#include <threads.h>\nthrd_t parent;int worker(void *p){(void)p;return thrd_equal(thrd_current(),parent)?1:42;}int main(void){thrd_t t;int r;parent=thrd_current();if(thrd_create(&t,worker,0)!=thrd_success)return 2;thrd_join(t,&r);return r;}"
+    },
+    {
+      "id": "thread-explicit-exit",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.5.5",
+      "source": "#include <threads.h>\nint worker(void *p){(void)p;thrd_exit(42);}int main(void){thrd_t t;int r;if(thrd_create(&t,worker,0)!=thrd_success)return 1;thrd_join(t,&r);return r;}"
+    },
+    {
+      "id": "thread-local-isolation",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "6.2.4;7.26.5",
+      "source": "#include <threads.h>\n_Thread_local int n=20;int worker(void *p){(void)p;n+=22;return n;}int main(void){thrd_t t;int r;n=7;if(thrd_create(&t,worker,0)!=thrd_success)return 1;thrd_join(t,&r);return r==42&&n==7?42:2;}"
+    },
+    {
+      "id": "thread-local-distinct-addresses",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "6.2.4",
+      "source": "#include <threads.h>\n_Thread_local int n=20;int worker(void *p){return &n==(int*)p?1:42;}int main(void){thrd_t t;int r;if(thrd_create(&t,worker,&n)!=thrd_success)return 2;thrd_join(t,&r);return r;}"
+    },
+    {
+      "id": "thread-mutex-shared-counter",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.4",
+      "source": "#include <threads.h>\nmtx_t m;int n;int worker(void *p){(void)p;for(int i=0;i<1000;++i){mtx_lock(&m);++n;mtx_unlock(&m);}return 0;}int main(void){thrd_t a,b;int r;if(mtx_init(&m,mtx_plain)!=thrd_success)return 1;if(thrd_create(&a,worker,0)!=thrd_success)return 2;if(thrd_create(&b,worker,0)!=thrd_success){thrd_join(a,&r);return 3;}thrd_join(a,&r);thrd_join(b,&r);mtx_destroy(&m);return n==2000?42:4;}"
+    },
+    {
+      "id": "thread-recursive-mutex",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.4",
+      "source": "#include <threads.h>\nint main(void){mtx_t m;if(mtx_init(&m,mtx_recursive)!=thrd_success)return 1;if(mtx_lock(&m)!=thrd_success)return 2;if(mtx_trylock(&m)!=thrd_success)return 3;mtx_unlock(&m);mtx_unlock(&m);mtx_destroy(&m);return 42;}"
+    },
+    {
+      "id": "thread-mutex-trylock-busy",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.4.5",
+      "source": "#include <threads.h>\nmtx_t m;int worker(void *p){(void)p;int r=mtx_trylock(&m);if(r==thrd_success)mtx_unlock(&m);return r==thrd_busy?42:1;}int main(void){thrd_t t;int r;if(mtx_init(&m,mtx_plain)!=thrd_success)return 2;mtx_lock(&m);if(thrd_create(&t,worker,0)!=thrd_success)return 3;thrd_join(t,&r);mtx_unlock(&m);mtx_destroy(&m);return r;}"
+    },
+    {
+      "id": "thread-condition-signal",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.3",
+      "source": "#include <threads.h>\nmtx_t m;cnd_t c;int ready,n;int worker(void *p){(void)p;mtx_lock(&m);while(!ready)cnd_wait(&c,&m);int r=n;mtx_unlock(&m);return r;}int main(void){thrd_t t;int r;if(mtx_init(&m,mtx_plain)!=thrd_success)return 1;if(cnd_init(&c)!=thrd_success)return 2;if(thrd_create(&t,worker,0)!=thrd_success)return 3;mtx_lock(&m);n=42;ready=1;cnd_signal(&c);mtx_unlock(&m);thrd_join(t,&r);cnd_destroy(&c);mtx_destroy(&m);return r;}"
+    },
+    {
+      "id": "thread-condition-broadcast",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.3.1",
+      "source": "#include <threads.h>\nmtx_t m;cnd_t c;int ready;int worker(void *p){(void)p;mtx_lock(&m);while(!ready)cnd_wait(&c,&m);mtx_unlock(&m);return 21;}int main(void){thrd_t a,b;int x,y;if(mtx_init(&m,mtx_plain)!=thrd_success||cnd_init(&c)!=thrd_success)return 1;if(thrd_create(&a,worker,0)!=thrd_success)return 2;if(thrd_create(&b,worker,0)!=thrd_success){mtx_lock(&m);ready=1;cnd_broadcast(&c);mtx_unlock(&m);thrd_join(a,&x);return 3;}mtx_lock(&m);ready=1;cnd_broadcast(&c);mtx_unlock(&m);thrd_join(a,&x);thrd_join(b,&y);cnd_destroy(&c);mtx_destroy(&m);return x+y;}"
+    },
+    {
+      "id": "thread-call-once",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.2.1",
+      "source": "#include <threads.h>\nonce_flag flag=ONCE_FLAG_INIT;int n;void initialize(void){++n;}int worker(void *p){(void)p;call_once(&flag,initialize);return 0;}int main(void){thrd_t a,b;int r;if(thrd_create(&a,worker,0)!=thrd_success)return 1;if(thrd_create(&b,worker,0)!=thrd_success){thrd_join(a,&r);return 2;}call_once(&flag,initialize);thrd_join(a,&r);thrd_join(b,&r);return n==1?42:3;}"
+    },
+    {
+      "id": "thread-tss-set-get",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.6",
+      "source": "#include <threads.h>\nint main(void){tss_t key;int n=42;if(tss_create(&key,0)!=thrd_success)return 1;if(tss_set(key,&n)!=thrd_success)return 2;int r=*(int*)tss_get(key);tss_delete(key);return r;}"
+    },
+    {
+      "id": "thread-tss-destructor",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.6.1;7.26.5.5",
+      "source": "#include <threads.h>\ntss_t key;_Atomic int n;void destroy(void *p){if(*(int*)p==42)++n;}int data=42;int worker(void *p){(void)p;return tss_set(key,&data);}int main(void){thrd_t t;int r;if(tss_create(&key,destroy)!=thrd_success)return 1;if(thrd_create(&t,worker,0)!=thrd_success)return 2;thrd_join(t,&r);tss_delete(key);return r==thrd_success&&n==1?42:3;}"
+    },
+    {
+      "id": "thread-tss-isolation",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.6",
+      "source": "#include <threads.h>\ntss_t key;int a=20,b=22;int worker(void *p){(void)p;if(tss_get(key)!=0)return 1;if(tss_set(key,&b)!=thrd_success)return 2;return *(int*)tss_get(key);}int main(void){thrd_t t;int r;if(tss_create(&key,0)!=thrd_success)return 3;if(tss_set(key,&a)!=thrd_success)return 4;if(thrd_create(&t,worker,0)!=thrd_success)return 5;thrd_join(t,&r);int own=*(int*)tss_get(key);tss_delete(key);return own+r;}"
+    },
+    {
+      "id": "thread-yield-and-sleep",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.5.7;7.26.5.8",
+      "source": "#include <threads.h>\nint main(void){struct timespec duration={0,0};thrd_yield();return thrd_sleep(&duration,0)==0?42:1;}"
+    },
+    {
+      "id": "thread-cnd-expired-deadline",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.3.5",
+      "source": "#include <threads.h>\nint main(void){mtx_t m;cnd_t c;struct timespec ts;if(mtx_init(&m,mtx_plain)!=thrd_success||cnd_init(&c)!=thrd_success)return 1;if(timespec_get(&ts,TIME_UTC)!=TIME_UTC)return 2;--ts.tv_sec;mtx_lock(&m);int r=thrd_success;for(int i=0;i<100&&r==thrd_success;++i)r=cnd_timedwait(&c,&m,&ts);int unlocked=mtx_unlock(&m);cnd_destroy(&c);mtx_destroy(&m);return r==thrd_timedout&&unlocked==thrd_success?42:3;}"
+    },
+    {
+      "id": "thread-mtx-expired-deadline",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.4.4",
+      "source": "#include <threads.h>\nmtx_t m;int worker(void *p){(void)p;struct timespec ts;if(timespec_get(&ts,TIME_UTC)!=TIME_UTC)return 1;--ts.tv_sec;int r=mtx_timedlock(&m,&ts);if(r==thrd_success)mtx_unlock(&m);return r==thrd_timedout?42:2;}int main(void){thrd_t t;int r;if(mtx_init(&m,mtx_timed)!=thrd_success)return 3;mtx_lock(&m);if(thrd_create(&t,worker,0)!=thrd_success)return 4;thrd_join(t,&r);mtx_unlock(&m);mtx_destroy(&m);return r;}"
+    },
+    {
+      "id": "thread-detach",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "7.26.5.3",
+      "source": "#include <threads.h>\n_Atomic int done;int worker(void *p){(void)p;done=1;return 0;}int main(void){thrd_t t;if(thrd_create(&t,worker,0)!=thrd_success)return 1;if(thrd_detach(t)!=thrd_success)return 2;while(!done)thrd_yield();return 42;}"
+    },
+    {
+      "id": "thread-atomic-counter",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "6.5.16.2;7.17;7.26",
+      "source": "#include <threads.h>\n_Atomic int n;int worker(void *p){(void)p;for(int i=0;i<1000;++i)++n;return 0;}int main(void){thrd_t a,b;int r;if(thrd_create(&a,worker,0)!=thrd_success)return 1;if(thrd_create(&b,worker,0)!=thrd_success){thrd_join(a,&r);return 2;}thrd_join(a,&r);thrd_join(b,&r);return n==2000?42:3;}"
+    },
+    {
+      "id": "thread-cross-unit-tls",
+      "work_item": "thread-storage-and-library",
+      "feature": "threads",
+      "clause": "6.2.4;7.26",
+      "source": "#include <threads.h>\nextern _Thread_local int shared;int worker(void*);int main(void){thrd_t t;int r;shared=7;if(thrd_create(&t,worker,0)!=thrd_success)return 1;thrd_join(t,&r);return r==42&&shared==7?42:2;}",
+      "additional_sources": {
+        "worker.c": "_Thread_local int shared=20;int worker(void *p){(void)p;shared+=22;return shared;}"
+      }
+    },
+    {
+      "id": "thread-floating-retry-flag-stress",
+      "work_item": "atomics",
+      "feature": "threads",
+      "clause": "6.5.16.2p3;7.6;7.26",
+      "source": "#include <threads.h>\n#include <fenv.h>\n#include <float.h>\n#include <math.h>\n#pragma STDC FENV_ACCESS ON\n_Atomic double value;\n_Atomic int started,stop;\nint writer(void *p){(void)p;started=1;while(!stop){value=DBL_MAX;value=0;}return 0;}\nint main(void){thrd_t t;int result,bad=0;if(thrd_create(&t,writer,0)!=thrd_success)return 1;while(!started)thrd_yield();for(int i=0;i<20000;++i){feclearexcept(FE_ALL_EXCEPT);double r=(value*=2);int flags=fetestexcept(FE_OVERFLOW);if(isfinite(r)&&flags)bad=1;}stop=1;thrd_join(t,&result);return bad?2:42;}\n"
+    }
+  ]
+}

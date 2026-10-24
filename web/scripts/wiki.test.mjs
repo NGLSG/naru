@@ -3,12 +3,14 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { readWiki } from './wiki.mjs'
-import { readCatalog } from './catalog.mjs'
+import { readCatalog, readSourcePreview } from './catalog.mjs'
 
 test('all archived versions have authored content and resolvable citations', async () => {
   const { catalog: wiki, available } = await readWiki()
   const archive = await readCatalog()
   const originals = new Set(archive.entries.flatMap(entry => entry.documents.map(doc => `${entry.id}/${doc.name}`)))
+  const preview = await readSourcePreview()
+  const withheld = new Set((preview?.omitted_originals ?? []).map(file => file.slice('historical/'.length)))
   for (const entry of archive.entries) {
     const article = wiki.families[entry.family]
     const version = wiki.versions[entry.id]
@@ -19,16 +21,26 @@ test('all archived versions have authored content and resolvable citations', asy
     assert.equal(new Set(ids).size, ids.length, `Duplicate anchors: ${entry.id}`)
     for (const section of [...version.sections, ...article.sections]) for (const key of section.refs) assert.ok(article.references.some(ref => ref.key === key), `Unresolved citation ${entry.id}/${key}`)
     for (const ref of article.references) {
-      if (ref.file) assert.ok(originals.has(ref.file), `Missing original: ${ref.file}`)
+      if (ref.file) {
+        assert.ok(originals.has(ref.file) || withheld.has(ref.file), `Missing original without explicit exclusion: ${ref.file}`)
+        assert.ok(ref.locator.length > 0, `Missing bibliographic location: ${ref.file}`)
+        if (!originals.has(ref.file)) assert.ok(archive.entries.some(entry => ref.file.startsWith(`${entry.id}/`) && entry.sources.length), `Missing provenance card: ${ref.file}`)
+      }
+      else if (ref.unavailable) {
+        assert.equal(ref.unavailable, '该历史报告未随此源码快照分发。')
+        assert.equal(ref.url, undefined)
+        assert.equal(wiki.report, undefined)
+      }
       else if (ref.url.startsWith('/implementation/')) assert.ok(available.has(ref.url), `Missing rule evidence: ${ref.url}`)
       else assert.ok(ref.url.startsWith('https://'), ref.url)
     }
     for (const related of article.related) assert.ok(wiki.families[related], related)
   }
-  assert.equal(wiki.versions['basic/1964'].implementation, undefined)
+  assert.equal(wiki.versions['basic/1964'].implementation, 'basic')
   assert.equal(wiki.versions['c/kr/1978'].implementation, undefined)
   assert.equal(wiki.versions['c/11'].implementation, 'c11')
-  assert.ok(originals.has('c/89/rationale/title.html'))
+  assert.ok(originals.has('c/89/rationale/title.html') || withheld.has('c/89/rationale/title.html'))
+  if (preview) assert.equal(archive.originalsWithheld, true)
 })
 
 test('rule snapshots and language compositions match real files', async () => {
@@ -64,6 +76,7 @@ test('every encyclopedia view renders article text and navigation', async () => 
       assert.ok(html.includes('id="wiki-references"') && html.includes('id="wiki-versions"'), entry.id)
       assert.ok(html.includes(`#/archive/${encodeURIComponent(entry.id)}`), entry.id)
       assert.ok(!html.includes('undefined') && !html.includes('NaN'), entry.id)
+      assert.ok(!html.includes('href=""'), `Empty evidence link: ${entry.id}`)
     }
     for (const family of archive.families) {
       const html = await renderToString(createSSRApp(Article, { family }))

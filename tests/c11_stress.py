@@ -15,12 +15,14 @@ import subprocess
 import tempfile
 import time
 from native_process import execute
+from frozen_snapshot import validate_frozen
+from rule_dependencies import c11_rule_inputs
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'tests/c11'
 
 def fingerprints(compiler: Path) -> dict[str, str]:
-    paths = [Path(__file__).resolve(), *sorted((ROOT/'dialects').rglob('*.stx')),
+    paths = [Path(__file__).resolve(), *c11_rule_inputs(),
              *sorted(p for p in DATA.rglob('*') if p.is_file())]
     result = {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
     result['compiler:'+str(compiler)] = hashlib.sha256(compiler.read_bytes()).hexdigest()
@@ -32,12 +34,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--compiler', type=Path, default=ROOT / 'target/naru.exe')
     parser.add_argument('--reference', type=Path)
+    parser.add_argument('--frozen', action='store_true', help='Use the compiler\'s frozen C11 group; only explicit project extensions are loaded')
     parser.add_argument('--case', action='append', help='Run selected cases by name')
     parser.add_argument('--timeout', type=float, default=60)
     parser.add_argument('--memory-mib', type=int, default=2048)
     parser.add_argument('--report', type=Path, default=ROOT / 'target/c11-stress.json')
     args = parser.parse_args()
     compiler = args.compiler.resolve()
+    frozen = validate_frozen(compiler,core=ROOT/'target/naru.exe',required_rules=[ROOT/'dialects/c11.stx']) if args.frozen else None
     before = fingerprints(compiler)
     reference = args.reference or shutil.which('clang.exe')
     if not reference:
@@ -84,7 +88,7 @@ def main() -> int:
                 assert reference_run.returncode == 42 and reference_run.stdout == stdout, str(reference_run)
                 record['reference_validated'] = True
                 stage = 'Naru compilation'
-                common = ['--rules', str(ROOT / 'dialects/c11.stx'), '--frontend', 'c11.frontend',
+                common = ([] if args.frozen else ['--rules', str(ROOT / 'dialects/c11.stx')])+['--frontend', 'c11.frontend',
                           '--entry', 'c11.item', '--relation', 'c11.emit_program', '--unit', 'program',
                           '--runtime', 'crt-static', '--opt-level', '2', '--rule-budget', '100000000', '--parse-budget', '100000000',
                           '--rule-depth', '1024']
@@ -122,10 +126,12 @@ def main() -> int:
             print(('PASS ' if record['passed'] else 'FAIL ') + name + ('' if record['passed'] else ': ' + record['failed_stage'] + ': ' + record['error'].split('\n')[0]), flush=True)
     passed = sum(result['passed'] for result in results)
     unchanged = before == fingerprints(compiler)
+    if args.frozen:
+        unchanged = unchanged and frozen == validate_frozen(compiler,core=ROOT/'target/naru.exe',required_rules=[ROOT/'dialects/c11.stx'])
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps({'format': 1, 'compiler': str(compiler), 'reference': reference,
         'system_headers_required': True, 'system_crt_required': True, 'projects': projects,
-        'sha256': before, 'inputs_unchanged': unchanged,
+        'sha256': before, 'inputs_unchanged': unchanged, 'frozen_provenance': frozen,
         'passed': passed, 'total': len(results), 'all_selected_passed': unchanged and passed == len(results),
         'full_suite_passed': unchanged and len(results) == all_cases_count and passed == all_cases_count,
         'full_c11_conformance_claimed': False, 'results': results}, indent=2) + '\n', encoding='utf-8')

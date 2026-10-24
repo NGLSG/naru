@@ -37,6 +37,7 @@ effect base.check(ClosureValue(Closure($name,$params,$result,$captures),$values)
     => base.expect(base.Typed(Closure($name,$params,$result,$captures),records.Packed(base.check_arguments($values,list.map("records.member_type",$captures),$environment))),$expected);
 effect base.signature_result(base.Slot(Closure($name,$params,$result,$captures),$identity)) => $result;
 effect base.signature_params(base.Slot(Closure($name,$params,$result,$captures),$identity)) => $params;
+effect base.signature_params(base.Mutable(Closure($name,$params,$result,$captures),$identity)) => $params;
 effect base.call_checked($local,$arguments,base.Slot(Closure($name,$params,$result,$captures),$identity),$environment,$expected)
     => base.expect(base.Typed($result,Invocation($name,base.Typed(Closure($name,$params,$result,$captures),base.Read($identity)),base.check_arguments($arguments,$params,$environment))),$expected);
 effect base.lower(base.Typed($result,Invocation($name,$closure,$arguments)),$environment)

@@ -56,7 +56,7 @@ public fn env_lookup(e: &mut Engine, environment: i64, key: i64) -> i64 {
     if (e.env_roots.contains(environment)) {
         let hash = environment_key_hash(e, key); var entry = e.env_roots.get(environment);
         while (entry >= 0) {
-            let n = e.env_index.get(entry);
+            let n = e.index(entry);
             if (n.bit >= 0) { entry = ((hash >> n.bit) & 1) == 0 ? n.left : n.right; }
             else {
                 if (n.hash != hash) { return -1; }
@@ -93,7 +93,7 @@ public fn environment_entries(e: &mut Engine, rt: &mut Runtime, environment: i64
         if (id < 0) { continue; }
         rt.steps = rt.steps + 1;
         if (rt.steps > rt.limit) { e.reject("environment enumeration budget exhausted"); return -1; }
-        let entry = e.env_index.get(id);
+        let entry = e.index(id);
         if (entry.bit >= 0) { pending.push(entry.left); pending.push(entry.right); }
         else {
             let pair = e.add_node(5,"",origin.file,origin.line,origin.column);
@@ -130,14 +130,14 @@ public fn environment_key_hash(e: &mut Engine, key: i64) -> i64 {
     var hash: i64 = (n.kind as i64 + 1) * 131; var i: i64 = 0;
     while (i < n.text.len) { hash = (hash * 131 + str_char_at(n.text, i) as i64) % 2147483647; i = i + 1; }
     var edge = n.first;
-    while (edge >= 0) { let item = e.edges.get(edge); hash = (hash * 131 + environment_key_hash(e, item.value)) % 2147483647; edge = item.next; }
+    while (edge >= 0) { let item = e.edge(edge); hash = (hash * 131 + environment_key_hash(e, item.value)) % 2147483647; edge = item.next; }
     return hash;
 }
 public fn environment_index_leaf(e: &mut Engine, key: i64, value: i64, hash: i64, next: i64) -> i64 {
     return e.add_env_index(EnvIndex { bit: -1, left: -1, right: next, hash: hash, key: key, value: value });
 }
 public fn environment_index_splice(e: &mut Engine, root: i64, leaf: i64, bit: i64, hash: i64) -> i64 {
-    let n = e.env_index.get(root); let id = e.env_index.len;
+    let n = e.index(root); let id = e.env_index.len;
     if (n.bit < bit) {
         let zero = ((hash >> bit) & 1) == 0;
         return e.add_env_index(EnvIndex { bit: bit, left: zero ? leaf : root, right: zero ? root : leaf, hash: 0, key: -1, value: -1 });
@@ -148,7 +148,7 @@ public fn environment_index_splice(e: &mut Engine, root: i64, leaf: i64, bit: i6
     return e.add_env_index(copy);
 }
 public fn environment_index_replace(e: &mut Engine, root: i64, key: i64, value: i64, hash: i64) -> i64 {
-    let n = e.env_index.get(root);
+    let n = e.index(root);
     if (n.bit < 0) { return environment_collision_replace(e,root,key,value,hash); }
     var copy = n;
     if (((hash >> n.bit) & 1) == 0) { copy.left = environment_index_replace(e, n.left, key, value, hash); }
@@ -157,15 +157,15 @@ public fn environment_index_replace(e: &mut Engine, root: i64, key: i64, value: 
 }
 public fn environment_collision_replace(e: &mut Engine, root: i64, key: i64, value: i64, hash: i64) -> i64 {
     if (root < 0) { return environment_index_leaf(e,key,value,hash,-1); }
-    let n = e.env_index.get(root);
+    let n = e.index(root);
     if (term_equal(e,n.key,key)) { return environment_index_leaf(e,key,value,hash,n.right); }
     return environment_index_leaf(e,n.key,n.value,n.hash,environment_collision_replace(e,n.right,key,value,hash));
 }
 public fn environment_index_put(e: &mut Engine, root: i64, key: i64, value: i64, hash: i64) -> i64 {
     if (root < 0) { return environment_index_leaf(e, key, value, hash, -1); }
     var terminal = root;
-    while (e.env_index.get(terminal).bit >= 0) { let n = e.env_index.get(terminal); terminal = ((hash >> n.bit) & 1) == 0 ? n.left : n.right; }
-    let different = hash ^ e.env_index.get(terminal).hash;
+    while (e.index(terminal).bit >= 0) { let n = e.index(terminal); terminal = ((hash >> n.bit) & 1) == 0 ? n.left : n.right; }
+    let different = hash ^ e.index(terminal).hash;
     if (different == 0) { return environment_index_replace(e, root, key, value, hash); }
     var bit: i64 = 30;
     while (((different >> bit) & 1) == 0) { bit = bit - 1; }
@@ -195,7 +195,7 @@ public fn logic_occurs(e: &mut Engine, rt: &mut Runtime, variable: i64, value: i
         let n = e.node(current);
         if (n.kind == 0 || n.kind == 5) {
             var edge = n.first;
-            while (edge >= 0) { let item = e.edges.get(edge); pending.push(item.value); edge = item.next; }
+            while (edge >= 0) { let item = e.edge(edge); pending.push(item.value); edge = item.next; }
         }
     }
     return false;
@@ -232,7 +232,7 @@ public fn logic_unify(e: &mut Engine, rt: &mut Runtime, first: i64, second: i64,
         }
         var xe = x.first; var ye = y.first;
         while (xe >= 0) {
-            let xx = e.edges.get(xe); let yy = e.edges.get(ye);
+            let xx = e.edge(xe); let yy = e.edge(ye);
             pending.push(xx.value); pending.push(yy.value); xe = xx.next; ye = yy.next;
         }
     }
@@ -249,7 +249,7 @@ public fn logic_resolve(e: &mut Engine, rt: &mut Runtime, value: i64, environmen
     let copy = e.add_node(n.kind, n.text, n.file, n.line, n.column);
     var edge = n.first;
     while (edge >= 0 && e.good()) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         let child = logic_resolve(e, rt, item.value, environment, depth + 1);
         if (child < 0) { return -1; }
         e.add_child(copy, child); edge = item.next;
@@ -264,7 +264,7 @@ public fn rule_apply(e: &mut Engine, rt: &mut Runtime, name: string, arguments: 
     let owned_scope = e.begin_scope();
     let call = e.add_node(4, full_name, origin.file, origin.line, origin.column);
     var edge = e.node(arguments).first;
-    while (edge >= 0) { let item = e.edges.get(edge); e.add_child(call, item.value); edge = item.next; }
+    while (edge >= 0) { let item = e.edge(edge); e.add_child(call, item.value); edge = item.next; }
     let result = eval_term(e, rt, call, depth + 1); e.release_frame(call);
     if (owned_scope) { e.end_scope(result); }
     return result;
@@ -278,26 +278,27 @@ public fn rule_collect(e: &mut Engine, rt: &mut Runtime, name: string, arguments
     if (!e.good()) { return -1; }
     let call = e.add_node(4, full_name, origin.file, origin.line, origin.column);
     var edge = e.node(arguments).first;
-    while (edge >= 0) { let item = e.edges.get(edge); e.add_child(call, item.value); edge = item.next; }
+    while (edge >= 0) { let item = e.edge(edge); e.add_child(call, item.value); edge = item.next; }
     let key = full_name + ":" + naru_number(e.node(arguments).count);
     let result = e.add_node(5, "", origin.file, origin.line, origin.column);
-    if (!rt.heads.contains(key)) { return result; }
+    if (!rt.heads.contains(key)) { e.release_frame(call); return result; }
     var matches = Vec::<i64>.new(); var bindings_list = Vec::<i64>.new();
-    var ordinary = false; var rule_id = rt.heads.get(key);
+    var ordinary = false; var candidates = effect_candidates(e,rt.heads.get(key),call);
+    var rule_id = effect_candidate_next(e,&mut candidates);
     while (rule_id >= 0 && e.good()) {
         rt.steps = rt.steps + 1;
         if (rt.steps > rt.limit) { e.reject("rule collection budget exhausted"); return -1; }
-        let rule = e.effect_rules.get(rule_id);
+        let rule = e.effect_rules.get_ref(rule_id);
         let bindings = e.add_node(5, "", origin.file, origin.line, origin.column);
         let eligible = effect_matches(e, rt, rule_id, call, bindings, depth);
         if (!e.good()) { return -1; }
         if (eligible) { matches.push(rule_id); bindings_list.push(bindings); if (!rule.fallback) { ordinary = true; } }
         else { release_bindings(e,bindings); }
-        rule_id = rule.next;
+        rule_id = effect_candidate_next(e,&mut candidates);
     }
     var i: i64 = 0;
     while (i < matches.len && e.good()) {
-        let selected = matches.get(i); let rule = e.effect_rules.get(selected);
+        let selected = matches.get(i); let rule = e.effect_rules.get_ref(selected);
         if (!ordinary || !rule.fallback) {
             let value = effect_body(e, rt, selected, bindings_list.get(i), depth);
             if (value < 0) { return -1; }
@@ -327,7 +328,7 @@ public fn rule_select(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64) -
     var best: i64 = -1; var best_rank = Vec::<i64>.new(); var tied = false;
     var index: i64 = 0; var edge = e.node(candidates).first;
     while (edge >= 0 && e.good()) {
-        let item = e.edges.get(edge);
+        let item = e.edge(edge);
         let args = e.add_node(5,"",n.file,n.line,n.column);
         e.add_child(args,item.value); e.add_child(args,context);
         let rank_scope = e.begin_scope();
@@ -342,7 +343,7 @@ public fn rule_select(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64) -
             while (part >= 0 && e.good()) {
                 rt.steps = rt.steps + 1;
                 if (rt.steps > rt.limit) { e.reject("candidate ranking budget exhausted"); break; }
-                let value = e.edges.get(part);
+                let value = e.edge(part);
                 values.push(scalar_int(e,value.value)); part = value.next;
             }
         }
@@ -388,7 +389,7 @@ public fn eval_rule_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64
         if (cursor.kind != 13) { e.reject("expected a list cursor"); return -1; }
         if (name == "list.cursor.empty") { return bool_node(e, cursor.count == 0); }
         if (cursor.count == 0) { e.reject("cannot read or advance an empty list cursor"); return -1; }
-        let edge = e.edges.get(cursor.first);
+        let edge = e.edge(cursor.first);
         if (name == "list.cursor.head") { return edge.value; }
         return list_cursor(e, edge.next, cursor.last, cursor.count - 1, n);
     }
@@ -397,22 +398,31 @@ public fn eval_rule_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64
         let target = scalar_text(e, e.child(call, 0)); var state = e.child(call, 1);
         let limit = scalar_int(e, e.child(call, 2)); var steps: i64 = 0;
         if (limit < 1 || limit > rt.limit) { e.reject("list.unfold limit must be positive and within the evaluation budget"); return -1; }
+        let owned_scope = e.begin_scope(); var finished = false;
+        var collection_limit: i64 = 8192;
         let output = e.add_node(5, "", n.file, n.line, n.column);
         while (steps < limit && e.good()) {
             let arguments = e.add_node(5, "", n.file, n.line, n.column); e.add_child(arguments, state);
             let result = rule_apply(e, rt, target, arguments, depth, n);
             e.release_frame(arguments);
-            if (!e.good() || !ir_list(e, result)) { return -1; }
-            if (e.node(result).count != 3) { e.reject("list.unfold step must return [continue, state, chunk]"); return -1; }
+            if (!e.good() || !ir_list(e, result)) { break; }
+            if (e.node(result).count != 3) { e.reject("list.unfold step must return [continue, state, chunk]"); break; }
             let chunk = e.child(result, 2);
-            if (!ir_list(e, chunk)) { return -1; }
+            if (!ir_list(e, chunk)) { break; }
             var edge = e.node(chunk).first;
-            while (edge >= 0) { let item = e.edges.get(edge); e.add_child(output, item.value); edge = item.next; }
+            while (edge >= 0) { let item = e.edge(edge); e.add_child(output, item.value); edge = item.next; }
             state = e.child(result, 1);
-            if (!rule_truth(e, e.child(result, 0))) { return e.good() ? e.complete_value(output) : -1; }
+            if (!rule_truth(e, e.child(result, 0))) { finished = true; break; }
             steps = steps + 1;
+            if (e.scope_allocation_count() >= collection_limit) {
+                e.collect_scope_pair(output,state);
+                collection_limit = e.scope_allocation_count() * 2 + 8192;
+            }
         }
-        e.reject("list.unfold step budget exhausted"); return -1;
+        if (e.good() && !finished) { e.reject("list.unfold step budget exhausted"); }
+        let result = e.good() ? e.complete_value(output) : -1;
+        if (owned_scope) { e.end_scope(result); }
+        return result;
     }
     if (name == "rule.iterate") {
         if (!expect_arity(e, call, 3)) { return -1; }
@@ -433,9 +443,9 @@ public fn eval_rule_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64
             // Batch collection bounds discarded iteration states. Scale the
             // next threshold with survivors to avoid rescanning a growing
             // output tree or deep work stack on every iteration.
-            if (e.scope_nodes.len >= collection_limit) {
+            if (e.scope_allocation_count() >= collection_limit) {
                 e.collect_scope(state);
-                collection_limit = e.scope_nodes.len * 2 + 8192;
+                collection_limit = e.scope_allocation_count() * 2 + 8192;
             }
         }
         if (e.good() && !finished) { e.reject("rule.iterate step budget exhausted"); }
@@ -462,7 +472,7 @@ public fn eval_rule_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64
             var unchanged = origin.count == replacement.count;
             var old_edge = origin.first; var new_edge = replacement.first;
             while (unchanged && old_edge >= 0) {
-                let old_item = e.edges.get(old_edge); let new_item = e.edges.get(new_edge);
+                let old_item = e.edge(old_edge); let new_item = e.edge(new_edge);
                 unchanged = old_item.value == new_item.value;
                 old_edge = old_item.next; new_edge = new_item.next;
             }
@@ -500,7 +510,7 @@ public fn eval_rule_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64
         if (!ir_list(e, children) || tag_name.len == 0) { e.reject("term requires a nonempty tag and child list"); return -1; }
         let value = e.add_node(0, tag_name, n.file, n.line, n.column);
         var edge = e.node(children).first;
-        while (edge >= 0) { let item = e.edges.get(edge); e.add_child(value, item.value); edge = item.next; }
+        while (edge >= 0) { let item = e.edge(edge); e.add_child(value, item.value); edge = item.next; }
         return value;
     }
     if (name == "symbol" || name == "logic.fresh") {
@@ -546,7 +556,7 @@ public fn eval_rule_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64
         let result = e.add_node(5, "", n.file, n.line, n.column);
         let source = e.node(list); var view = e.node(result);
         e.complete_value(list);
-        view.first = e.edges.get(source.first).next; view.count = source.count - 1;
+        view.first = e.edge(source.first).next; view.count = source.count - 1;
         view.last = view.count == 0 ? -1 : source.last; view.evaluated = true;
         e.nodes.set(result, view); return result;
     }
@@ -558,14 +568,14 @@ public fn eval_rule_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64
         if (name == "list.prepend") { e.add_child(result, a); }
         else {
             var edge = e.node(a).first;
-            while (edge >= 0) { let item = e.edges.get(edge); e.add_child(result, item.value); edge = item.next; }
+            while (edge >= 0) { let item = e.edge(edge); e.add_child(result, item.value); edge = item.next; }
         }
         // Copy only the left prefix, and share the immutable right tail.
         // Prepend and tail are O(1); concatenation is O(size(left)).
         let tail = e.node(b); e.complete_value(b); var out = e.node(result);
         if (tail.count > 0) {
             if (out.last < 0) { out.first = tail.first; }
-            else { var prior = e.edges.get(out.last); prior.next = tail.first; e.edges.set(out.last, prior); }
+            else { var prior = e.edge(out.last); prior.next = tail.first; e.set_edge(out.last, prior); }
             out.last = tail.last; out.count = out.count + tail.count;
         }
         out.evaluated = true; e.nodes.set(result, out); return result;
@@ -575,9 +585,9 @@ public fn eval_rule_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64
         let lists = e.child(call, 0); if (!ir_list(e, lists)) { return -1; }
         let result = e.add_node(5, "", n.file, n.line, n.column); var outer = e.node(lists).first;
         while (outer >= 0 && e.good()) {
-            let row = e.edges.get(outer); if (!ir_list(e, row.value)) { return -1; }
+            let row = e.edge(outer); if (!ir_list(e, row.value)) { return -1; }
             var inner = e.node(row.value).first;
-            while (inner >= 0) { let item = e.edges.get(inner); e.add_child(result, item.value); inner = item.next; }
+            while (inner >= 0) { let item = e.edge(inner); e.add_child(result, item.value); inner = item.next; }
             outer = row.next;
         }
         return e.complete_value(result);
@@ -587,15 +597,22 @@ public fn eval_rule_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64
         let target = scalar_text(e, e.child(call, 0)); let list = e.child(call, 1);
         if (!ir_list(e, list)) { return -1; }
         var result = e.child(call, 2); var edge = e.node(list).first;
+        let owned_scope = e.begin_scope(); var collection_limit: i64 = 8192;
         while (edge >= 0 && e.good()) {
-            let item = e.edges.get(edge); let arguments = e.add_node(5, "", n.file, n.line, n.column);
+            let item = e.edge(edge); let arguments = e.add_node(5, "", n.file, n.line, n.column);
             e.add_child(arguments, result); e.add_child(arguments, item.value);
             result = rule_apply(e, rt, target, arguments, depth, n);
             e.release_frame(arguments);
-            if (result < 0) { return -1; }
+            if (result < 0) { break; }
             edge = item.next;
+            if (e.scope_allocation_count() >= collection_limit) {
+                e.collect_scope(result);
+                collection_limit = e.scope_allocation_count() * 2 + 8192;
+            }
         }
-        return e.good() ? result : -1;
+        let output = e.good() ? result : -1;
+        if (owned_scope) { e.end_scope(output); }
+        return output;
     }
     if (name == "list.map") {
         if (!expect_arity(e, call, 2)) { return -1; }
@@ -604,7 +621,7 @@ public fn eval_rule_tool(e: &mut Engine, rt: &mut Runtime, call: i64, depth: i64
         let result = e.add_node(5, "", n.file, n.line, n.column);
         var edge = e.node(list).first;
         while (edge >= 0 && e.good()) {
-            let item = e.edges.get(edge); let args = e.add_node(5, "", n.file, n.line, n.column); e.add_child(args, item.value);
+            let item = e.edge(edge); let args = e.add_node(5, "", n.file, n.line, n.column); e.add_child(args, item.value);
             let value = rule_apply(e, rt, target, args, depth, n);
             e.release_frame(args);
             if (value < 0) { return -1; }

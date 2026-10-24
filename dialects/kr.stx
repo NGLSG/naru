@@ -1,0 +1,2776 @@
+// K&R C (1978, The C Programming Language 1st ed. reference manual) over the
+// base rule library. Milestone 1: the integer/pointer machine - int/char/
+// long/short/unsigned, pointer arithmetic with element scaling, arrays that
+// decay to pointers, old-style function definitions (no prototypes), implicit
+// function declarations, default int, integer promotions and the usual
+// arithmetic conversions, all statements including do-while/for/break/
+// continue/goto, string literals as WRITABLE char arrays (K&R semantics),
+// sizeof, casts, printf via the CRT.
+// Provenance: historical/c/kr/1978/ (INDEX + notes, K&R-clause-referenced).
+// Deviations are listed in docs/kr.md and must stay in sync.
+mod kr;
+use base;
+use types;
+use numbers;
+use pipeline;
+use tree;
+use cfg;
+use control;
+use allocation;
+
+// ---- frontend: K&R lexing (no trigraphs - those are C89 §2.1.1.2) ----------
+// /* */ comments; maximal-munch operators; numbers keep 0x/0-leading spellings
+// and are decoded by the dialect, not by the core's decimal capture.
+effect lex_config() => [
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_",
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789",
+    "0123456789",
+    "0123456789abcdefABCDEFxXLl.",
+    "eE",
+    ["++", "--", "<<", ">>", "<=", ">=", "==", "!=",
+     "&&", "||", "+=", "-=", "*=", "/=", "%=", "<<=", ">>=",
+     "&=", "^=", "|=", "->",
+     "+", "-", "*", "/", "%", "<", ">", "=", "!", "~", "&", "^", "|", "?", ":",
+     "(", ")", "{", "}", "[", "]", ",", ";", ".", "#", "\\"],
+    [["/*", "*/"]],
+    "\"'"
+];
+effect lex_phases($source)
+    => text.replace(text.replace($source, "\r\n", "\n"), "\r", "\n");
+effect lex_scan($source, $path)
+    => text.lex(lex_phases($source), $path, lex_config());
+
+effect drop_newlines($tokens) => list.reverse(list.fold("drop_step", $tokens, []));
+effect drop_step($acc, $token)
+    => choose(eq(lex_kind($token), 7), $acc, list.prepend($token, $acc));
+effect classify($tokens) => list.reverse(list.fold("classify_step", $tokens, []));
+effect classify_step($acc, $token) => list.prepend(classify_one($token), $acc);
+effect classify_one([$k, $r, $f, $l, $c, $s]) when eq($k, 5) => [14, $r, $f, $l, $c, $s];
+effect classify_one([$k, $r, $f, $l, $c, $s]) when and(eq($k, 1), reserved($r))
+    => [8, $r, $f, $l, $c, $s];
+effect[fallback] classify_one([$k, $r, $f, $l, $c, $s]) => [$k, $r, $f, $l, $c, $s];
+effect lex_kind([$k, $r, $f, $l, $c, $s]) => $k;
+// The K&R 1st edition keyword list (28 words; entry is reserved but
+// unimplemented in K&R itself and stays reserved-only here).
+effect reserved($word)
+    => text.contains(" int char long short unsigned float double struct union typedef sizeof static extern auto register goto return break continue if else do while for switch case default entry ",
+        concat(" ", concat($word, " ")));
+
+// The commit interns string literals into writable byte globals (K&R: string
+// literals are modifiable char arrays) and emits the CRT declarations once
+// per file. The pool threads across the file's items.
+effect kr.frontend($path, $source, $options)
+    => bind([$toks, $types], kr_typedef_scan(kr_preprocess(lex_scan($source, $path))),
+        source.parse_tokens(classify(drop_newlines($toks)), "kr.item", $types, "kr.commit"));
+effect kr.commit($context, $item)
+    => bind([$structed, $senv], kr_struct_pass($item, kr_pool_structs($context), $context),
+        bind([$rewritten, $globals, $pool], intern_walk($structed, [], $context),
+            bind($first, choose(env.contains($pool, KrDeclsKey()), [], [KRuntimeDecls()]),
+                [env.put(env.put($pool, KrDeclsKey(), 1), KrStructsKey(), $senv),
+                 list.concat($first, list.concat($globals, [$rewritten]))])));
+// the struct environment rides in the per-file commit pool: K&R resolves
+// struct definitions in one pass, so each item's struct references become
+// the full KStructT layout at commit time (works in item AND program mode)
+effect kr_pool_structs($context)
+    => choose(env.contains($context, KrStructsKey()), env.get($context, KrStructsKey()), env.empty());
+effect kr_struct_pass($item, $senv, $tenv)
+    => bind([$structed, $senv2], kr_struct_rewrite($item, $senv, $tenv),
+        kr_struct_register($structed, $senv2));
+effect kr_struct_register(KStructDef($name, $members, $kind), $senv)
+    => bind($t, kr_layout_kind($kind, $members, $senv),
+        [KStructDef($name, $members, $kind), env.put($senv, $name, $t)]);
+effect[fallback] kr_struct_register($item, $senv) => [$item, $senv];
+effect kr_struct_rewrite($node, $senv, $tenv)
+    => bind([$value, Hoisting($ignored, $senv2)],
+        tree.rewrite_with($node, "struct_enter", "struct_leave", 0, Hoisting($tenv, $senv)),
+        [$value, $senv2]);
+effect struct_enter(KStructRef($n), $context, Hoisting($tenv, $senv))
+    => tree.Stop(env.get($senv, $n), Hoisting($tenv, $senv));
+// typedef names resolve to their decoded type; the type itself may name
+// structs or further typedefs, resolved with both environments
+effect struct_enter(KTypedefRef($n), $context, Hoisting($tenv, $senv))
+    => bind($t, env.get($tenv, KrTypedefKey($n)),
+        tree.Stop(kr_resolve_both($t, $tenv, $senv), Hoisting($tenv, $senv)));
+effect[fallback] struct_enter($node, $context, $state) when or(eq(term.kind($node), 0), eq(term.kind($node), 5))
+    => tree.Descend(term.children($node), $context, $node, $state);
+effect[fallback] struct_enter($node, $context, $state) when and(not(eq(term.kind($node), 0)), not(eq(term.kind($node), 5)))
+    => tree.Stop($node, $state);
+effect[fallback] struct_leave($original, $children, $context, $state) => [term.rebuild($original, $children), $state];
+
+// ---- the type machine --------------------------------------------------------
+// M1 types: Signed/Unsigned widths and Ptr(t). Storage is direct LLVM stack
+// slots (alloca/load/store on the element type), following the b.stx pattern.
+effect types.repr(Ptr($pointee)) => "!llvm.ptr";
+effect base.storage_type(Signed($w)) => "!llvm.ptr";
+effect base.storage_type(Unsigned($w)) => "!llvm.ptr";
+effect base.storage_type(Ptr($p)) => "!llvm.ptr";
+effect base.storage_alloc($d) when kr_storage_p($d)
+    => mlir.op("llvm.alloca",
+        [mlir.op("arith.constant", [], ["i64"], [Attr("value", 1, "i64")], [])],
+        ["!llvm.ptr"],
+        [RawAttr("elem_type", types.repr($d)), RawAttr("operandSegmentSizes", "array<i32: 1, 0>")],
+        []);
+effect base.storage_load($d, $slot) when kr_storage_p($d)
+    => mlir.op("llvm.load", [$slot], [types.repr($d)], [], []);
+effect base.storage_store(Typed($d, $v), $slot, $environment) when kr_storage_p($d)
+    => mlir.op("llvm.store", [lower(Typed($d, $v), $environment), $slot], [], [], []);
+effect kr_storage_p(Signed($w)) => 1;
+effect kr_storage_p(Unsigned($w)) => 1;
+effect kr_storage_p(Ptr($p)) => 1;
+effect kr_storage_p(Real($f)) => 1;
+
+// pointer comparisons lower through llvm.icmp on pointers
+effect base.predicate($p, Ptr($e)) => ["llvm.icmp", kr_ptr_code($p)];
+effect kr_ptr_code("eq") => 0;
+effect kr_ptr_code("ne") => 1;
+effect kr_ptr_code("lt") => 2;
+effect kr_ptr_code("le") => 3;
+effect kr_ptr_code("gt") => 4;
+effect kr_ptr_code("ge") => 5;
+// pointer<->pointer re-tags are representation identities; int<->pointer are
+// explicit conversion terms (CToPtr/CFromPtr) lowered below
+effect base.cast_opcode(Ptr($a), Ptr($b)) => "identity";
+
+// element size in bytes (sizeof)
+effect kr_size(Signed($w)) => int.div(types.width($w), 8);
+effect kr_size(Unsigned($w)) => int.div(types.width($w), 8);
+effect kr_size(Ptr($p)) => 8;
+// float is 4 bytes (single precision) even though arithmetic promotes to
+// double - sizeof answers the object size, not the arithmetic width
+effect kr_size(Real("f32")) => 4;
+effect kr_size(Real($f)) => 8;
+
+// integer promotion (K&R: char/short promote to int everywhere; float
+// promotes to double in every expression - K&R §4 conversion table)
+effect kr_promote(Signed(8)) => Signed(32);
+effect kr_promote(Signed(16)) => Signed(32);
+effect kr_promote(Real("f32")) => Real("f64");
+effect[fallback] kr_promote($t) => $t;
+// usual arithmetic conversions: any floating operand makes both double
+// (K&R 1st ed: floats are promoted to double BEFORE arithmetic)
+effect kr_common(Signed($a), Signed($b)) => Signed(choose(lt($a, $b), $b, $a));
+effect kr_common(Unsigned($a), Unsigned($b)) => Unsigned(choose(lt($a, $b), $b, $a));
+effect kr_common(Unsigned(64), Signed($b)) => Unsigned(64);
+effect kr_common(Signed($a), Unsigned(64)) => Unsigned(64);
+effect kr_common(Unsigned(32), Signed(64)) => Signed(64);
+effect kr_common(Signed(64), Unsigned(32)) => Signed(64);
+effect kr_common(Unsigned(32), Signed(32)) => Unsigned(32);
+effect kr_common(Signed(32), Unsigned(32)) => Unsigned(32);
+effect kr_common(Real($f), $b) => Real("f64");
+effect[fallback] kr_common($a, Real($f)) => Real("f64");
+
+// sizeof with environment-dependent types (structs, arrays of structs)
+effect kr_size_of(KStructRef($n), $env)
+    => bind(KStructT($tag, $fields, $size, $al), env.get($env, $n), $size);
+effect kr_size_of(KArrT($elem, $count), $env)
+    => int.mul($count, kr_size_of($elem, $env));
+effect[fallback] kr_size_of($t, $env) => kr_size($t);
+// natural alignment
+effect kr_size(KStructT($tag, $fields, $size, $align)) => $size;
+effect kr_size(KArrT($elem, $count)) => int.mul($count, kr_size($elem));
+effect kr_align(Signed($w)) => choose(lt(int.div(types.width($w), 8), 8), int.div(types.width($w), 8), 8);
+effect kr_align(Unsigned($w)) => choose(lt(int.div(types.width($w), 8), 8), int.div(types.width($w), 8), 8);
+effect kr_align(Ptr($p)) => 8;
+effect kr_align(Real("f32")) => 4;
+effect kr_align(Real($f)) => 8;
+effect kr_align(KStructT($tag, $fields, $size, $align)) => $align;
+effect kr_align(KArrT($elem, $count)) => kr_align($elem);
+effect kr_align_of(KStructRef($n), $env)
+    => bind(KStructT($tag, $fields, $size, $al), env.get($env, $n), $al);
+effect kr_align_of(KArrT($elem, $count), $env) => kr_align_of($elem, $env);
+effect[fallback] kr_align_of($t, $env) => kr_align($t);
+effect kr_round_up($off, $al) => int.mul(int.div(int.add($off, int.sub($al, 1)), $al), $al);
+// resolve a struct reference to its definition
+effect kr_resolve_t(KStructRef($n), $env) => env.get($env, $n);
+effect[fallback] kr_resolve_t($t, $env) => $t;
+
+// typed zero: pointers need a real null, not an arith constant
+effect kr_zero(Signed($w)) => Typed(Signed($w), Integer(0));
+effect kr_zero(Unsigned($w)) => Typed(Unsigned($w), Integer(0));
+effect kr_zero(Ptr($p)) => Typed(Ptr($p), CPNull());
+// the attr string must carry the f32/f64 suffix; numbers.real produces it
+effect kr_zero(Real($f)) => Typed(Real($f), Floating(numbers.real("0", Real($f))));
+effect base.lower(Typed(Ptr($p), CPNull()), $environment)
+    => mlir.op("llvm.inttoptr",
+        [mlir.op("arith.constant", [], ["i64"], [Attr("value", 0, "i64")], [])],
+        ["!llvm.ptr"], [], []);
+// kr_check_any / kr_expect / kr_coerce are the three choke points every C
+// expression flows through; conversions are inserted only here.
+effect kr_check_any($e, $environment) => check($e, $environment, Any());
+effect kr_expect(Typed($t, $v), $expected) when or(eq($t, $expected), eq($expected, Any()))
+    => Typed($t, $v);
+effect[fallback] kr_expect(Typed($t, $v), $expected) => kr_coerce(Typed($t, $v), $expected);
+effect kr_coerce(Typed(Signed($f), $v), Signed($to))
+    => Typed(Signed($to), Converted(Typed(Signed($f), $v)));
+effect kr_coerce(Typed(Signed($f), $v), Unsigned($to))
+    => Typed(Unsigned($to), Converted(Typed(Signed($f), $v)));
+effect kr_coerce(Typed(Unsigned($f), $v), Signed($to))
+    => Typed(Signed($to), Converted(Typed(Unsigned($f), $v)));
+effect kr_coerce(Typed(Unsigned($f), $v), Unsigned($to))
+    => Typed(Unsigned($to), Converted(Typed(Unsigned($f), $v)));
+effect kr_coerce(Typed(Ptr($a), $v), Ptr($b)) => Typed(Ptr($b), $v);
+effect kr_coerce(Typed(Signed($f), $v), Ptr($p))
+    => Typed(Ptr($p), CToPtr(Typed(Signed($f), $v)));
+effect kr_coerce(Typed(Unsigned($f), $v), Ptr($p))
+    => Typed(Ptr($p), CToPtr(Typed(Unsigned($f), $v)));
+effect kr_coerce(Typed(Ptr($p), $v), Signed($to))
+    => Typed(Signed($to), CFromPtr(Typed(Ptr($p), $v)));
+effect kr_coerce(Typed(Ptr($p), $v), Unsigned($to))
+    => Typed(Unsigned($to), CFromPtr(Typed(Ptr($p), $v)));
+// int <-> float both ways (K&R §4); the opcodes come from control.stx
+// (sitofp/uitofp/fptosi/fptoui/extf/truncf)
+effect kr_coerce(Typed(Signed($f), $v), Real($to))
+    => Typed(Real($to), Converted(Typed(Signed($f), $v)));
+effect kr_coerce(Typed(Unsigned($f), $v), Real($to))
+    => Typed(Real($to), Converted(Typed(Unsigned($f), $v)));
+effect kr_coerce(Typed(Real($f), $v), Signed($to))
+    => Typed(Signed($to), Converted(Typed(Real($f), $v)));
+effect kr_coerce(Typed(Real($f), $v), Unsigned($to))
+    => Typed(Unsigned($to), Converted(Typed(Real($f), $v)));
+effect kr_coerce(Typed(Real($f), $v), Real($to))
+    => Typed(Real($to), Converted(Typed(Real($f), $v)));
+effect[fallback] kr_coerce(Typed($t, $v), $expected)
+    => fail("incompatible types in assignment");
+// promote a checked value: the operand of every unary/binary operator
+effect kr_promote_any(Typed($t, $v)) => kr_expect(Typed($t, $v), kr_promote($t));
+
+// int <-> pointer conversions (K&R allows both directions)
+effect base.lower(Typed(Ptr($p), CToPtr(Typed(Signed($f), $v))), $environment)
+    => mlir.op("llvm.inttoptr", [kr_widen(lower(Typed(Signed($f), $v), $environment), Signed($f))],
+        ["!llvm.ptr"], [], []);
+effect base.lower(Typed(Ptr($p), CToPtr(Typed(Unsigned($f), $v))), $environment)
+    => mlir.op("llvm.inttoptr", [kr_widen(lower(Typed(Unsigned($f), $v), $environment), Unsigned($f))],
+        ["!llvm.ptr"], [], []);
+effect kr_widen($v, Signed(64)) => $v;
+effect[fallback] kr_widen($v, Signed($w)) => mlir.op("arith.extsi", [$v], ["i64"], [], []);
+effect kr_widen($v, Unsigned(64)) => $v;
+effect[fallback] kr_widen($v, Unsigned($w)) => mlir.op("arith.extui", [$v], ["i64"], [], []);
+effect base.lower(Typed(Signed($to), CFromPtr(Typed(Ptr($p), $v))), $environment)
+    => kr_narrow(mlir.op("llvm.ptrtoint", [lower(Typed(Ptr($p), $v), $environment)], ["i64"], [], []), $to);
+effect base.lower(Typed(Unsigned($to), CFromPtr(Typed(Ptr($p), $v))), $environment)
+    => kr_narrow(mlir.op("llvm.ptrtoint", [lower(Typed(Ptr($p), $v), $environment)], ["i64"], [], []), $to);
+effect kr_narrow($v, 64) => $v;
+effect[fallback] kr_narrow($v, $to) => mlir.op("arith.trunci", [$v], [concat("i", text($to))], [], []);
+
+// ---- constants (K&R §2.4-2.5) -------------------------------------------------
+// decimal, octal (leading 0), hex (0x); optional L suffix = long constant.
+// Float spellings (1.5, 1e10, 123.45 - the core lexer emits kind-6 tokens)
+// become base Literals so the numbers library handles them. Char constants
+// are int (their value is the character code).
+effect kr_number($raw)
+    => bind($body, kr_strip_l($raw),
+        choose(kr_hex_p($body), Int(kr_hex($body, 2, text.len($body), 0)),
+            choose(kr_oct_p($body), Int(kr_octal($body, 1, text.len($body), 0)),
+                choose(kr_float_p($body), Literal($body),
+                    choose(kr_l_p($raw), CLConst(int.parse($body)),
+                        Int(int.parse($body)))))));
+// a float spelling contains '.' or an e/E exponent (hex is decided first;
+// hex float 0x1.fp3 stays a hex-parse failure, which is fine for K&R)
+effect kr_float_p($raw)
+    => or(text.contains($raw, "."), or(text.contains($raw, "e"), text.contains($raw, "E")));
+effect kr_strip_l($raw)
+    => choose(kr_l_p($raw), text.slice($raw, 0, int.sub(text.len($raw), 1)), $raw);
+effect kr_l_p($raw)
+    => or(eq(text.slice($raw, int.sub(text.len($raw), 1), text.len($raw)), "L"),
+        eq(text.slice($raw, int.sub(text.len($raw), 1), text.len($raw)), "l"));
+effect kr_hex_p($raw) when lt(1, text.len($raw))
+    => or(eq(text.slice($raw, 0, 2), "0x"), eq(text.slice($raw, 0, 2), "0X"));
+effect[fallback] kr_hex_p($raw) => 0;
+effect kr_oct_p($raw) => and(eq(text.slice($raw, 0, 1), "0"), lt(1, text.len($raw)));
+effect kr_hex($raw, $i, $end, $acc) when eq($i, $end) => $acc;
+effect kr_hex($raw, $i, $end, $acc) when lt($i, $end)
+    => kr_hex($raw, add($i, 1), $end, add(mul($acc, 16), kr_hexdigit(text.byte($raw, $i))));
+effect kr_hexdigit($b) when and(lt(47, $b), lt($b, 58)) => int.sub($b, 48);
+effect kr_hexdigit($b) when and(lt(64, $b), lt($b, 71)) => int.sub($b, 55);
+effect kr_hexdigit($b) when and(lt(96, $b), lt($b, 103)) => int.sub($b, 87);
+effect[fallback] kr_hexdigit($b) => fail("invalid hex digit");
+effect kr_octal($raw, $i, $end, $acc) when eq($i, $end) => $acc;
+effect kr_octal($raw, $i, $end, $acc) when lt($i, $end)
+    => bind($d, int.sub(text.byte($raw, $i), 48),
+        choose(and(lt(-1, $d), lt($d, 8)),
+            kr_octal($raw, add($i, 1), $end, add(mul($acc, 8), $d)),
+            fail("invalid octal digit")));
+effect base.check(CLConst($v), $environment, $expected)
+    => expect(Typed(Signed(64), Integer($v)), $expected);
+effect base.hint(CLConst($v), $environment) => Signed(64);
+
+// K&R escape sequences: \n \t \b \r \f \\ \' \" \0 and \ddd (octal)
+effect kr_escape(110) => 10;
+effect kr_escape(116) => 9;
+effect kr_escape(98) => 8;
+effect kr_escape(114) => 13;
+effect kr_escape(102) => 12;
+effect kr_escape(92) => 92;
+effect kr_escape(39) => 39;
+effect kr_escape(34) => 34;
+effect kr_escape(48) => 0;
+
+// ---- expression syntax (K&R precedence, exact) --------------------------------
+// Two categories: krx is assignment-level (what C calls an
+// assignment-expression; argument and initializer elements), krexpr adds
+// ONLY the comma operator, so the separate comma-separated lists (args,
+// declarators, initializers) parse without ambiguity. The core `expr`
+// templates register & and the relations at levels that disagree with C,
+// so K&R owns its whole precedence table here.
+syntax krexpr[fallback] `$e:krx` => $e;
+syntax krexpr[5,left] `$a:krexpr , $b:krx` => CComma($a, $b);
+syntax krx[fallback] `$n:number` => kr_number(text($n));
+syntax krx[fallback] `$n:ident` => CName($n);
+syntax krx[fallback] `( $e:krexpr )` => $e;
+// string and character constants (the token keeps its quotes)
+syntax krx[fallback] `$s:string` => kr_quote(text($s));
+
+// postfix: [] () ++ -- (level 90, left)
+syntax krx[90,left] `$a:krx [ $i:krx ]` => CIndex($a, $i);
+syntax krx[90,left] `$f:krx ( )` => CCall($f, []);
+syntax krx[90,left] `$f:krx ( $args:kr.args )` => CCall($f, $args);
+syntax krx[90,left] `$e:krx "++"` => CIncDec($e, 1, 1);
+syntax krx[90,left] `$e:krx "--"` => CIncDec($e, -1, 1);
+// struct member access (K&R 8.5/8.6): s.m and p->m; -> is sugar for
+// (*p).m, both normalize to CMember over the member's ADDRESS
+syntax krx[90,left] `$b:krx . $m:ident` => CDot($b, $m);
+syntax krx[90,left] `$b:krx "->" $m:ident` => CArrow($b, $m);
+
+// unary (level 70, right to left)
+syntax krx[70,right] `- $e:krx` => CNeg($e);
+syntax krx[70,right] `+ $e:krx` => CPlus($e);
+syntax krx[70,right] `! $e:krx` => CNot($e);
+syntax krx[70,right] `~ $e:krx` => CCompl($e);
+syntax krx[70,right] `* $e:krx` => CDeref($e);
+syntax krx[70,right] `& $e:krx` => CAddrOf($e);
+syntax krx[70,right] `"++" $e:krx` => CIncDec($e, 1, 0);
+syntax krx[70,right] `"--" $e:krx` => CIncDec($e, -1, 0);
+syntax krx[70,right] `sizeof ( $t:kr.casttype )` => CSizeofT($t);
+
+// fallback: with parentheses the TYPE reading wins (C's typedef rule)
+syntax krx[70,right,fallback] `sizeof $e:krx` => CSizeofE($e);
+syntax krx[70,right] `( $t:kr.casttype ) $e:krx` => CCast($t, $e);
+
+// multiplicative (60) / additive (50) / shift (48)
+syntax krx[60,left] `$a:krx * $b:krx` => CBin("mul", $a, $b);
+syntax krx[60,left] `$a:krx / $b:krx` => CBin("div", $a, $b);
+syntax krx[60,left] `$a:krx % $b:krx` => CBin("rem", $a, $b);
+syntax krx[50,left] `$a:krx + $b:krx` => CBin("add", $a, $b);
+syntax krx[50,left] `$a:krx - $b:krx` => CBin("sub", $a, $b);
+syntax krx[48,left] `$a:krx "<<" $b:krx` => CShift("shl", $a, $b);
+syntax krx[48,left] `$a:krx ">>" $b:krx` => CShift("shr", $a, $b);
+
+// relational (44) / equality (42)
+syntax krx[44,left] `$a:krx < $b:krx` => CCompare("lt", $a, $b);
+syntax krx[44,left] `$a:krx "<=" $b:krx` => CCompare("le", $a, $b);
+syntax krx[44,left] `$a:krx > $b:krx` => CCompare("gt", $a, $b);
+syntax krx[44,left] `$a:krx ">=" $b:krx` => CCompare("ge", $a, $b);
+syntax krx[42,left] `$a:krx "==" $b:krx` => CCompare("eq", $a, $b);
+syntax krx[42,left] `$a:krx "!=" $b:krx` => CCompare("ne", $a, $b);
+
+// bitwise (41 & / 38 ^ / 36 |) / logical (30 && / 25 ||)
+syntax krx[41,left] `$a:krx & $b:krx` => CBin("and", $a, $b);
+syntax krx[38,left] `$a:krx ^ $b:krx` => CBin("xor", $a, $b);
+syntax krx[36,left] `$a:krx | $b:krx` => CBin("or", $a, $b);
+syntax krx[30,left] `$a:krx "&&" $b:krx` => CLogical("and", $a, $b);
+syntax krx[25,left] `$a:krx "||" $b:krx` => CLogical("or", $a, $b);
+
+// conditional (20, right) and assignment (10, right)
+syntax krx[20,right] `$c:krx ? $a:krexpr : $b:krx` => CTernary($c, $a, $b);
+syntax krx[10,right] `$l:krx = $r:krx` => CAssign($l, "assign", $r);
+syntax krx[10,right] `$l:krx "+=" $r:krx` => CAssign($l, "add", $r);
+syntax krx[10,right] `$l:krx "-=" $r:krx` => CAssign($l, "sub", $r);
+syntax krx[10,right] `$l:krx "*=" $r:krx` => CAssign($l, "mul", $r);
+syntax krx[10,right] `$l:krx "/=" $r:krx` => CAssign($l, "div", $r);
+syntax krx[10,right] `$l:krx "%=" $r:krx` => CAssign($l, "rem", $r);
+syntax krx[10,right] `$l:krx "<<=" $r:krx` => CAssign($l, "shl", $r);
+syntax krx[10,right] `$l:krx ">>=" $r:krx` => CAssign($l, "shr", $r);
+syntax krx[10,right] `$l:krx "&=" $r:krx` => CAssign($l, "and", $r);
+syntax krx[10,right] `$l:krx "^=" $r:krx` => CAssign($l, "xor", $r);
+syntax krx[10,right] `$l:krx "|=" $r:krx` => CAssign($l, "or", $r);
+
+syntax kr.args `$e:krx` => [$e];
+syntax kr.args `$e:krx , $rest:kr.args` => list.prepend($e, $rest);
+
+// type words and cast types (bounded star depth; deeper pointer casts are
+// vanishingly rare in K&R programs)
+// storage classes for function definitions (K&R 8.5); the linkage is not
+// observable in a single translation unit, so the class is recorded only
+syntax kr.sclass `static` => "static";
+syntax kr.sclass `extern` => "extern";
+syntax kr.dspecs `$sc:kr.sclass $t:kr.ts` => KSpec($sc, $t);
+syntax kr.dspecs[fallback] `$t:kr.ts` => KSpec("none", $t);
+
+syntax kr.ts `int` => Signed(32);
+syntax kr.ts `char` => Signed(8);
+syntax kr.ts `long` => Signed(64);
+syntax kr.ts `short` => Signed(16);
+syntax kr.ts `unsigned` => Unsigned(32);
+syntax kr.ts `unsigned int` => Unsigned(32);
+syntax kr.ts `unsigned long` => Unsigned(64);
+syntax kr.ts `long int` => Signed(64);
+syntax kr.ts `short int` => Signed(16);
+// float is historical (K&R has it); `long float` is the documented double
+// spelling of the era (notes.md open question 3: accepted here)
+syntax kr.ts `float` => Real("f32");
+syntax kr.ts `double` => Real("f64");
+syntax kr.ts `long float` => Real("f64");
+// struct/union references resolve to KStructT terms through the environment
+// (K&R: the definition must be seen before use - single pass, like 1978)
+syntax kr.ts[fallback] `struct $name:ident` => KStructRef($name);
+syntax kr.ts[fallback] `union $name:ident` => KStructRef($name);
+syntax kr.casttype `$t:kr.ts` => CT($t, 0);
+syntax kr.casttype `$t:kr.ts *` => CT($t, 1);
+syntax kr.casttype `$t:kr.ts * *` => CT($t, 2);
+syntax kr.casttype `$t:kr.ts * * *` => CT($t, 3);
+
+// declarators: name, stars before the name, optional array suffix
+// (int *a[3] = array of pointers; (*a)[3] pointer-to-array is M2)
+// the dims form is non-fallback: a non-fallback plain ident would block
+// the longer declarator regardless of span
+syntax kr.dclr[fallback] `$n:ident` => Dclr($n, 0, 0);
+syntax kr.dclr `$n:ident $ds:kr.dims` => KMDims($n, 0, $ds);
+syntax kr.dclr `* $d:kr.dclr` => kr.dstar($d);
+effect kr.dstar(Dclr($n, $s, $a)) => Dclr($n, add($s, 1), $a);
+effect kr.dstar(KMDims($n, $s, $ds)) => KMDims($n, add($s, 1), $ds);
+// dimensions: one or more bracketed bounds; [] = -1 (unspecified first dim)
+syntax kr.dims `[ $c:kr.arrsize ]` => [$c];
+syntax kr.dims `[ $c:kr.arrsize ] $rest:kr.dims` => list.prepend($c, $rest);
+syntax kr.dims[fallback] `[ ] $rest:kr.dims` => list.prepend(-1, $rest);
+syntax kr.dims[fallback] `[ ]` => [-1];
+// the declared type: element type wrapped right-to-left through the bounds
+effect kr_dims_type($elem, $dims) when eq(size($dims), 0) => $elem;
+effect[fallback] kr_dims_type($elem, $dims)
+    => KArrT(kr_dims_type($elem, list.tail($dims)), list.head($dims));
+effect kr_dims_total($dims) when eq(size($dims), 0) => 1;
+effect[fallback] kr_dims_total($dims)
+    => int.mul(list.head($dims), kr_dims_total(list.tail($dims)));
+effect kr_dims_any_free($dims) when eq(size($dims), 0) => 0;
+effect[fallback] kr_dims_any_free($dims)
+    => choose(lt(list.head($dims), 0), 1, kr_dims_any_free(list.tail($dims)));
+syntax kr.arrsize `$n:number` => kr.arrnum(text($n));
+effect kr.arrnum($raw)
+    => bind($body, kr_strip_l($raw),
+        choose(kr_hex_p($body), kr_hex($body, 2, text.len($body), 0),
+            choose(kr_oct_p($body), kr_octal($body, 1, text.len($body), 0),
+                int.parse($body))));
+// apply declarator stars to a base type
+effect kr_dclr_type(Dclr($n, $s, $a), $base) => kr_stars($s, $base);
+effect kr_stars(0, $base) => $base;
+effect[fallback] kr_stars($s, $base) => kr_stars(int.sub($s, 1), Ptr($base));
+effect kr_dclr_name(Dclr($n, $s, $a)) => $n;
+effect kr_dclr_name(KFPtr($n)) => $n;
+effect kr_dclr_name(KPArr($n, $c)) => $n;
+effect kr_dclr_name(KMDims($n, $s, $ds)) => $n;
+effect kr_dclr_count(Dclr($n, $s, $a)) => $a;
+effect kr_dclr_count(KFPtr($n)) => 0;
+effect kr_dclr_count(KPArr($n, $c)) => 0;
+effect kr_dclr_count(KMDims($n, $s, $ds)) when kr_dims_any_free($ds) => -1;
+effect[fallback] kr_dclr_count(KMDims($n, $s, $ds)) => kr_dims_total($ds);
+
+// ---- statements (K&R §9) -------------------------------------------------------
+syntax krstmt `;` => KEmpty();
+syntax krstmt `{ }` => KCompound(End());
+syntax krstmt[fallback] `{ $body:krstmts }` => KCompound($body);
+syntax krstmt `if ( $c:krexpr ) $y:krstmt else $n:krstmt` => KIf($c, $y, $n);
+syntax krstmt[fallback] `if ( $c:krexpr ) $y:krstmt` => KIf($c, $y, KEmpty());
+syntax krstmt `while ( $c:krexpr ) $b:krstmt` => KWhile($c, $b);
+syntax krstmt `do $b:krstmt while ( $c:krexpr ) ;` => KDo($b, $c);
+syntax krstmt `break ;` => KBreak();
+syntax krstmt `continue ;` => KContinue();
+syntax krstmt `return ;` => KRet(KRNothing());
+syntax krstmt `return $e:krexpr ;` => KRet(KRValue($e));
+syntax krstmt `goto $n:ident ;` => KGoto($n);
+syntax krstmt[fallback] `$n:ident : $rest:krstmt` => KLabel($n, $rest);
+syntax krstmt[fallback] `$e:krexpr ;` => KExpr($e);
+// non-fallback: `length *lp;` is a declaration, not a multiplication
+// (the typedef guard makes kr.ts fail for ordinary identifiers)
+syntax krstmt `$spec:kr.ts $defs:kr.ldefs ;` => KDecls($spec, $defs);
+// static locals (K&R 8.5): storage persists across calls; hoisted to a
+// function-private global at prepare time
+syntax krstmt[fallback] `static $spec:kr.ts $defs:kr.ldefs ;` => KStaticDecls($spec, $defs);
+// register/auto: accepted and ignored (register is a hint; auto is default)
+syntax krstmt[fallback] `register $spec:kr.ts $defs:kr.ldefs ;` => KDecls($spec, $defs);
+syntax krstmt[fallback] `auto $spec:kr.ts $defs:kr.ldefs ;` => KDecls($spec, $defs);
+// for: every combination of present/absent init, condition and step
+syntax krstmt `for ( $i:krexpr ; $c:krexpr ; $s:krexpr ) $b:krstmt`
+    => KFor(KRValue($i), KRValue($c), KRValue($s), $b);
+syntax krstmt `for ( $i:krexpr ; $c:krexpr ; ) $b:krstmt`
+    => KFor(KRValue($i), KRValue($c), KRNothing(), $b);
+syntax krstmt `for ( $i:krexpr ; ; $s:krexpr ) $b:krstmt`
+    => KFor(KRValue($i), KRNothing(), KRValue($s), $b);
+syntax krstmt `for ( $i:krexpr ; ; ) $b:krstmt`
+    => KFor(KRValue($i), KRNothing(), KRNothing(), $b);
+syntax krstmt `for ( ; $c:krexpr ; $s:krexpr ) $b:krstmt`
+    => KFor(KRNothing(), KRValue($c), KRValue($s), $b);
+syntax krstmt `for ( ; $c:krexpr ; ) $b:krstmt`
+    => KFor(KRNothing(), KRValue($c), KRNothing(), $b);
+syntax krstmt `for ( ; ; $s:krexpr ) $b:krstmt`
+    => KFor(KRNothing(), KRNothing(), KRValue($s), $b);
+syntax krstmt `for ( ; ; ) $b:krstmt`
+    => KFor(KRNothing(), KRNothing(), KRNothing(), $b);
+// switch (K&R 3.6): int selector, case labels are integer constant
+// expressions (integer/char literals, optionally negated), fallthrough,
+// at most one default anywhere among the arms
+syntax krstmt `switch ( $e:krexpr ) { $arms:kr.cases }` => KSwitch($e, $arms, KDefault(End()));
+syntax krstmt `switch ( $e:krexpr ) { $arms:kr.cases $d:kr.defaultarm }`
+    => KSwitch($e, $arms, $d);
+syntax kr.cases `$c:krcase` => [$c];
+syntax kr.cases `$c:krcase $rest:kr.cases` => list.prepend($c, $rest);
+syntax krcase `case $v:kr.clabel : $b:krstmts` => KCase($v, $b);
+syntax kr.defaultarm `default : $b:krstmts` => KDefault($b);
+// stacked labels: `case 1: case 2:` has no statement between
+syntax krcase[fallback] `case $v:kr.clabel :` => KCase($v, KCompound(End()));
+syntax kr.defaultarm[fallback] `default :` => KDefault(End());
+// one rule: any expression, folded at check time (a non-fallback literal
+// rule would block the expression form for spans it merely prefixes)
+syntax kr.clabel `$e:krexpr` => KCaseE($e);
+
+// initializers (K&R 8.x): assignment expressions, brace lists, strings.
+// A string in an initializer becomes InitStr(raw): the commit interning
+// pass rewrites CQuoteStr terms everywhere (for pointer initializers like
+// char *p = "x"), so array-content initializers must carry the raw spelling.
+syntax kr.init `$s:string` when eq(text.byte($s, 0), 34)
+    => InitStr(text.slice($s, 1, int.sub(text.len($s), 1)));
+syntax kr.init[fallback] `$e:krx` => InitV($e);
+syntax kr.init `{ }` => InitList([]);
+syntax kr.init `{ $vals:kr.inits , }` => InitList($vals);
+syntax kr.init[fallback] `{ $vals:kr.inits }` => InitList($vals);
+syntax kr.inits `$v:kr.init` => [$v];
+syntax kr.inits `$v:kr.init , $rest:kr.inits` => list.prepend($v, $rest);
+
+syntax kr.ldefs `$d:kr.dclr` => [LD($d, InitN())];
+syntax kr.ldefs `$d:kr.dclr = $v:kr.init` => [LD($d, $v)];
+syntax kr.ldefs `$d:kr.dclr , $rest:kr.ldefs` => list.prepend(LD($d, InitN()), $rest);
+syntax kr.ldefs `$d:kr.dclr = $v:kr.init , $rest:kr.ldefs`
+    => list.prepend(LD($d, InitV($v)), $rest);
+
+syntax krstmts `$s:krstmt` => kr.pseq($s, End());
+syntax krstmts `$s:krstmt $rest:krstmts` => kr.pseq($s, $rest);
+
+// ---- external definitions (K&R §10) --------------------------------------------
+// old-style function definitions; the type specifier defaults to int.
+syntax kr.item[fallback] `$spec:kr.dspecs $n:ident ( ) { $b:krstmts }`
+    => KFunc($n, $spec, [], [], $b);
+syntax kr.item[fallback] `$spec:kr.dspecs $n:ident ( ) $pd:kr.pdecls { $b:krstmts }`
+    => KFunc($n, $spec, [], $pd, $b);
+syntax kr.item[fallback] `$spec:kr.dspecs $n:ident ( $ps:kr.pnames ) { $b:krstmts }`
+    => KFunc($n, $spec, $ps, [], $b);
+syntax kr.item[fallback] `$spec:kr.dspecs $n:ident ( $ps:kr.pnames ) $pd:kr.pdecls { $b:krstmts }`
+    => KFunc($n, $spec, $ps, $pd, $b);
+syntax kr.item[fallback] `$n:ident ( ) { $b:krstmts }`
+    => KFunc($n, KSpec("none", Signed(32)), [], [], $b);
+syntax kr.item[fallback] `$n:ident ( ) $pd:kr.pdecls { $b:krstmts }`
+    => KFunc($n, KSpec("none", Signed(32)), [], $pd, $b);
+syntax kr.item[fallback] `$n:ident ( $ps:kr.pnames ) { $b:krstmts }`
+    => KFunc($n, KSpec("none", Signed(32)), $ps, [], $b);
+syntax kr.item[fallback] `$n:ident ( $ps:kr.pnames ) $pd:kr.pdecls { $b:krstmts }`
+    => KFunc($n, KSpec("none", Signed(32)), $ps, $pd, $b);
+// struct/union definitions (K&R 8.5): one item, laid out at declare time
+syntax kr.item[fallback] `struct $name:ident { $ms:kr.members } ;` => KStructDef($name, $ms, "struct");
+syntax kr.item[fallback] `union $name:ident { $ms:kr.members } ;` => KStructDef($name, $ms, "union");
+// members: one declarator list per line, K&R style; each member line has
+// its own semicolon (kr.pdclrs is shared with parameter declarations)
+syntax kr.members `$m:kr.member $rest:kr.members` => list.prepend($m, $rest);
+syntax kr.members `$m:kr.member` => [$m];
+syntax kr.member `$spec:kr.ts $ds:kr.pdclrs ;` => KM($spec, $ds);
+// bitfield members (K&R 8.5): name : width or : width (unnamed padding)
+syntax kr.member[fallback] `$spec:kr.ts $ds:kr.bfdefs ;` => KMB($spec, $ds);
+syntax kr.bfdefs `$d:kr.bfdclr` => [$d];
+syntax kr.bfdefs `$d:kr.bfdclr , $rest:kr.bfdefs` => list.prepend($d, $rest);
+syntax kr.bfdclr `$n:ident : $w:kr.arrsize` => KBF(Dclr($n, 0, 0), kr.arrnum(text($w)));
+syntax kr.bfdclr[fallback] `: $w:kr.arrsize` => KBF(Dclr("", 0, 0), kr.arrnum(text($w)));
+
+// forward function declarations (K&R 10): no body, no parameter info -
+// calls are not arity-checked and take default-promoted arguments
+syntax kr.item[fallback] `$spec:kr.dspecs $n:ident ( ) ;`
+    => KFuncDecl($n, $spec);
+syntax kr.item[fallback] `$spec:kr.dspecs $n:ident ( $ps:kr.pnames ) ;`
+    => KFuncDecl($n, $spec);
+
+// external data definitions with storage classes (K&R 8.x data)
+syntax kr.item[fallback] `$spec:kr.ts $defs:kr.ldefs ;` => KGlobals($spec, $defs, "none");
+syntax kr.item[fallback] `static $spec:kr.ts $defs:kr.ldefs ;` => KGlobals($spec, $defs, "static");
+syntax kr.item[fallback] `extern $spec:kr.ts $defs:kr.ldefs ;` => KGlobals($spec, $defs, "extern");
+
+syntax kr.pnames `$n:ident` => [$n];
+syntax kr.pnames `$n:ident , $rest:kr.pnames` => list.prepend($n, $rest);
+syntax kr.pdecls[fallback] `$p:kr.pdecl` => [$p];
+syntax kr.pdecls `$p:kr.pdecl $rest:kr.pdecls` => list.prepend($p, $rest);
+syntax kr.pdecl `$spec:kr.ts $ds:kr.pdclrs ;` => PD($spec, $ds);
+syntax kr.pdecl[fallback] `register $spec:kr.ts $ds:kr.pdclrs ;` => PD($spec, $ds);
+syntax kr.pdecl[fallback] `auto $spec:kr.ts $ds:kr.pdclrs ;` => PD($spec, $ds);
+syntax kr.pdclrs `$d:kr.dclr` => [$d];
+syntax kr.pdclrs `$d:kr.dclr , $rest:kr.pdclrs` => list.prepend($d, $rest);
+
+// ---- statement conversion (parse terms -> flow terms) --------------------------
+effect kr.pseq($s, $rest) => kr_convert($s, $rest);
+effect kr_convert(KCompound($chain), $rest) => splice_end($chain, $rest);
+effect kr_convert(KEmpty(), $rest) => $rest;
+effect kr_convert(KIf($c, $y, $n), $rest)
+    => base.continue(Branch(KCond($c), body_of($y), body_of($n)), $rest);
+effect kr_convert(KWhile($c, $b), $rest)
+    => base.continue(Loop(KCond($c), body_of($b)), $rest);
+// do B while (c): while (1) { B[continue -> conditional]; if (!c) break; }
+// C semantics: continue jumps to the CONDITION evaluation (the loop test),
+// which is re-emitted at each continue site; break/return/goto skip it.
+effect kr_convert(KDo($b, $c), $rest)
+    => base.continue(Loop(KCond(Int(1)),
+        splice_end(kr_do_continues(body_of($b), $c),
+            If(KCond(CNot($c)), Break(), End(), End()))), $rest);
+effect kr_do_continues(End(), $c) => End();
+// continue: evaluate the condition NOW; true -> back to the body top
+// (the while(1) head), false -> exit. The normal fall-through path after
+// the body re-tests with the trailing if (!c) break.
+effect kr_do_continues(Continue(), $c) => If(KCond($c), Continue(), Break(), End());
+effect kr_do_continues(Break(), $c) => Break();
+effect kr_do_continues(Jump($n), $c) => Jump($n);
+effect kr_do_continues(KRetC($v, $next), $c) => KRetC($v, $next);
+effect kr_do_continues(KRetDone($v, $next), $c) => KRetDone($v, $next);
+effect kr_do_continues(While($w, $wb, $next), $c)
+    => While($w, $wb, kr_do_continues($next, $c));
+effect kr_do_continues(If($i, $y, $n, $next), $c)
+    => If($i, kr_do_continues($y, $c), kr_do_continues($n, $c), kr_do_continues($next, $c));
+effect kr_do_continues(Label($n, $next), $c) => Label($n, kr_do_continues($next, $c));
+effect kr_do_continues(KExprStep($e, $next), $c) => KExprStep($e, kr_do_continues($next, $c));
+effect kr_do_continues(KDecl($n, $t, $i, $next), $c) => KDecl($n, $t, $i, kr_do_continues($next, $c));
+effect kr_do_continues(KArrDecl($n, $e, $cnt, $next), $c)
+    => KArrDecl($n, $e, $cnt, kr_do_continues($next, $c));
+// for (i; c; s) B: i; while (c) { B[continue -> s; continue]; s; }
+// C semantics: continue jumps to the step, break/return/goto skip it.
+effect kr_convert(KFor($i, $c, $s, $b), $rest)
+    => kr_for_init($i,
+        base.continue(Loop(kr_for_cond($c),
+            splice_end(kr_for_continues(body_of($b), $s),
+                KExprStep(kr_for_step($s), End()))), $rest));
+effect kr_for_cond(KRValue($c)) => KCond($c);
+effect kr_for_cond(KRNothing()) => KCond(Int(1));
+effect kr_for_step(KRValue($s)) => $s;
+effect kr_for_step(KRNothing()) => Int(0);
+effect kr_for_init(KRValue($i), $rest) => KExprStep($i, $rest);
+effect kr_for_init(KRNothing(), $rest) => $rest;
+effect kr_for_continues(End(), $s) => End();
+effect kr_for_continues(Continue(), $s) => KExprStep(kr_for_step($s), Continue());
+effect kr_for_continues(Break(), $s) => Break();
+effect kr_for_continues(Jump($n), $s) => Jump($n);
+effect kr_for_continues(KRetC($v, $next), $s) => KRetC($v, $next);
+effect kr_for_continues(KRetDone($v, $next), $s) => KRetDone($v, $next);
+effect kr_for_continues(While($c, $b, $next), $s)
+    => While($c, $b, kr_for_continues($next, $s));
+effect kr_for_continues(If($c, $y, $n, $next), $s)
+    => If($c, kr_for_continues($y, $s), kr_for_continues($n, $s), kr_for_continues($next, $s));
+effect kr_for_continues(Label($n, $next), $s) => Label($n, kr_for_continues($next, $s));
+effect kr_for_continues(KExprStep($e, $next), $s)
+    => KExprStep($e, kr_for_continues($next, $s));
+effect kr_for_continues(KDecl($n, $t, $i, $next), $s)
+    => KDecl($n, $t, $i, kr_for_continues($next, $s));
+effect kr_for_continues(KArrDecl($n, $e, $c, $next), $s)
+    => KArrDecl($n, $e, $c, kr_for_continues($next, $s));
+effect kr_for_continues(KArrStr($n, $e, $c, $str, $next), $s)
+    => KArrStr($n, $e, $c, $str, kr_for_continues($next, $s));
+effect kr_for_continues(KArrStrC($id, $e, $c, $str, $next), $s)
+    => KArrStrC($id, $e, $c, $str, kr_for_continues($next, $s));
+// switch: evaluate once into a hidden slot; dispatch jumps per case.
+// Fallthrough falls out naturally: each arm's body flows into the next arm.
+effect kr_convert(KSwitch($e, $arms, $def), $rest)
+    => KSwitchD($e, $arms, $def, $rest);
+effect kr_convert(KBreak(), $rest) => base.continue(BreakStatement(), $rest);
+effect kr_convert(KContinue(), $rest) => base.continue(ContinueStatement(), $rest);
+effect kr_convert(KRet($v), $rest) => KRetC($v, $rest);
+effect kr_convert(KGoto($n), $rest) => bind($dropped, $rest, Jump($n));
+effect kr_convert(KLabel($n, $stmt), $rest)
+    => Label($n, splice_end(body_of($stmt), $rest));
+effect kr_convert(KExpr($e), $rest) => KExprStep($e, $rest);
+effect kr_convert(KDecls($spec, $defs), $rest) => kr_decl_chain($spec, $defs, $rest);
+effect kr_convert(KStaticDecls($spec, $defs), $rest) => KStaticP($spec, $defs, $rest);
+effect kr_decl_chain($spec, [], $rest) => $rest;
+effect kr_decl_chain($spec, $defs, $rest) when lt(0, size($defs))
+    => kr_decl_one(list.head($defs), $spec, kr_decl_chain($spec, list.tail($defs), $rest));
+// locals: scalars, strings for 1-dim char arrays, plain arrays with a
+// full dims list; K&R has no automatic initializer lists
+effect kr_decl_one(LD(Dclr($n, $s, 0), $i), $spec, $rest)
+    => KDecl($n, kr_stars($s, $spec), $i, $rest);
+effect kr_decl_one(LD(KMDims($n, $s, $dims), InitV(CQuoteStr($str))), $spec, $rest)
+    when and(kr_is_char(kr_stars($s, $spec)), eq(size($dims), 1))
+    => KArrStr($n, kr_stars($s, $spec),
+        kr_arr_count(list.head($dims), kr_str_len($str, 0, text.len($str), 0)), $str, $rest);
+effect[fallback] kr_decl_one(LD(KMDims($n, $s, $dims), InitV(CQuoteStr($str))), $spec, $rest)
+    => fail("string initialization requires a one-dimensional char array");
+effect kr_decl_one(LD(KMDims($n, $s, $dims), InitList($vals)), $spec, $rest)
+    => fail("K&R does not initialize automatic arrays from lists (M2)");
+effect kr_decl_one(LD(Dclr($n, $s, 0), InitList($vals)), $spec, $rest)
+    => fail("brace initializer on a scalar (M2)");
+effect kr_decl_one(LD(KMDims($n, $s, $dims), $i), $spec, $rest)
+    when not(kr_dims_any_free($dims))
+    => KArrDecl($n, kr_stars($s, $spec), $dims, $rest);
+effect[fallback] kr_decl_one(LD(KMDims($n, $s, $dims), $i), $spec, $rest)
+    => fail("array size required without an initializer");
+// explicit size + string: never smaller than the string plus its NUL
+effect kr_arr_count($c, $len) => choose(lt($c, add($len, 1)), add($len, 1), $c);
+effect body_of($stmt) => kr_convert($stmt, End());
+
+// splice a continuation in front of the final End() of a converted chain
+effect splice_end(End(), $tail) => $tail;
+effect splice_end(KExprStep($e, $next), $tail) => KExprStep($e, splice_end($next, $tail));
+effect splice_end(KDecl($n, $t, $i, $next), $tail) => KDecl($n, $t, $i, splice_end($next, $tail));
+effect splice_end(KArrDecl($n, $e, $c, $next), $tail)
+    => KArrDecl($n, $e, $c, splice_end($next, $tail));
+effect splice_end(KArrStr($n, $e, $c, $str, $next), $tail)
+    => KArrStr($n, $e, $c, $str, splice_end($next, $tail));
+effect splice_end(KArrStrC($id, $e, $c, $str, $next), $tail)
+    => KArrStrC($id, $e, $c, $str, splice_end($next, $tail));
+effect splice_end(KRetC($v, $next), $tail) => KRetC($v, $next);
+effect splice_end(KRetDone($v, $next), $tail) => KRetDone($v, $next);
+effect splice_end(If($c, $y, $n, $next), $tail)
+    => If($c, $y, $n, splice_end($next, $tail));
+effect splice_end(While($c, $b, $next), $tail) => While($c, $b, splice_end($next, $tail));
+effect splice_end(Label($n, $next), $tail) => Label($n, splice_end($next, $tail));
+effect splice_end(Jump($n), $tail) => Jump($n);
+effect splice_end(KSwitchD($e, $arms, $def, $next), $tail)
+    => KSwitchD($e, $arms, $def, splice_end($next, $tail));
+effect splice_end(KStaticP($spec, $defs, $next), $tail)
+    => KStaticP($spec, $defs, splice_end($next, $tail));
+effect splice_end(KStaticBind($n, $t, $g, $i, $next), $tail)
+    => KStaticBind($n, $t, $g, $i, splice_end($next, $tail));
+effect splice_end(KStaticDoneV($g, $t, $v, $next), $tail)
+    => KStaticDoneV($g, $t, $v, splice_end($next, $tail));
+effect splice_end(KStaticDoneS($g, $c, $s, $next), $tail)
+    => KStaticDoneS($g, $c, $s, splice_end($next, $tail));
+effect splice_end(KStaticDoneA($g, $e, $c, $vals, $next), $tail)
+    => KStaticDoneA($g, $e, $c, $vals, splice_end($next, $tail));
+effect splice_end(Break(), $tail) => Break();
+effect splice_end(Continue(), $tail) => Continue();
+effect splice_end(MutableLocal($id, $v, $next), $tail)
+    => MutableLocal($id, $v, splice_end($next, $tail));
+
+// ---- statement checking --------------------------------------------------------
+// locals: uninitialized locals are zero-filled (deviation: C leaves them
+// indeterminate; zero gives clean diagnostics), initializers convert freely.
+effect base.check_body(KDecl($name, $type, $init, $next), $environment, $result)
+    => bind($rt, kr_resolve_deep($type, $environment),
+        kr_decl_checked($name, $rt, $init, $next, $environment, $result));
+// struct/union locals: an alloca, no initialization store (K&R has no
+// struct initializer lists and leaves automatics indeterminate)
+effect kr_decl_checked($name, KStructT($tag, $f, $sz, $al), $init, $next, $environment, $result)
+    when eq($init, InitN())
+    => bind($id, symbol($name),
+        KStructLocal($id, KStructT($tag, $f, $sz, $al),
+            check_body($next, env.put($environment, $name, Mutable(KStructT($tag, $f, $sz, $al), $id)), $result)));
+effect[fallback] kr_decl_checked($name, KStructT($tag, $f, $sz, $al), $init, $next, $environment, $result)
+    => fail("K&R has no struct initializer lists");
+effect[fallback] kr_decl_checked($name, $type, $init, $next, $environment, $result)
+    => bind($id, symbol($name),
+        bind(Typed($t, $v), kr_init_value($init, $type, $environment),
+            MutableLocal($id, Typed($t, $v),
+                check_body($next, env.put($environment, $name, Mutable($t, $id)), $result))));
+// deep resolution of struct references inside type constructors
+effect kr_resolve_deep(Ptr($t), $env) => Ptr(kr_resolve_deep($t, $env));
+effect kr_resolve_deep(KArrT($e, $c), $env) => KArrT(kr_resolve_deep($e, $env), $c);
+effect kr_resolve_deep(KStructRef($n), $env) => env.get($env, $n);
+effect[fallback] kr_resolve_deep($t, $env) => $t;
+effect kr_init_value(InitN(), $type, $environment) => kr_zero($type);
+effect kr_init_value(InitV($e), $type, $environment)
+    => kr_expect(kr_check_any($e, $environment), $type);
+effect[fallback] kr_init_value($init, $type, $environment)
+    => fail("unsupported initializer form for this declaration");
+// arrays: storage is one alloca of count elements; the name decays to a
+// pointer to the first element (the value is the alloca result itself)
+effect base.check_body(KArrDecl($name, $elem, $dims, $next), $environment, $result)
+    => bind($re, kr_resolve_deep($elem, $environment),
+        bind($id, symbol($name),
+            KArrDeclC($id, $re, $dims,
+                check_body($next, env.put($environment, $name, CArr($re, $dims, $id)), $result))));
+// char s[] = "hi": a real array object, byte-by-byte initialized (K&R 4.9);
+// the name decays like any array
+effect base.check_body(KArrStr($name, $elem, $count, $str, $next), $environment, $result)
+    => bind($id, symbol($name),
+        KArrStrC($id, $elem, $count, $str,
+            check_body($next, env.put($environment, $name, CArr($elem, [count], $id)), $result)));
+effect base.prepare_storage(KArrDecl($n, $e, $c, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(KArrStrC($id, $elem, $count, $str, $next), $entry, $environment)
+    => bind($arr, mlir.with_block($entry,
+            mlir.op("llvm.alloca",
+                [mlir.op("arith.constant", [], ["i64"], [Attr("value", $count, "i64")], [])],
+                ["!llvm.ptr"],
+                [RawAttr("elem_type", types.repr($elem)),
+                 RawAttr("operandSegmentSizes", "array<i32: 1, 0>")], [])),
+        prepare_storage($next, $entry, env.put($environment, $id, $arr)));
+effect base.lower_flow(KStaticDoneV($g, $t, $v, $next), $environment, $block, $continuation)
+    => lower_flow($next, $environment, $block, $continuation);
+effect base.lower_flow(KStaticDoneS($g, $c, $s, $next), $environment, $block, $continuation)
+    => lower_flow($next, $environment, $block, $continuation);
+effect base.lower_flow(KStaticDoneA($g, $e, $c, $vals, $next), $environment, $block, $continuation)
+    => lower_flow($next, $environment, $block, $continuation);
+effect base.lower_flow(KArrStrC($id, $elem, $count, $str, $next), $environment, $block, $continuation)
+    => bind($arr, env.get($environment, $id),
+        seq(mlir.in_block($block, kr_str_stores($str, 0, $count, $arr, $environment)),
+            lower_flow($next, $environment, $block, $continuation)));
+// one store per byte: decoded escape values, zero fill past the NUL
+effect kr_str_stores($str, $i, $count, $arr, $env) when lt($count, $i) => 1;
+effect[fallback] kr_str_stores($str, $i, $count, $arr, $env)
+    => seq(mlir.op("llvm.store",
+            [kr_const_i8(kr_byte_at($str, $i, text.len($str))),
+             kr_byte_slot($arr, $i)], [], [], []),
+        kr_str_stores($str, add($i, 1), $count, $arr, $env));
+effect kr_byte_slot($arr, $i)
+    => mlir.op("llvm.getelementptr", [$arr],
+        ["!llvm.ptr"],
+        [RawAttr("elem_type", "i8"),
+         RawAttr("rawConstantIndices", concat("array<i32: ", concat(text($i), ">")))],
+        []);
+effect kr_const_i8($b) => mlir.op("arith.constant", [], ["i8"], [Attr("value", $b, "i8")], []);
+// byte i of the source string, escapes decoded; -1 marks past-the-end (zero fill)
+// layered so no guard ever indexes past the end (rule ambiguity checks
+// evaluate every guard, and and() does not short-circuit)
+effect kr_byte_at($str, $i, $end) when lt($i, $end) => kr_byte_in($str, $i, $end);
+effect[fallback] kr_byte_at($str, $i, $end) => 0;
+effect kr_byte_in($str, $i, $end) when not(eq(text.byte($str, $i), 92))
+    => text.byte($str, $i);
+effect[fallback] kr_byte_in($str, $i, $end) => kr_byte_esc($str, $i, $end);
+effect kr_byte_esc($str, $i, $end) when not(eq(kr_esc_end($str, add($i, 1), $end), add($i, 1)))
+    => kr_octal($str, add($i, 1), kr_esc_end($str, add($i, 1), $end), 0);
+effect[fallback] kr_byte_esc($str, $i, $end) => kr_escape(text.byte($str, add($i, 1)));
+
+// param shadows: every old-style parameter is an assignable local initialized
+// from the promoted SSA argument (char params truncate the passed int). The
+// SSA identity is recovered from the Slot binding bind_params installed.
+effect base.check_body(KShadow($name, $type, $next), $environment, $result)
+    => bind(Slot($pd, $pid), env.get($environment, $name),
+        bind($id, symbol($name),
+            bind(Typed($t, $v), kr_expect(Typed($pd, Read($pid)), $type),
+                MutableLocal($id, Typed($t, $v),
+                    check_body($next, env.put($environment, $name, Mutable($t, $id)), $result)))));
+// switch checking: the selector must be an integer (K&R 3.6); case labels
+// are extracted and checked for duplicates; every arm body is checked inside
+// the switch's break scope. The lowered form pre-jumps per case and lets
+// bodies fall through linearly into the next arm.
+effect base.check_body(KSwitchD($e, $arms, $def, $next), $environment, $result)
+    => bind(Typed($t, $v), kr_check_any($e, $environment),
+        seq(kr_int_only($t, "switch selector"),
+            bind($id, symbol(" switch.sel"),
+                bind($pairs, kr_case_scan($arms, env.empty(), text($id)),
+                    bind($armEnv, env.put($environment, "control.break", 1),
+                        bind($armsC, kr_arms_check($arms, $pairs, $armEnv, $result),
+                            bind($defC, kr_default_check($def, $armEnv, $result),
+                                MutableLocal($id, Typed($t, $v),
+                                    KSwitchR(Typed($t, Load($id)), $pairs,
+                                        kr_arm_terms($armsC), $defC, text($id),
+                                        check_body($next, $environment, $result))))))))));
+// K&R 3.6: the controlling expression must be int (pointers/floats rejected)
+effect kr_int_only(Signed($w), $what) => 1;
+effect kr_int_only(Unsigned($w), $what) => 1;
+effect[fallback] kr_int_only($t, $what) => fail(concat("switch requires an integer ", $what));
+// case labels: integer constant expressions (folded at check time)
+effect kr_case_value(Int($n)) => $n;
+effect kr_case_value(CLConst($v)) => $v;
+effect kr_case_value(KCaseE($e)) => kr_const_eval($e);
+effect[fallback] kr_case_value($v) => fail("case label is not an integer constant");
+// the constant folder: K&R 6.4 constant expressions - literals, char
+// constants, sizeof, unary/binary arithmetic, bitwise, comparisons
+effect kr_const_eval(Int($n)) => $n;
+effect kr_const_eval(CLConst($v)) => $v;
+effect kr_const_eval(CNeg(Int($n))) => int.neg($n);
+effect kr_const_eval(CCompl(Int($n))) => int.xor($n, -1);
+effect kr_const_eval(CNot(Int($n))) => choose(eq($n, 0), 1, 0);
+effect kr_const_eval(CPlus(Int($n))) => $n;
+effect kr_const_eval(CBin($op, $a, $b)) => kr_const_bin($op, kr_const_eval($a), kr_const_eval($b));
+effect kr_const_eval(CShift($op, $a, $b)) => kr_const_shift($op, kr_const_eval($a), kr_const_eval($b));
+effect kr_const_eval(CCompare($p, $a, $b)) => kr_const_cmp($p, kr_const_eval($a), kr_const_eval($b));
+effect kr_const_eval(CLogical($op, $a, $b)) => kr_const_logic($op, kr_const_eval($a), kr_const_eval($b));
+effect kr_const_eval(CSizeofT($ct)) => fail("sizeof in case labels: use a literal (M3)");
+effect kr_const_eval(CSizeofE($e)) => fail("sizeof in case labels: use a literal (M3)");
+effect[fallback] kr_const_eval($e) => fail("case label is not a constant expression");
+effect kr_const_bin("add", $a, $b) => int.add($a, $b);
+effect kr_const_bin("sub", $a, $b) => int.sub($a, $b);
+effect kr_const_bin("mul", $a, $b) => int.mul($a, $b);
+effect kr_const_bin("div", $a, $b) => choose(eq($b, 0), fail("division by zero in constant expression"), int.div($a, $b));
+effect kr_const_bin("rem", $a, $b) => choose(eq($b, 0), fail("division by zero in constant expression"), int.rem($a, $b));
+effect kr_const_bin("and", $a, $b) => int.and($a, $b);
+effect kr_const_bin("or", $a, $b) => int.or($a, $b);
+effect kr_const_bin("xor", $a, $b) => int.xor($a, $b);
+effect kr_const_shift("shl", $a, $b) => int.shl($a, $b);
+effect kr_const_shift("shr", $a, $b) => int.shr($a, $b);
+effect kr_const_cmp("eq", $a, $b) => choose(eq($a, $b), 1, 0);
+effect kr_const_cmp("ne", $a, $b) => choose(eq($a, $b), 0, 1);
+effect kr_const_cmp("lt", $a, $b) => choose(lt($a, $b), 1, 0);
+effect kr_const_cmp("le", $a, $b) => choose(not(lt($b, $a)), 1, 0);
+effect kr_const_cmp("gt", $a, $b) => choose(lt($b, $a), 1, 0);
+effect kr_const_cmp("ge", $a, $b) => choose(not(lt($a, $b)), 1, 0);
+effect kr_const_logic("and", $a, $b) => choose(and(not(eq($a, 0)), not(eq($b, 0))), 1, 0);
+effect kr_const_logic("or", $a, $b) => choose(or(not(eq($a, 0)), not(eq($b, 0))), 1, 0);
+// scan arms into [[value, name]...] preserving order, rejecting duplicates
+effect kr_case_scan([], $seen, $id) => [];
+effect kr_case_scan($arms, $seen, $id) when lt(0, size($arms))
+    => bind($value, kr_case_value(kr_case_of(list.head($arms))),
+        choose(env.contains($seen, $value),
+            fail("duplicate case label"),
+            list.prepend([$value, kr_case_name($id, $value)],
+                kr_case_scan(list.tail($arms), env.put($seen, $value, 1), $id))));
+effect kr_case_of(KCase($v, $b)) => $v;
+// names are unique per switch via the selector slot's identity
+effect kr_case_name($id, $value) => concat(concat(" case.", $id), concat(".", text($value)));
+effect kr_case_name2([$value, $name]) => $name;
+effect kr_arms_check([], $pairs, $env, $result) => [];
+effect kr_arms_check($arms, $pairs, $env, $result) when lt(0, size($arms))
+    => list.prepend(KArm(kr_case_name2(list.head($pairs)),
+            check_body(kr_case_body(list.head($arms)), $env, $result)),
+        kr_arms_check(list.tail($arms), list.tail($pairs), $env, $result));
+effect kr_case_body(KCase($v, $b)) => $b;
+effect kr_default_check(KDefault($b), $env, $result) => check_body($b, $env, $result);
+effect kr_arm_terms($armsC) when eq(size($armsC), 0) => [];
+effect kr_arm_terms($armsC) when lt(0, size($armsC))
+    => list.prepend(list.head($armsC), kr_arm_terms(list.tail($armsC)));
+
+// static locals: the initializer is a constant expression (checked in an
+// empty environment, like an external definition); the name binds to the
+// hoisted global's storage
+effect base.check_body(KStaticBind($name, $type, $gname, $init, $next), $environment, $result)
+    => kr_static_check($name, $type, $gname, $init, $next, $environment, $result);
+effect kr_static_check($name, $type, $gname, InitN(), $next, $environment, $result)
+    => kr_static_slot($name, $type, $gname,
+        Typed($type, Integer(0)), KNothing(), $next, $environment, $result);
+effect kr_static_check($name, $type, $gname, InitV($e), $next, $environment, $result)
+    => bind(Typed($t, $v), kr_expect(kr_check_any($e, env.empty()), $type),
+        kr_static_slot($name, $type, $gname, Typed($t, $v), KNothing(), $next, $environment, $result));
+effect kr_static_check($name, $type, $gname, InitStr($str), $next, $environment, $result)
+    when kr_is_char($type)
+    => kr_static_slot($name, $type, $gname, KNothing(),
+        KStrVal($str, kr_arr_count(-1, kr_str_len($str, 0, text.len($str), 0))),
+        $next, $environment, $result);
+effect[fallback] kr_static_check($name, $type, $gname, $init, $next, $environment, $result)
+    => fail("unsupported static local initializer");
+effect kr_static_slot($name, $type, $gname, $value, $str, $next, $environment, $result)
+    when kr_flat_p($type)
+    => KStaticDoneV($gname, $type, $value,
+        check_body($next, env.put($environment, $name, CGlobal($type, $gname)), $result));
+effect[fallback] kr_static_slot($name, $type, $gname, $value, KStrVal($str, $count), $next, $environment, $result)
+    => KStaticDoneS($gname, $count, $str,
+        check_body($next, env.put($environment, $name, CGlobalArr(Signed(8), $gname)), $result));
+effect[fallback] kr_static_slot($name, $type, $gname, $value, $str, $next, $environment, $result)
+    when eq($str, KNothing())
+    => fail("static arrays require string or brace initializers (M3)");
+effect base.check_body(KStaticDoneV($g, $t, $v, $next), $environment, $result)
+    => KStaticDoneV($g, $t, $v, check_body($next, $environment, $result));
+effect base.check_body(KStaticDoneS($g, $c, $s, $next), $environment, $result)
+    => KStaticDoneS($g, $c, $s, check_body($next, $environment, $result));
+effect base.check_body(KStaticDoneA($g, $e, $c, $vals, $next), $environment, $result)
+    => KStaticDoneA($g, $e, $c, $vals, check_body($next, $environment, $result));
+
+// expression statements
+effect base.check_body(KExprStep($e, $next), $environment, $result)
+    => bind(Typed($t, $v), kr_check_any($e, $environment),
+        KEvalC(Typed($t, $v), check_body($next, $environment, $result)));
+// returns: the expression converts to the function's result type
+effect base.check_body(KRetC(KRValue($e), $next), $environment, $result)
+    => bind(Typed($t, $v), kr_expect(kr_check_any($e, $environment), $result),
+        KRetDone(Typed($t, $v), check_body($next, $environment, $result)));
+effect base.check_body(KRetC(KRNothing(), $next), $environment, $result)
+    => bind(Typed($t, $v), kr_zero($result),
+        KRetDone(Typed($t, $v), check_body($next, $environment, $result)));
+// pass-through terms (already checked, or checked by their own phase)
+effect base.check_body(KRetDone($t, $next), $environment, $result)
+    => KRetDone($t, check_body($next, $environment, $result));
+effect base.check_body(KEvalC($t, $next), $environment, $result)
+    => KEvalC($t, check_body($next, $environment, $result));
+effect base.check_body(KArrDeclC($id, $e, $c, $next), $environment, $result)
+    => KArrDeclC($id, $e, $c, check_body($next, $environment, $result));
+effect base.check_body(KArrStrC($id, $e, $c, $str, $next), $environment, $result)
+    => KArrStrC($id, $e, $c, $str, check_body($next, $environment, $result));
+// the slot's env key IS the identity term here (KDecl/KShadow use string
+// keys with their own puts); the switch selector relies on this binding
+effect base.check_body(MutableLocal($id, Typed($t, $v), $next), $environment, $result)
+    => MutableLocal($id, Typed($t, $v),
+        check_body($next, env.put($environment, $id, Mutable($t, $id)), $result));
+effect base.check_body(KCompound($chain), $environment, $result)
+    => check_body($chain, $environment, $result);
+effect base.check_body(Jump($identity), $environment, $result) => Jump($identity);
+effect base.check_body(Label($identity, $next), $environment, $result)
+    => Label($identity, check_body($next, $environment, $result));
+
+// ---- statement storage/lowering -------------------------------------------------
+effect base.prepare_storage(KExprStep($e, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(KEvalC($t, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(KRetC($v, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(KRetDone($t, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(KDecl($n, $t, $i, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(KArrDecl($n, $e, $c, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+// arrays of struct/union elements are allocated as byte blocks and indexed
+// with scaled dynamic indices (kr_gep)
+effect base.prepare_storage(KArrDeclC($id, $elem, $dims, $next), $entry, $environment)
+    => bind($bytes, kr_elem_bytes($elem, kr_dims_total($dims)),
+        bind($arr, mlir.with_block($entry,
+                mlir.op("llvm.alloca",
+                    [mlir.op("arith.constant", [], ["i64"], [Attr("value", $bytes, "i64")], [])],
+                    ["!llvm.ptr"],
+                    [RawAttr("elem_type", "i8"),
+                     Attr("alignment", kr_align($elem), "i64"),
+                     RawAttr("operandSegmentSizes", "array<i32: 1, 0>")], [])),
+            prepare_storage($next, $entry, env.put($environment, $id, $arr))));
+effect kr_elem_bytes($elem, $count) => int.mul($count, kr_size($elem));
+effect base.prepare_storage(KShadow($n, $t, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(KStaticP($spec, $defs, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(KStaticBind($n, $t, $g, $i, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(KStaticDoneV($g, $t, $v, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(KStaticDoneS($g, $c, $s, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(KStaticDoneA($g, $e, $c, $vals, $next), $entry, $environment)
+    => prepare_storage($next, $entry, $environment);
+effect base.prepare_storage(KStructLocal($id, $st, $next), $entry, $environment)
+    => bind($slot, mlir.with_block($entry,
+            mlir.op("llvm.alloca",
+                [mlir.op("arith.constant", [], ["i64"], [Attr("value", kr_size($st), "i64")], [])],
+                ["!llvm.ptr"],
+                [RawAttr("elem_type", "i8"),
+                 Attr("alignment", kr_align($st), "i64"),
+                 RawAttr("operandSegmentSizes", "array<i32: 1, 0>")], [])),
+        prepare_storage($next, $entry, env.put($environment, $id, $slot)));
+effect base.lower_flow(KStructLocal($id, $st, $next), $environment, $block, $continuation)
+    => lower_flow($next, $environment, $block, $continuation);
+effect base.flow_terminal(KStructLocal($id, $st, $next)) => flow_terminal($next);
+// switch: pre-declare one block per case arm and the break/exit block
+effect base.prepare_storage(KSwitchR($sel, $pairs, $arms, $def, $exitName, $next), $entry, $environment)
+    => bind($exit, mlir.block([]),
+        bind($env1, env.put($environment, TargetKey($exitName), $exit),
+            bind($env2, env.put($env1, TargetKey(kr_default_name($exitName)), mlir.block([])),
+                bind($env3, kr_case_block_env($pairs, $env2),
+                    bind($inner, kr_terms_prepare(list.concat($arms, [$def]), $entry, $env3),
+                        prepare_storage($next, $entry, $inner))))));
+effect kr_terms_prepare([], $entry, $env) => $env;
+effect kr_terms_prepare($terms, $entry, $env) when lt(0, size($terms))
+    => kr_terms_prepare(list.tail($terms), $entry,
+        prepare_storage(list.head($terms), $entry, $env));
+effect kr_case_block_env([], $env) => $env;
+effect kr_case_block_env($pairs, $env) when lt(0, size($pairs))
+    => bind($name, list.head(list.tail(list.head($pairs))),
+        kr_case_block_env(list.tail($pairs),
+            env.put($env, TargetKey($name), mlir.block([]))));
+// one arm of a switch: its body starts in the arm's own block
+effect base.prepare_storage(KArm($name, $body), $entry, $environment)
+    => prepare_storage($body, $entry, $environment);
+
+effect base.lower_flow(KEvalC($t, $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, lower($t, $environment)),
+        lower_flow($next, $environment, $block, $continuation));
+effect base.lower_flow(KRetDone($t, $next), $environment, $block, $continuation)
+    => seq(mlir.in_block($block, return_in($environment, [lower($t, $environment)])), [$block]);
+// array storage was already allocated in the entry block; nothing to emit
+effect base.lower_flow(KArrDeclC($id, $e, $c, $next), $environment, $block, $continuation)
+    => lower_flow($next, $environment, $block, $continuation);
+// switch lowering: cf.switch in the current block, then each arm body in its
+// pre-declared block with the NEXT arm's block as fallthrough join (the last
+// join is the exit). The default body joins the exit. Next continues at exit.
+effect base.lower_flow(KSwitchR(Typed($t, $sel), $pairs, $arms, $def, $exitName, $next), $environment, $block, $continuation)
+    => bind($exit, env.get($environment, TargetKey($exitName)),
+        bind($env2, env.put(env.put($environment, "control.exit", $exit), "control.break", 1),
+            seq(mlir.in_block($block, bind($selv, lower(Typed($t, $sel), $environment),
+                    kr_switch_head($selv, types.repr($t), $pairs, $def, $exitName, $exit, $environment))),
+                list.concat([$block],
+                    list.concat(kr_arms_lower($arms, $env2, $exit),
+                        list.concat(kr_default_lower($def, $env2, $exit, $exitName),
+                            lower_flow($next, $environment, $exit, $continuation)))))));
+// empty switch with no default: jump straight to the exit; with a default:
+// jump to the default block (which then joins the exit)
+effect kr_switch_head($sel, $repr, [], $def, $exitName, $exit, $env)
+    => mlir.op("cf.br", [], [], [], [], [kr_default_target($def, $exitName, $exit, $env)]);
+effect kr_switch_head($sel, $repr, $pairs, $def, $exitName, $exit, $env) when lt(0, size($pairs))
+    => mlir.op("cf.switch", [$sel], [],
+        [RawAttr("operandSegmentSizes", "array<i32: 1, 0, 0>"),
+         RawAttr("case_operand_segments",
+             concat("array<i32", concat(kr_zero_segs($pairs), ">"))),
+         RawAttr("case_values",
+             concat("dense<[", concat(types.join(list.map("kr.case_text", $pairs)),
+                 concat("]> : vector<", concat(text(size($pairs)),
+                     concat("x", concat($repr, ">")))))))],
+        [], list.prepend(kr_default_target($def, $exitName, $exit, $env), kr_case_targets($pairs, $env)));
+// an absent default is the empty chain: its target is the exit itself
+effect kr_default_target(End(), $exitName, $exit, $env) => $exit;
+effect[fallback] kr_default_target($def, $exitName, $exit, $env)
+    => env.get($env, TargetKey(kr_default_name($exitName)));
+effect kr_default_name($exitName) => concat(" case.default.", $exitName);
+effect kr.case_text([$value, $name]) => text($value);
+effect kr_zero_segs([]) => "";
+effect kr_zero_segs($pairs) when eq(size($pairs), 1) => ": 0";
+effect kr_zero_segs($pairs) when lt(1, size($pairs))
+    => concat(": 0", concat(kr_zero_segs2(list.tail($pairs)), ""));
+effect kr_zero_segs2([]) => "";
+effect kr_zero_segs2($pairs) when eq(size($pairs), 1) => ", 0";
+effect kr_zero_segs2($pairs) when lt(1, size($pairs))
+    => concat(", 0", kr_zero_segs2(list.tail($pairs)));
+effect kr_case_targets([], $env) => [];
+effect kr_case_targets($pairs, $env) when lt(0, size($pairs))
+    => list.prepend(env.get($env, TargetKey(list.head(list.tail(list.head($pairs))))),
+        kr_case_targets(list.tail($pairs), $env));
+// arm i's body falls through into arm i+1's block; the last arm joins exit
+effect kr_arms_lower([], $env, $exit) => [];
+effect kr_arms_lower($arms, $env, $exit) when lt(0, size($arms))
+    => list.concat(kr_arm_lower(list.head($arms),
+            kr_arm_next(list.tail($arms), $env, $exit), $env),
+        kr_arms_lower(list.tail($arms), $env, $exit));
+effect kr_arm_next([], $env, $exit) => $exit;
+effect kr_arm_next($arms, $env, $exit) when lt(0, size($arms))
+    => env.get($env, TargetKey(kr_arm_name(list.head($arms))));
+effect kr_arm_name(KArm($name, $body)) => $name;
+effect kr_arm_lower(KArm($name, $body), $joinTarget, $env)
+    => lower_flow($body, $env, env.get($env, TargetKey($name)), KToBlock($joinTarget));
+effect kr_default_lower(End(), $env, $exit, $exitName) => [];
+effect[fallback] kr_default_lower($def, $env, $exit, $exitName)
+    => lower_flow($def, $env, env.get($env, TargetKey(kr_default_name($exitName))), KToBlock($exit));
+// a flow continuation that just jumps to a block (arm fallthrough joins)
+effect base.finish(KToBlock($b)) => mlir.op("cf.br", [], [], [], [], [$b]);
+// jump/label terms already inside arm bodies keep their cfg semantics
+effect base.flow_terminal(KSwitchR($sel, $pairs, $arms, $def, $exitName, $next)) => flow_terminal($next);
+effect base.flow_terminal(KSwitchD($e, $arms, $def, $next)) => flow_terminal($next);
+effect base.flow_terminal(KStaticP($spec, $defs, $next)) => flow_terminal($next);
+effect base.flow_terminal(KStaticBind($n, $t, $g, $i, $next)) => flow_terminal($next);
+effect base.flow_terminal(KStaticDoneV($g, $t, $v, $next)) => flow_terminal($next);
+effect base.flow_terminal(KStaticDoneS($g, $c, $s, $next)) => flow_terminal($next);
+effect base.flow_terminal(KStaticDoneA($g, $e, $c, $vals, $next)) => flow_terminal($next);
+effect base.flow_terminal(KArm($name, $body)) => flow_terminal($body);
+// the default arm needs its own block even with no cases
+effect kr_default_prepare(KDefault($b), $entry, $environment)
+    => prepare_storage($b, $entry, $environment);
+
+effect base.flow_terminal(KExprStep($e, $next)) => flow_terminal($next);
+effect base.flow_terminal(KEvalC($t, $next)) => flow_terminal($next);
+effect base.flow_terminal(KRetC($v, $next)) => 1;
+effect base.flow_terminal(KRetDone($t, $next)) => 1;
+effect base.flow_terminal(KDecl($n, $t, $i, $next)) => flow_terminal($next);
+effect base.flow_terminal(KArrDecl($n, $e, $c, $next)) => flow_terminal($next);
+effect base.flow_terminal(KArrDeclC($id, $e, $c, $next)) => flow_terminal($next);
+effect base.flow_terminal(KArrStrC($id, $e, $c, $str, $next)) => flow_terminal($next);
+// Jump/Label flow_terminal come from the cfg library
+
+// ---- names: reads, lvalues, addresses ---------------------------------------------
+effect base.check(CName($name), $environment, $expected) when env.contains($environment, $name)
+    => kr_expect(kr_name_value(env.get($environment, $name), $name), $expected);
+effect[fallback] base.check(CName($name), $environment, $expected)
+    => fail(concat("undeclared identifier: ", $name));
+effect kr_name_value(Mutable($t, $id), $n) => Typed($t, Load($id));
+effect kr_name_value(Slot($t, $id), $n) => Typed($t, Read($id));
+// decay: the value of an array name drops the FIRST dimension
+effect kr_name_value(CArr($elem, $dims, $id), $n)
+    => kr_arr_decay($elem, $dims, CArrAddr($id));
+// one dimension decays to a pointer to the element; more dimensions decay
+// to a pointer to the sub-array
+effect kr_arr_decay($elem, $dims, $addr) when eq(size($dims), 1)
+    => Typed(Ptr($elem), $addr);
+effect[fallback] kr_arr_decay($elem, $dims, $addr)
+    => Typed(Ptr(kr_dims_type($elem, list.tail($dims))), $addr);
+effect kr_name_value(CGlobal($t, $name), $n) => Typed($t, CGlobalRead($name));
+effect[fallback] kr_name_value($slot, $n)
+    => fail(concat("not a value: ", $n));
+// the address of an lvalue (C §7.1 unary &)
+effect kr_lvalue(CName($name), $environment) when env.contains($environment, $name)
+    => kr_name_addr(env.get($environment, $name), $name);
+effect[fallback] kr_lvalue(CName($name), $environment)
+    => fail(concat("undeclared identifier: ", $name));
+effect kr_name_addr(Mutable($t, $id), $n) => Typed(Ptr($t), CSlotAddr($id));
+effect kr_name_addr(CGlobal($t, $name), $n) => Typed(Ptr($t), CGAddr($name));
+// &arr: the address of the WHOLE array (pointer-to-array); K&R 8.6 allows
+// taking it where a pointer-to-array is expected
+effect kr_name_addr(CArr($e, $dims, $id), $n) => Typed(Ptr(kr_dims_type($e, $dims)), CArrAddr($id));
+effect kr_name_addr(Slot($t, $id), $n) => fail("internal: unshadowed parameter");
+effect[fallback] kr_name_addr($slot, $n) => fail(concat("not an lvalue: ", $n));
+effect kr_lvalue(CDeref($e), $environment) => kr_check_any($e, $environment);
+// s.m / p->m as an lvalue (assignment target, & operand)
+effect kr_lvalue(CDot($b, $m), $environment) => kr_member_lvalue(CDot($b, $m), $environment);
+effect kr_lvalue(CArrow($b, $m), $environment) => kr_member_lvalue(CArrow($b, $m), $environment);
+effect kr_lvalue(CIndex($a, $i), $environment)
+    => bind(Typed($ta, $va), kr_check_any($a, $environment),
+        bind(Typed($ti, $vi), kr_check_any($i, $environment),
+            kr_index_addr(Typed($ta, $va), Typed($ti, $vi))));
+// indexing an array-of-arrays steps by the ROW size (a byte-scaled gep) and
+// the sub-array lvalue DECAYS when read instead of loading
+effect kr_index_addr(Typed(Ptr(KArrT($e, $c)), $base), Typed($t, $idx))
+    => Typed(Ptr(KArrT($e, $c)), CGep(Typed(Ptr(KArrT($e, $c)), $base), Typed($t, $idx)));
+effect[fallback] kr_index_addr(Typed(Ptr($e), $base), Typed($t, $idx))
+    => Typed(Ptr($e), CGep(Typed(Ptr($e), $base), Typed($t, $idx)));
+// (*pa)[i]: the pointer-to-array dereferenced to the array value, indexed
+// with element scaling
+effect kr_index_addr(Typed(KArrT($e, $c), $base), Typed($t, $idx))
+    => Typed(Ptr($e), CGep(Typed(Ptr($e), $base), Typed($t, $idx)));
+effect kr_index_addr(Typed($t, $base), Typed(Ptr($e), $idx)) when not(kr_is_karr($t))
+    => kr_index_addr(Typed(Ptr($e), $idx), Typed($t, $base));
+effect kr_is_karr(KArrT($e, $c)) => 1;
+effect[fallback] kr_is_karr($t) => 0;
+effect kr_is_ptr_t(Ptr($e)) => 1;
+effect[fallback] kr_is_ptr_t($t) => 0;
+effect[fallback] kr_index_addr(Typed($a, $b), Typed($c, $d))
+    when and(not(kr_is_ptr_t($a)), not(kr_is_karr($a)))
+    => fail("subscript requires a pointer operand");
+effect[fallback] kr_lvalue($e, $environment) => fail("not an lvalue");
+
+// address/value lowerings
+effect base.lower(Typed(Ptr($e), CSlotAddr($id)), $environment) => env.get($environment, $id);
+effect base.lower(Typed(Ptr($e), CArrAddr($id)), $environment) => env.get($environment, $id);
+effect base.lower(Typed(Ptr($e), CGAddr($name)), $environment)
+    => mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"],
+        [RawAttr("global_name", concat("@\"", concat($name, "\"")))], []);
+effect base.lower(Typed($t, CGlobalRead($name)), $environment)
+    => mlir.op("llvm.load", [mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"],
+        [RawAttr("global_name", concat("@\"", concat($name, "\"")))], [])],
+        [types.repr($t)], [], []);
+effect base.lower(Typed(Ptr($e), CStrRef($name)), $environment)
+    => mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"],
+        [RawAttr("global_name", concat("@\"", concat($name, "\"")))], []);
+
+// ---- conditions (K&R: any scalar; true when != 0) ----------------------------------
+effect base.check(KCond($e), $environment, $expected)
+    => kr_truth(kr_check_any($e, $environment));
+effect kr_truth(Typed(Bool(), $v)) => Typed(Bool(), $v);
+effect kr_truth(Typed(Signed($w), $v)) => Typed(Bool(), CTruthV(Typed(Signed($w), $v)));
+effect kr_truth(Typed(Unsigned($w), $v)) => Typed(Bool(), CTruthV(Typed(Unsigned($w), $v)));
+effect kr_truth(Typed(Ptr($e), $v)) => Typed(Bool(), CTruthPtr(Typed(Ptr($e), $v)));
+effect base.lower(Typed(Bool(), CTruthV(Typed($t, $v))), $environment)
+    => mlir.op("llvm.icmp",
+        [lower(Typed($t, $v), $environment),
+         mlir.op("arith.constant", [], [types.repr($t)], [Attr("value", 0, types.repr($t))], [])],
+        ["i1"], [Attr("predicate", 1, "i64")], []);
+effect base.lower(Typed(Bool(), CTruthPtr(Typed(Ptr($e), $v))), $environment)
+    => mlir.op("llvm.icmp",
+        [mlir.op("llvm.ptrtoint", [lower(Typed(Ptr($e), $v), $environment)], ["i64"], [], []),
+         mlir.op("arith.constant", [], ["i64"], [Attr("value", 0, "i64")], [])],
+        ["i1"], [Attr("predicate", 1, "i64")], []);
+
+// ---- binary operators (K&R §7 conversions) ------------------------------------------
+effect base.check(CBin($op, $a, $b), $environment, $expected)
+    => bind(Typed($ta, $va), kr_check_any($a, $environment),
+        bind(Typed($tb, $vb), kr_check_any($b, $environment),
+            kr_expect(kr_binary($op, Typed($ta, $va), Typed($tb, $vb)), $expected)));
+effect base.check(CShift($op, $a, $b), $environment, $expected)
+    => bind(Typed($ta, $va), kr_check_any($a, $environment),
+        bind(Typed($tb, $vb), kr_check_any($b, $environment),
+            kr_expect(kr_binary($op, Typed($ta, $va), Typed($tb, $vb)), $expected)));
+// pointer +/- integer scales by the element size; ptr-ptr is the distance
+effect kr_is_ptr(Ptr($e)) => 1;
+effect[fallback] kr_is_ptr($t) => 0;
+effect kr_binary("add", Typed(Ptr($e), $p), Typed(Ptr($e2), $q)) => fail("cannot add two pointers");
+effect kr_binary("sub", Typed(Ptr($e), $a), Typed(Ptr($e2), $b))
+    => Typed(Signed(64), CPtrDiff(Typed(Ptr($e), $a), Typed(Ptr($e), $b)));
+effect kr_binary("add", Typed(Ptr($e), $p), Typed($t, $i)) when not(kr_is_ptr($t))
+    => Typed(Ptr($e), CGep(Typed(Ptr($e), $p), Typed($t, $i)));
+effect kr_binary("add", Typed($t, $i), Typed(Ptr($e), $p)) when not(kr_is_ptr($t))
+    => Typed(Ptr($e), CGep(Typed(Ptr($e), $p), Typed($t, $i)));
+effect kr_binary("sub", Typed(Ptr($e), $p), Typed($t, $i)) when not(kr_is_ptr($t))
+    => Typed(Ptr($e), CGepNeg(Typed(Ptr($e), $p), Typed($t, $i)));
+// shifts: each operand integer-promoted, the result has the LEFT type
+effect kr_binary("shl", Typed($ta, $a), Typed($tb, $b))
+    => kr_shift("shl", Typed($ta, $a), Typed($tb, $b));
+effect kr_binary("shr", Typed($ta, $a), Typed($tb, $b))
+    => kr_shift("shr", Typed($ta, $a), Typed($tb, $b));
+// the shift count is converted to the (promoted) left type for the MLIR op
+effect kr_shift($op, Typed(Signed($w), $a), Typed($tb, $b))
+    => bind(Typed(Signed($w), $i), kr_expect(kr_promote_any(Typed($tb, $b)), Signed($w)),
+        Typed(Signed($w), CShiftC($op, Typed(Signed($w), $a), Typed(Signed($w), $i))));
+effect kr_shift($op, Typed(Unsigned($w), $a), Typed($tb, $b))
+    => bind(Typed(Unsigned($w), $i), kr_expect(kr_promote_any(Typed($tb, $b)), Unsigned($w)),
+        Typed(Unsigned($w), CShiftC($op, Typed(Unsigned($w), $a), Typed(Unsigned($w), $i))));
+effect kr_shift($op, Typed(Ptr($e), $a), $b) => fail("cannot shift a pointer");
+// arithmetic/bitwise: promote both, compute the common type
+effect[fallback] kr_binary($op, Typed($ta, $a), Typed($tb, $b))
+    => choose(or(kr_is_ptr($ta), kr_is_ptr($tb)),
+        fail("invalid operands: pointer with this operator"),
+        bind(Typed($pa, $a2), kr_promote_any(Typed($ta, $a)),
+            bind(Typed($pb, $b2), kr_promote_any(Typed($tb, $b)),
+                bind($c, kr_common($pa, $pb),
+                    bind(Typed($c, $a3), kr_coerce(Typed($pa, $a2), $c),
+                        bind(Typed($c, $b3), kr_coerce(Typed($pb, $b2), $c),
+                            Typed($c, Binary($op, Typed($c, $a3), Typed($c, $b3)))))))));
+// pointer arithmetic lowerings; aggregate element types are byte-allocated,
+// so the index is scaled by the element size explicitly
+effect kr_flat_p(Signed($w)) => 1;
+effect kr_flat_p(Unsigned($w)) => 1;
+effect kr_flat_p(Ptr($p)) => 1;
+effect kr_flat_p(Real($f)) => 1;
+effect[fallback] kr_flat_p($t) => 0;
+effect base.lower(Typed(Ptr($e), CGep(Typed(Ptr($e), $p), Typed($t, $i))), $environment)
+    => kr_gep_elem(lower(Typed(Ptr($e), $p), $environment), $e,
+        kr_i64(lower(Typed($t, $i), $environment), $t), $environment);
+effect base.lower(Typed(Ptr($e), CGep(Typed(Ptr(KArrT($e, $c)), $p), Typed($t, $i))), $environment)
+    => kr_gep_elem(lower(Typed(Ptr(KArrT($e, $c)), $p), $environment), KArrT($e, $c),
+        kr_i64(lower(Typed($t, $i), $environment), $t), $environment);
+effect kr_gep_elem($ptr, $e, $idx, $env) when kr_flat_p($e)
+    => mlir.op("llvm.getelementptr", [$ptr, $idx],
+        ["!llvm.ptr"],
+        [RawAttr("elem_type", types.repr($e)), RawAttr("rawConstantIndices", "array<i32: -2147483648>")],
+        []);
+effect[fallback] kr_gep_elem($ptr, $e, $idx, $env)
+    => mlir.op("llvm.getelementptr",
+        [$ptr, mlir.op("arith.muli", [$idx,
+            mlir.op("arith.constant", [], ["i64"], [Attr("value", kr_size($e), "i64")], [])],
+            ["i64"], [], [])],
+        ["!llvm.ptr"],
+        [RawAttr("elem_type", "i8"), RawAttr("rawConstantIndices", "array<i32: -2147483648>")],
+        []);
+effect base.lower(Typed(Ptr($e), CGepNeg(Typed(Ptr($e), $p), Typed($t, $i))), $environment)
+    => mlir.op("llvm.getelementptr",
+        [lower(Typed(Ptr($e), $p), $environment),
+         mlir.op("arith.subi", [mlir.op("arith.constant", [], ["i64"], [Attr("value", 0, "i64")], []),
+             kr_i64(lower(Typed($t, $i), $environment), $t)], ["i64"], [], [])],
+        ["!llvm.ptr"],
+        [RawAttr("elem_type", types.repr($e)), RawAttr("rawConstantIndices", "array<i32: -2147483648>")],
+        []);
+effect base.lower(Typed(Signed(64), CPtrDiff(Typed(Ptr($e), $a), Typed(Ptr($e2), $b))), $environment)
+    => mlir.op("arith.divsi",
+        [mlir.op("arith.subi",
+            [mlir.op("llvm.ptrtoint", [lower(Typed(Ptr($e), $a), $environment)], ["i64"], [], []),
+             mlir.op("llvm.ptrtoint", [lower(Typed(Ptr($e), $b), $environment)], ["i64"], [], [])],
+            ["i64"], [], []),
+         mlir.op("arith.constant", [], ["i64"], [Attr("value", kr_size($e), "i64")], [])],
+        ["i64"], [], []);
+effect kr_i64($v, $t) when eq($t, Signed(64)) => $v;
+effect kr_i64($v, $t) when eq($t, Unsigned(64)) => $v;
+effect[fallback] kr_i64($v, $t) => mlir.op("arith.extsi", [$v], ["i64"], [], []);
+// shifts lower at the (promoted) left type; >> is arithmetic on signed
+effect base.lower(Typed($t, CShiftC("shl", Typed($t, $a), Typed($ti, $i))), $environment)
+    => mlir.op("arith.shli", [lower(Typed($t, $a), $environment), lower(Typed($ti, $i), $environment)],
+        [types.repr($t)], [], []);
+effect base.lower(Typed(Signed($w), CShiftC("shr", Typed($t, $a), Typed($ti, $i))), $environment)
+    => mlir.op("arith.shrsi", [lower(Typed($t, $a), $environment), lower(Typed($ti, $i), $environment)],
+        [types.repr($t)], [], []);
+effect base.lower(Typed(Unsigned($w), CShiftC("shr", Typed($t, $a), Typed($ti, $i))), $environment)
+    => mlir.op("arith.shrui", [lower(Typed($t, $a), $environment), lower(Typed($ti, $i), $environment)],
+        [types.repr($t)], [], []);
+
+// comma operator (K&R Appendix A): evaluate the left, discard, yield right
+effect base.check(CComma($a, $b), $environment, $expected)
+    => bind(Typed($ta, $va), kr_check_any($a, $environment),
+        bind(Typed($tb, $vb), kr_check_any($b, $environment),
+            kr_expect(Typed($tb, CCommaC(Typed($ta, $va), Typed($tb, $vb))), $expected)));
+effect base.lower(Typed($t, CCommaC(Typed($ta, $a), Typed($t, $b))), $environment)
+    => seq(lower(Typed($ta, $a), $environment), lower(Typed($t, $b), $environment));
+
+// ---- comparisons -----------------------------------------------------------------
+effect base.check(CCompare($p, $a, $b), $environment, $expected)
+    => bind(Typed($ta, $va), kr_check_any($a, $environment),
+        bind(Typed($tb, $vb), kr_check_any($b, $environment),
+            kr_expect(kr_compare($p, Typed($ta, $va), Typed($tb, $vb), $expected), $expected)));
+// comparisons yield int (0/1) in value position, Bool inside conditions
+effect kr_compare($p, Typed(Ptr($e), $a), Typed(Ptr($e2), $b), $expected)
+    => kr_bool_out(Typed(Bool(), Comparison($p, Typed(Ptr($e), $a), Typed(Ptr($e), $b))), $expected);
+effect kr_compare($p, Typed(Ptr($e), $a), Typed($t, $b), $expected) when not(kr_is_ptr($t))
+    => bind(Typed(Ptr($e), $b2), kr_coerce(Typed($t, $b), Ptr($e)),
+        kr_compare($p, Typed(Ptr($e), $a), Typed(Ptr($e), $b2), $expected));
+effect kr_compare($p, Typed($t, $a), Typed(Ptr($e), $b), $expected) when not(kr_is_ptr($t))
+    => bind(Typed(Ptr($e), $a2), kr_coerce(Typed($t, $a), Ptr($e)),
+        kr_compare($p, Typed(Ptr($e), $a2), Typed(Ptr($e), $b), $expected));
+effect[fallback] kr_compare($p, Typed($ta, $a), Typed($tb, $b), $expected)
+    => bind(Typed($pa, $a2), kr_promote_any(Typed($ta, $a)),
+        bind(Typed($pb, $b2), kr_promote_any(Typed($tb, $b)),
+            bind($c, kr_common($pa, $pb),
+                bind(Typed($c, $a3), kr_coerce(Typed($pa, $a2), $c),
+                    bind(Typed($c, $b3), kr_coerce(Typed($pb, $b2), $c),
+                        kr_bool_out(Typed(Bool(), Comparison($p, Typed($c, $a3), Typed($c, $b3))), $expected))))));
+effect kr_bool_out(Typed(Bool(), $v), Bool()) => Typed(Bool(), $v);
+effect[fallback] kr_bool_out(Typed(Bool(), $v), $expected)
+    => Typed(Signed(32), CBoolWord(Typed(Bool(), $v)));
+effect base.lower(Typed(Signed(32), CBoolWord(Typed(Bool(), $v))), $environment)
+    => mlir.op("arith.extui", [lower(Typed(Bool(), $v), $environment)], ["i32"], [], []);
+
+// ---- logical operators (short-circuit; result is int) ------------------------------
+effect base.check(CLogical($op, $a, $b), $environment, $expected)
+    => bind(Typed(Bool(), $ta), kr_truth(kr_check_any($a, $environment)),
+        bind(Typed(Bool(), $tb), kr_truth(kr_check_any($b, $environment)),
+            kr_expect(Typed(Signed(32),
+                CLogicalC($op, Typed(Bool(), $ta), Typed(Bool(), $tb))), $expected)));
+effect base.lower(Typed(Signed(32), CLogicalC("and", Typed(Bool(), $a), Typed(Bool(), $b))), $environment)
+    => mlir.op("scf.if", [lower(Typed(Bool(), $a), $environment)], ["i32"], [], [
+        mlir.region(mlir.op("scf.yield",
+            [mlir.op("scf.if", [lower(Typed(Bool(), $b), $environment)], ["i32"], [], [
+                mlir.region(mlir.op("scf.yield", [kr_const32(1)], [], [], [])),
+                mlir.region(mlir.op("scf.yield", [kr_const32(0)], [], [], []))])], [], [], [])),
+        mlir.region(mlir.op("scf.yield", [kr_const32(0)], [], [], []))]);
+effect base.lower(Typed(Signed(32), CLogicalC("or", Typed(Bool(), $a), Typed(Bool(), $b))), $environment)
+    => mlir.op("scf.if", [lower(Typed(Bool(), $a), $environment)], ["i32"], [], [
+        mlir.region(mlir.op("scf.yield", [kr_const32(1)], [], [], [])),
+        mlir.region(mlir.op("scf.yield",
+            [mlir.op("scf.if", [lower(Typed(Bool(), $b), $environment)], ["i32"], [], [
+                mlir.region(mlir.op("scf.yield", [kr_const32(1)], [], [], [])),
+                mlir.region(mlir.op("scf.yield", [kr_const32(0)], [], [], []))])], [], [], []))]);
+effect kr_const32($v) => mlir.op("arith.constant", [], ["i32"], [Attr("value", $v, "i32")], []);
+
+// ---- unary operators -----------------------------------------------------------------
+effect base.check(CNeg($e), $environment, $expected)
+    => bind(Typed($t, $v), kr_promote_any(kr_check_any($e, $environment)),
+        kr_expect(Typed($t, Unary("neg", Typed($t, $v))), $expected));
+effect base.check(CPlus($e), $environment, $expected)
+    => kr_expect(kr_promote_any(kr_check_any($e, $environment)), $expected);
+effect base.check(CNot($e), $environment, $expected)
+    => bind(Typed(Bool(), $t), kr_truth(kr_check_any($e, $environment)),
+        kr_expect(Typed(Signed(32), CBoolWord(Typed(Bool(), CNotV(Typed(Bool(), $t))))), $expected));
+effect base.lower(Typed(Bool(), CNotV(Typed(Bool(), $v))), $environment)
+    => mlir.op("llvm.icmp",
+        [lower(Typed(Bool(), $v), $environment),
+         mlir.op("arith.constant", [], ["i1"], [Attr("value", 0, "i1")], [])],
+        ["i1"], [Attr("predicate", 0, "i64")], []);
+effect base.check(CCompl($e), $environment, $expected)
+    => bind(Typed($t, $v), kr_promote_any(kr_check_any($e, $environment)),
+        kr_expect(Typed($t, Binary("xor", Typed($t, $v), Typed($t, Integer(-1)))), $expected));
+effect base.check(CDeref($e), $environment, $expected)
+    => bind(Typed($t, $v), kr_check_any($e, $environment),
+        kr_deref_value(Typed($t, $v), $expected));
+// *p over a plain pointer loads; over a pointer-to-array the value IS the
+// array's address (arrays do not load)
+effect kr_deref_value(Typed(Ptr(KArrT($el, $c)), $p), $expected)
+    => kr_expect(Typed(KArrT($el, $c), $p), $expected);
+effect[fallback] kr_deref_value(Typed(Ptr($el), $p), $expected)
+    => kr_expect(Typed($el, CLoad(Typed(Ptr($el), $p))), $expected);
+effect kr_ptr_of(Typed(Ptr($e), $v)) => Typed(Ptr($e), $v);
+effect[fallback] kr_ptr_of(Typed($t, $v)) => fail("cannot dereference a non-pointer");
+effect base.lower(Typed($e, CLoad(Typed(Ptr($e), $p))), $environment)
+    => mlir.op("llvm.load", [lower(Typed(Ptr($e), $p), $environment)], [types.repr($e)], [], []);
+effect base.check(CAddrOf($e), $environment, $expected)
+    => kr_expect(kr_lvalue($e, $environment), $expected);
+
+// ++/-- : pointer operands step by the element size (K&R §5)
+effect base.check(CIncDec($l, $delta, $post), $environment, $expected)
+    => bind(Typed(Ptr($t), $addr), kr_lvalue($l, $environment),
+        kr_expect(kr_incdec(Typed(Ptr($t), $addr), $delta, $post, $t), $expected));
+effect kr_incdec(Typed(Ptr(Signed($w)), $addr), $delta, $post, Signed($w))
+    => Typed(Signed($w), CIncC(Typed(Ptr(Signed($w)), $addr), $delta, $post));
+effect kr_incdec(Typed(Ptr(Unsigned($w)), $addr), $delta, $post, Unsigned($w))
+    => Typed(Unsigned($w), CIncC(Typed(Ptr(Unsigned($w)), $addr), $delta, $post));
+effect kr_incdec(Typed(Ptr(Ptr($e)), $addr), $delta, $post, Ptr($e))
+    => Typed(Ptr($e), CGepInc(Typed(Ptr(Ptr($e)), $addr), $delta, $post));
+effect base.lower(Typed($t, CIncC(Typed(Ptr($t), $addr), $delta, $post)), $environment)
+    => bind($p, lower(Typed(Ptr($t), $addr), $environment),
+        bind($old, mlir.op("llvm.load", [$p], [types.repr($t)], [], []),
+            bind($new, mlir.op("arith.addi", [$old,
+                    mlir.op("arith.constant", [], [types.repr($t)], [Attr("value", $delta, types.repr($t))], [])],
+                    [types.repr($t)], [], []),
+                seq(mlir.op("llvm.store", [$new, $p], [], [], []),
+                    choose($post, $old, $new)))));
+effect base.lower(Typed(Ptr($e), CGepInc(Typed(Ptr(Ptr($e)), $addr), $delta, $post)), $environment)
+    => bind($slot, lower(Typed(Ptr(Ptr($e)), $addr), $environment),
+        bind($old, mlir.op("llvm.load", [$slot], ["!llvm.ptr"], [], []),
+            bind($new, mlir.op("llvm.getelementptr", [$old,
+                    mlir.op("arith.constant", [], ["i64"], [Attr("value", $delta, "i64")], [])],
+                    ["!llvm.ptr"],
+                    [RawAttr("elem_type", types.repr($e)), RawAttr("rawConstantIndices", "array<i32: -2147483648>")],
+                    []),
+                seq(mlir.op("llvm.store", [$new, $slot], [], [], []),
+                    choose($post, $old, $new)))));
+
+// ---- subscripting and the conditional operator ----------------------------------------
+effect base.check(CIndex($a, $i), $environment, $expected)
+    => bind(Typed($t, $addr), kr_lvalue(CIndex($a, $i), $environment),
+        kr_index_read(Typed($t, $addr), $expected));
+// a sub-array lvalue decays to a pointer to its first element
+effect kr_index_read(Typed(Ptr(KArrT($e, $c)), $addr), $expected)
+    => kr_expect(Typed(Ptr($e), $addr), $expected);
+effect[fallback] kr_index_read(Typed(Ptr($e), $addr), $expected)
+    => kr_expect(Typed($e, CLoad(Typed(Ptr($e), $addr))), $expected);
+effect base.check(CTernary($c, $a, $b), $environment, $expected)
+    => bind(Typed(Bool(), $tc), kr_truth(kr_check_any($c, $environment)),
+        bind(Typed($ta, $va), kr_check_any($a, $environment),
+            bind(Typed($tb, $vb), kr_check_any($b, $environment),
+                kr_expect(kr_ternary(Typed(Bool(), $tc), Typed($ta, $va), Typed($tb, $vb)), $expected))));
+effect kr_ternary(Typed(Bool(), $tc), Typed(Ptr($e), $a), Typed(Ptr($e2), $b))
+    => Typed(Ptr($e), CTernaryC(Typed(Bool(), $tc), Typed(Ptr($e), $a), Typed(Ptr($e), $b)));
+effect kr_ternary(Typed(Bool(), $tc), Typed(Ptr($e), $a), Typed($t, $b)) when not(kr_is_ptr($t))
+    => fail("conditional mixes pointer and integer (M1)");
+effect kr_ternary(Typed(Bool(), $tc), Typed($t, $a), Typed(Ptr($e), $b)) when not(kr_is_ptr($t))
+    => fail("conditional mixes pointer and integer (M1)");
+effect[fallback] kr_ternary(Typed(Bool(), $tc), Typed($ta, $a), Typed($tb, $b))
+    => bind($c, kr_common(kr_promote($ta), kr_promote($tb)),
+        bind(Typed($c, $a2), kr_coerce(kr_promote_any(Typed($ta, $a)), $c),
+            bind(Typed($c, $b2), kr_coerce(kr_promote_any(Typed($tb, $b)), $c),
+                Typed($c, CTernaryC(Typed(Bool(), $tc), Typed($c, $a2), Typed($c, $b2))))));
+effect base.lower(Typed($t, CTernaryC(Typed(Bool(), $c), Typed($t, $a), Typed($t, $b))), $environment)
+    => mlir.op("scf.if", [lower(Typed(Bool(), $c), $environment)], [types.repr($t)], [], [
+        mlir.region(mlir.op("scf.yield", [lower(Typed($t, $a), $environment)], [], [], [])),
+        mlir.region(mlir.op("scf.yield", [lower(Typed($t, $b), $environment)], [], [], []))]);
+
+// ---- struct member access ------------------------------------------------------------------
+// rvalue: load the member type at (base address + offset)
+effect base.check(CDot($b, $m), $environment, $expected)
+    => kr_member_check(CDot($b, $m), $m, $environment, $expected);
+effect base.check(CArrow($b, $m), $environment, $expected)
+    => kr_member_check(CArrow($b, $m), $m, $environment, $expected);
+effect kr_member_check($cm, $m, $environment, $expected)
+    => bind(Typed($mt, $mv), kr_member_value($cm, $environment),
+        kr_expect(Typed($mt, $mv), $expected));
+// s.m: the base's lvalue ADDRESS is the struct (locals, array elements, *p)
+// p->m: the base's VALUE is the struct pointer (K&R 8.6 sugar for (*p).m)
+effect kr_member_lvalue(CDot($b, $m), $environment)
+    => bind(Typed(Ptr($t), $addr), kr_lvalue($b, $environment),
+        kr_member_at(Typed(Ptr($t), $addr), $m, $environment));
+effect kr_member_lvalue(CArrow($b, $m), $environment)
+    => bind(Typed(Ptr($t), $v), kr_check_any($b, $environment),
+        kr_member_at(Typed(Ptr($t), $v), $m, $environment));
+effect[fallback] kr_member_lvalue($cm, $environment) => fail("not a struct member access");
+effect kr_member_at(Typed(Ptr($t), $addr), $m, $environment)
+    => bind(KStructT($tag, $fields, $size, $al), kr_resolve_t($t, $environment),
+        kr_member_field(Typed(Ptr($t), $addr), kr_member_lookup($fields, $m)));
+effect kr_member_field(Typed(Ptr($t), $addr), [$mt, $off])
+    => Typed(Ptr($mt), CMemberAddr(Typed(Ptr($t), $addr), $mt, $off));
+// bitfields: the "address" carries container/bit placement; the value is
+// extracted from (or merged into) the container at load/store time
+effect kr_member_field(Typed(Ptr($t), $addr), [$mt, $off, $bo, $w])
+    => Typed(Ptr($mt), CBitLvalue(Typed(Ptr($t), $addr), $mt, $off, $bo, $w));
+effect kr_member_value($cm, $environment)
+    => bind(Typed(Ptr($mt), $addr), kr_member_lvalue($cm, $environment),
+        kr_member_read(Typed($mt, $addr)));
+effect kr_member_read(Typed($mt, CBitLvalue(Typed(Ptr($t), $base), $ct, $co, $bo, $w)))
+    => Typed($mt, CBitLoad(Typed(Ptr($t), $base), $ct, $co, $bo, $w));
+effect[fallback] kr_member_read(Typed($mt, $addr))
+    => Typed($mt, CLoad(Typed(Ptr($mt), $addr)));
+effect[fallback] kr_member_at(Typed($t, $addr), $m, $environment)
+    => fail("member access requires a struct or union");
+effect base.lower(Typed(Ptr($mt), CMemberAddr(Typed(Ptr($t), $base), $mt, $off)), $environment)
+    => mlir.op("llvm.getelementptr",
+        [lower(Typed(Ptr($t), $base), $environment)],
+        ["!llvm.ptr"],
+        [RawAttr("elem_type", "i8"),
+         RawAttr("rawConstantIndices", concat("array<i32: ", concat(text($off), ">")))],
+        []);
+// a bitfield cannot be addressed: &x.f has no memory location
+effect base.lower(Typed(Ptr($mt), CBitLvalue(Typed(Ptr($t), $base), $ct, $co, $bo, $w)), $environment)
+    => fail("cannot take the address of a bitfield");
+// extract: unsigned = logical shift + mask; signed = double shift to
+// sign-extend; the container is byte-offset co from the struct base
+effect base.lower(Typed($mt, CBitLoad(Typed(Ptr($t), $base), $ct, $co, $bo, $w)), $environment)
+    => bind($p, mlir.op("llvm.getelementptr",
+            [lower(Typed(Ptr($t), $base), $environment)],
+            ["!llvm.ptr"],
+            [RawAttr("elem_type", "i8"),
+             RawAttr("rawConstantIndices", concat("array<i32: ", concat(text($co), ">")))],
+            []),
+        bind($raw, mlir.op("llvm.load", [$p], [types.repr($ct)], [], []),
+            kr_bit_extract($raw, $ct, $bo, $w, $mt, $environment)));
+effect kr_bit_extract($raw, Signed($cw), $bo, $w, $mt, $environment)
+    => kr_bit_extract_signed($raw, Signed($cw), $bo, $w, $mt, $environment);
+effect[fallback] kr_bit_extract($raw, $ct, $bo, $w, $mt, $environment)
+    => mlir.op("arith.andi",
+            [mlir.op("arith.shrui", [$raw,
+                mlir.op("arith.constant", [], [types.repr($ct)],
+                    [Attr("value", $bo, types.repr($ct))], [])],
+                [types.repr($ct)], [], []),
+             mlir.op("arith.constant", [], [types.repr($mt)],
+                [Attr("value", int.sub(int.shl(1, $w), 1), types.repr($mt))], [])],
+            [types.repr($mt)], [], []);
+// signed: left to the top then arithmetic right - the compiler folds pairs
+effect kr_bit_extract_signed($raw, $cw, $bo, $w, $mt, $environment)
+    => mlir.op("arith.shrsi",
+            [mlir.op("arith.shli", [$raw,
+                mlir.op("arith.constant", [], [types.repr($cw)],
+                    [Attr("value", int.sub(int.mul(8, kr_size($cw)), int.add($bo, $w)), types.repr($cw))], [])],
+                [types.repr($cw)], [], []),
+             mlir.op("arith.constant", [], [types.repr($cw)],
+                [Attr("value", int.sub(int.mul(8, kr_size($cw)), $w), types.repr($cw))], [])],
+            [types.repr($cw)], [], []);
+// masked merge: new = (old & ~fieldMask) | ((value & valueMask) << bitOff)
+effect base.lower(Typed($mt, CBitSet(Typed(Ptr($t), $base), $ct, $co, $bo, $w, Typed($mt, $v))), $environment)
+    => bind($p, mlir.op("llvm.getelementptr",
+            [lower(Typed(Ptr($t), $base), $environment)],
+            ["!llvm.ptr"],
+            [RawAttr("elem_type", "i8"),
+             RawAttr("rawConstantIndices", concat("array<i32: ", concat(text($co), ">")))],
+            []),
+        bind($old, mlir.op("llvm.load", [$p], [types.repr($ct)], [], []),
+            bind($val, lower(Typed($mt, $v), $environment),
+                bind($new, mlir.op("arith.ori",
+                        [mlir.op("arith.andi", [$old,
+                            mlir.op("arith.constant", [], [types.repr($ct)],
+                                [Attr("value", int.xor(int.shl(int.sub(int.shl(1, $w), 1), $bo), -1),
+                                    types.repr($ct))], [])],
+                            [types.repr($ct)], [], []),
+                         mlir.op("arith.shli",
+                            [mlir.op("arith.andi", [$val,
+                                mlir.op("arith.constant", [], [types.repr($ct)],
+                                    [Attr("value", int.sub(int.shl(1, $w), 1), types.repr($ct))], [])],
+                                [types.repr($ct)], [], []),
+                             mlir.op("arith.constant", [], [types.repr($ct)],
+                                [Attr("value", $bo, types.repr($ct))], [])],
+                            [types.repr($ct)], [], [])],
+                        [types.repr($ct)], [], []),
+                    seq(mlir.op("llvm.store", [$new, $p], [], [], []), $val)))));
+
+// ---- casts and sizeof --------------------------------------------------------------------
+effect kr_cast_target(CT($t, $s)) => kr_stars($s, $t);
+effect base.check(CCast($ct, $e), $environment, $expected)
+    => kr_expect(kr_coerce(kr_check_any($e, $environment), kr_cast_target($ct)), $expected);
+effect base.check(CSizeofT($ct), $environment, $expected)
+    => expect(Typed(Unsigned(32), Integer(kr_size_of(kr_cast_target($ct), $environment))), $expected);
+effect base.check(CSizeofE(CName($n)), $environment, $expected)
+    when and(env.contains($environment, $n), kr_arr_binding(env.get($environment, $n)))
+    => kr_sizeof_arr(env.get($environment, $n), $expected, $environment);
+effect kr_arr_binding(CArr($e, $dims, $id)) => 1;
+effect kr_arr_binding(CGA($e, $dims, $name)) => 1;
+effect[fallback] kr_arr_binding($b) => 0;
+effect kr_sizeof_arr(CArr($elem, $dims, $id), $expected, $environment)
+    => expect(Typed(Unsigned(32), Integer(int.mul(kr_dims_total($dims), kr_size_of($elem, $environment)))), $expected);
+effect kr_sizeof_arr(CGA($elem, $dims, $name), $expected, $environment)
+    when not(lt(list.head($dims), 0))
+    => expect(Typed(Unsigned(32), Integer(int.mul(kr_dims_total($dims), kr_size_of($elem, $environment)))), $expected);
+effect[fallback] kr_sizeof_arr(CGA($elem, $dims, $name), $expected, $environment)
+    => fail("sizeof of an incomplete array");
+effect base.check(CSizeofE($e), $environment, $expected)
+    when not(kr_arr_name($e, $environment))
+    => bind(Typed($t, $v), kr_check_any($e, $environment),
+        expect(Typed(Unsigned(32), Integer(kr_size_of($t, $environment))), $expected));
+// an array-binding name under sizeof takes the special path exclusively
+effect kr_arr_name(CName($n), $environment) when env.contains($environment, $n)
+    => kr_arr_binding(env.get($environment, $n));
+effect[fallback] kr_arr_name($e, $environment) => 0;
+
+// ---- assignment (the whole thing is one expression; value = stored value) -----------------
+effect base.check(CAssign($l, $op, $r), $environment, $expected)
+    => bind(Typed(Ptr($t), $addr), kr_lvalue($l, $environment),
+        bind(Typed($tr, $rv), kr_check_any($r, $environment),
+            kr_expect(kr_assign(Typed(Ptr($t), $addr), $op, Typed($tr, $rv), $t), $expected)));
+// bitfield targets: the store is a masked merge; compound ops extract the
+// old value first (the "address" term drives the shape)
+effect kr_assign(Typed(Ptr($t), CBitLvalue(Typed(Ptr($tb), $base), $ct, $co, $bo, $w)),
+        "assign", Typed($tr, $rv), $t)
+    => bind(Typed($t, $v), kr_coerce(Typed($tr, $rv), $t),
+        Typed($t, CBitSet(Typed(Ptr($tb), $base), $ct, $co, $bo, $w, Typed($t, $v))));
+effect kr_assign(Typed(Ptr($t), CBitLvalue(Typed(Ptr($tb), $base), $ct, $co, $bo, $w)),
+        $op, Typed($tr, $rv), $t) when not(eq($op, "assign"))
+    => bind(Typed($t, $old), Typed($t, CBitLoad(Typed(Ptr($tb), $base), $ct, $co, $bo, $w)),
+        bind(Typed($tc, $combined), kr_binary($op, Typed($t, $old), Typed($tr, $rv)),
+            bind(Typed($t, $v), kr_coerce(Typed($tc, $combined), $t),
+                Typed($t, CBitSet(Typed(Ptr($tb), $base), $ct, $co, $bo, $w, Typed($t, $v))))));
+// plain assignment stores the converted value (flat addresses only)
+effect kr_assign(Typed(Ptr($t), $addr), "assign", Typed($tr, $rv), $t) when kr_flat_addr($addr)
+    => bind(Typed($t, $v), kr_coerce(Typed($tr, $rv), $t),
+        Typed($t, CAssignC(Typed($t, $v), Typed(Ptr($t), $addr))));
+// compound assignment: old OP value at the slot type, then convert back
+effect[fallback] kr_assign(Typed(Ptr($t), $addr), $op, Typed($tr, $rv), $t) when kr_flat_addr($addr)
+    => bind(Typed($tc, $combined), kr_binary($op, Typed($t, CLoad(Typed(Ptr($t), $addr))), Typed($tr, $rv)),
+        bind(Typed($t, $v), kr_coerce(Typed($tc, $combined), $t),
+            Typed($t, CAssignC(Typed($t, $v), Typed(Ptr($t), $addr)))));
+effect kr_flat_addr(CBitLvalue($a, $b, $c, $d, $e)) => 0;
+effect[fallback] kr_flat_addr($addr) => 1;
+effect base.lower(Typed($t, CAssignC(Typed($t, $v), Typed(Ptr($t), $addr))), $environment)
+    => bind($p, lower(Typed(Ptr($t), $addr), $environment),
+        bind($val, lower(Typed($t, $v), $environment),
+            seq(mlir.op("llvm.store", [$val, $p], [], [], []), $val)));
+
+// ---- calls (implicit declarations: undeclared = int function) ------------------------------
+// declared-name calls, indirect calls through (*fp), and implicit
+// declarations dispatch by callee SHAPE (a failing guard aborts rather
+// than backtracking, so no guard may call a partial relation)
+effect base.check(CCall(CName($n), $args), $environment, $expected) when env.contains($environment, $n)
+    => kr_call(env.get($environment, $n), CName($n), $args, $environment, $expected);
+effect[fallback] base.check(CCall(CDeref($e), $args), $environment, $expected)
+    => kr_indirect_check($e, $args, $environment, $expected);
+effect[fallback] base.check(CCall(CName($n), $args), $environment, $expected)
+    => kr_call(KImplicitMark(), CName($n), $args, $environment, $expected);
+effect kr_callee_shape_p(CName($n)) => 1;
+effect kr_callee_shape_p(CDeref($e)) => 1;
+effect[fallback] kr_callee_shape_p($f) => 0;
+effect[fallback] base.check(CCall($f, $args), $environment, $expected) when not(kr_callee_shape_p($f))
+    => fail("called object is not a function");
+effect kr_callee_name(CName($n)) => $n;
+effect[fallback] kr_callee_name($f) => fail("called object is not a function");
+// declared functions: arguments convert to the (promoted) parameter types
+effect kr_call(Signature($params, $result), $f, $args, $environment, $expected)
+    => kr_expect(Typed($result, KDirectCall(kr_callee_name($f),
+            kr_check_args($args, $params, $environment))), $expected);
+effect kr_check_args($args, $params, $environment) when eq(size($args), size($params))
+    => kr_check_args_each($args, $params, $environment);
+effect kr_check_args($args, $params, $environment) when not(eq(size($args), size($params)))
+    => fail("function argument count mismatch");
+effect kr_check_args_each([], [], $environment) => [];
+effect kr_check_args_each($args, $params, $environment) when lt(0, size($args))
+    => list.prepend(kr_expect(kr_check_any(list.head($args), $environment), list.head($params)),
+        kr_check_args_each(list.tail($args), list.tail($params), $environment));
+// CRT functions
+effect kr_call(Crt($kind), $f, $args, $environment, $expected)
+    => expect(Typed(Signed(32), CCrtCall($kind, kr_crt_args($kind, $args, $environment))), $expected);
+effect kr_crt_args("printf", $args, $environment) => kr_crt_varargs($args, Ptr(Signed(8)), $environment);
+effect kr_crt_args("puts", $args, $environment) => kr_check_args($args, [Ptr(Signed(8))], $environment);
+effect kr_crt_args("putchar", $args, $environment) => kr_check_args($args, [Signed(32)], $environment);
+effect kr_crt_args("getchar", $args, $environment) => kr_check_args($args, [], $environment);
+effect kr_crt_args("exit", $args, $environment) => kr_check_args($args, [Signed(32)], $environment);
+// variadic: the format argument converts, the rest take default promotions
+effect kr_crt_varargs($args, $fmt, $environment) when lt(0, size($args))
+    => list.concat([kr_expect(kr_check_any(list.head($args), $environment), $fmt)],
+        kr_promoted_args(list.tail($args), $environment));
+// implicit declaration (K&R: undeclared calls are int functions with
+// default-argument-promoted operands)
+effect kr_call(KImplicitMark(), $f, $args, $environment, $expected)
+    => expect(Typed(Signed(32), CImplCall(kr_callee_name($f),
+            kr_promoted_args($args, $environment))), $expected);
+effect[fallback] kr_call($slot, $f, $args, $environment, $expected)
+    => fail("called object is not a function");
+effect kr_promoted_args([], $environment) => [];
+effect kr_promoted_args($args, $environment) when lt(0, size($args))
+    => list.prepend(kr.promoted_arg(list.head($args), $environment),
+        kr_promoted_args(list.tail($args), $environment));
+effect kr.promoted_arg($e, $environment)
+    => bind(Typed($t, $v), kr_check_any($e, $environment),
+        kr_coerce(Typed($t, $v), kr_promote($t)));
+// lowerings: CRT and implicit calls go through llvm.call with a variadic
+// callee type; declared functions lower through base's Invoke (func.call)
+// direct calls lower as llvm.call (the definitions are llvm.func)
+effect base.lower(Typed($r, KDirectCall($name, $args)), $environment)
+    => mlir.op("llvm.call", kr_lower_args($args, $environment), [types.repr($r)],
+        [RawAttr("callee", concat("@", $name)),
+         RawAttr("op_bundle_sizes", "array<i32>"),
+         RawAttr("operandSegmentSizes", concat("array<i32: ",
+             concat(text(size($args)), ", 0>")))],
+        []);
+effect base.lower(Typed(Signed(32), CCrtCall("exit", $args)), $environment)
+    => bind($arg, kr_lower_one($args, $environment),
+        seq(mlir.op("llvm.call", [$arg], [],
+            [RawAttr("callee", "@exit"),
+             RawAttr("var_callee_type", "!llvm.func<void (i32)>"),
+             RawAttr("op_bundle_sizes", "array<i32>"),
+             RawAttr("operandSegmentSizes", "array<i32: 1, 0>")], []),
+            kr_const32(0)));
+effect kr_lower_one([$a], $environment) => lower($a, $environment);
+effect base.lower(Typed(Signed(32), CCrtCall($kind, $args)), $environment)
+    => kr_call_op(kr_callee($kind), $args, $environment);
+effect kr_callee("printf") => "printf";
+effect kr_callee("putchar") => "putchar";
+effect kr_callee("getchar") => "getchar";
+effect kr_callee("puts") => "puts";
+effect base.lower(Typed(Signed(32), CImplCall($name, $args)), $environment)
+    => kr_call_op($name, $args, $environment);
+effect kr_call_op($name, [], $environment)
+    => mlir.op("llvm.call", [], ["i32"],
+        [RawAttr("callee", concat("@", $name)),
+         RawAttr("var_callee_type", "!llvm.func<i32 ()>"),
+         RawAttr("op_bundle_sizes", "array<i32>"),
+         RawAttr("operandSegmentSizes", "array<i32: 0, 0>")], []);
+effect kr_call_op($name, $args, $environment)
+    => mlir.op("llvm.call", kr_lower_args($args, $environment), ["i32"],
+        [RawAttr("callee", concat("@", $name)),
+         RawAttr("var_callee_type", concat("!llvm.func<i32 (",
+             concat(types.repr(kr_arg_type(list.head($args))), ", ...)>"))),
+         RawAttr("op_bundle_sizes", "array<i32>"),
+         RawAttr("operandSegmentSizes", concat("array<i32: ", concat(text(size($args)), ", 0>")))],
+        []);
+effect kr_lower_args([], $environment) => [];
+effect kr_lower_args($args, $environment) when lt(0, size($args))
+    => list.prepend(lower(list.head($args), $environment),
+        kr_lower_args(list.tail($args), $environment));
+effect kr_arg_type(Typed($t, $v)) => $t;
+
+// ---- constants: character and string ---------------------------------------------------
+// char constants are int; string literals are pointers to writable globals
+effect kr_quote($s)
+    => choose(eq(text.byte($s, 0), 39),
+        kr_char_const(text.slice($s, 1, int.sub(text.len($s), 1))),
+        CQuoteStr(text.slice($s, 1, int.sub(text.len($s), 1))));
+effect kr_char_const($raw)
+    => choose(eq(text.len($raw), 1), Int(text.byte($raw, 0)),
+        kr_char_escape($raw));
+effect kr_char_escape($raw) when eq(text.byte($raw, 0), 92)
+    => choose(kr_octal_digits($raw, 1, text.len($raw)),
+        Int(kr_octal($raw, 1, text.len($raw), 0)),
+        choose(eq(text.len($raw), 2), Int(kr_escape(text.byte($raw, 1))),
+            fail("unknown character escape")));
+effect[fallback] kr_char_escape($raw)
+    => fail("multi-character constants are machine-dependent and unsupported");
+effect kr_octal_digits($raw, $i, $end) when eq($i, $end) => lt(0, int.sub($i, 1));
+effect kr_octal_digits($raw, $i, $end) when and(lt($i, $end), lt($i, 4))
+    => and(lt(47, text.byte($raw, $i)), lt(text.byte($raw, $i), 56));
+effect base.check(CQuoteStr($s), $environment, $expected)
+    => fail("string literal used before interning");
+effect base.check(CStrRef($name), $environment, $expected)
+    => expect(Typed(Ptr(Signed(8)), CStrRef($name)), $expected);
+effect base.hint(CStrRef($name), $environment) => Ptr(Signed(8));
+
+// ---- string interning (commit-time walk) ---------------------------------------------
+// K&R literals are writable char arrays: globals WITHOUT the constant flag,
+// NUL-terminated, alignment 1. Dedup is per-file, by spelling.
+effect intern_walk($node, $globals, $pool)
+    => bind([$value, Hoisting($new_globals, $new_pool)],
+        tree.rewrite_with($node, "intern_enter", "intern_leave", 0, Hoisting($globals, $pool)),
+        [$value, $new_globals, $new_pool]);
+effect intern_enter(CQuoteStr($s), $context, Hoisting($globals, $pool))
+    => bind([$value, $new_globals, $new_pool], choose(env.contains($pool, $s),
+            [CStrRef(env.get($pool, $s)), $globals, $pool],
+            intern_string($s, concat(".krstr.", text(string_count($pool))), $globals, $pool)),
+        tree.Stop($value, Hoisting($new_globals, $new_pool)));
+effect intern_string($s, $name, $globals, $pool)
+    => [CStrRef($name), list.prepend(KStrGlobal($name, $s), $globals),
+        env.put(env.put($pool, $s, $name), StringCountKey(), add(string_count($pool), 1))];
+effect string_count($pool) => choose(env.contains($pool, StringCountKey()), env.get($pool, StringCountKey()), 0);
+effect[fallback] intern_enter($node, $context, $state) when or(eq(term.kind($node), 0), eq(term.kind($node), 5))
+    => tree.Descend(term.children($node), $context, $node, $state);
+effect[fallback] intern_enter($node, $context, $state) when and(not(eq(term.kind($node), 0)), not(eq(term.kind($node), 5)))
+    => tree.Stop($node, $state);
+effect[fallback] intern_leave($original, $children, $context, $state) => [term.rebuild($original, $children), $state];
+
+// ---- string globals (lowering) ----------------------------------------------------------
+// decode K&R escapes while emitting the MLIR byte string; \\ddd are octal
+effect base.declare(KStrGlobal($name, $text), $rest, $environment) => declarations($rest, $environment);
+effect base.prepare(KStrGlobal($name, $text), $environment) => CheckedKStrGlobal($name, $text);
+effect base.analyze(KStrGlobal($name, $text)) => prepare(KStrGlobal($name, $text), env.empty());
+effect base.lower_checked(CheckedKStrGlobal($name, $text))
+    => lower_function(CheckedKStrGlobal($name, $text));
+effect base.lower_function(CheckedKStrGlobal($name, $raw))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text(add(kr_str_len($raw, 0, text.len($raw), 0), 1)), " x i8>"))),
+        RawAttr("linkage", "#llvm.linkage<internal>"), Attr("alignment", 1, "i64"),
+        RawAttr("value", concat("\"", concat(kr_str_bytes($raw, 0, text.len($raw)), "\\00\"")))],
+        [mlir.region_blocks([])]);
+// decoded length: an escape (backslash + 1..3 octal digits or one char) is one byte
+effect kr_str_len($raw, $i, $end, $acc) when eq($i, $end) => $acc;
+effect kr_str_len($raw, $i, $end, $acc) when lt($i, $end)
+    => choose(eq(text.byte($raw, $i), 92),
+        kr_str_len($raw, kr_esc_end($raw, add($i, 1), $end), $end, add($acc, 1)),
+        kr_str_len($raw, add($i, 1), $end, add($acc, 1)));
+effect kr_esc_end($raw, $i, $end) when eq($i, $end) => $i;
+effect kr_esc_end($raw, $i, $end)
+    => choose(and(lt(47, text.byte($raw, $i)), lt(text.byte($raw, $i), 56)),
+        kr_esc_end2($raw, $i, $end, 0), add($i, 1));
+effect kr_esc_end2($raw, $i, $end, $n) when or(eq($n, 3), eq($i, $end)) => $i;
+effect[fallback] kr_esc_end2($raw, $i, $end, $n)
+    => choose(and(lt(47, text.byte($raw, $i)), lt(text.byte($raw, $i), 56)),
+        kr_esc_end2($raw, add($i, 1), $end, add($n, 1)), $i);
+// MLIR string body: printable ASCII passes through, everything else is \XX
+effect kr_str_bytes($raw, $i, $end) when eq($i, $end) => "";
+effect kr_str_bytes($raw, $i, $end) when lt($i, $end)
+    => choose(eq(text.byte($raw, $i), 92),
+        concat(kr_esc_out($raw, add($i, 1), kr_esc_end($raw, add($i, 1), $end)),
+            kr_str_bytes($raw, kr_esc_end($raw, add($i, 1), $end), $end)),
+        concat(kr_byte_out($raw, $i), kr_str_bytes($raw, add($i, 1), $end)));
+effect kr_esc_out($raw, $i, $j)
+    when and(eq(add($i, 1), $j), not(and(lt(47, text.byte($raw, $i)), lt(text.byte($raw, $i), 56))))
+    => kr_mlir_byte(kr_escape(text.byte($raw, $i)));
+effect[fallback] kr_esc_out($raw, $i, $j) => kr_mlir_byte(kr_octal($raw, $i, $j, 0));
+effect kr_byte_out($raw, $i) => kr_mlir_byte(text.byte($raw, $i));
+effect kr_mlir_byte(34) => "\\22";
+effect kr_mlir_byte(92) => "\\5C";
+effect kr_mlir_byte($b) when and(and(lt(31, $b), lt($b, 127)), and(not(eq($b, 34)), not(eq($b, 92))))
+    => text.slice(" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~",
+        int.sub($b, 32), int.sub($b, 31));
+effect[fallback] kr_mlir_byte($b)
+    => concat("\\", concat(kr_hex_digit(int.div($b, 16)), kr_hex_digit(int.rem($b, 16))));
+effect kr_hex_digit($n) => text.slice("0123456789ABCDEF", $n, add($n, 1));
+
+// ---- external data definitions --------------------------------------------------------
+effect base.declare(KGlobals($spec, $defs, $class), $rest, $environment)
+    => declarations($rest, kr_global_bind($spec, $defs, $class, $environment));
+// global arrays: the name's rvalue decays to the array address
+effect kr_name_value(CGA($elem, $dims, $name), $n) => kr_arr_decay($elem, $dims, CGArrAddr($name));
+effect kr_name_addr(CGA($elem, $dims, $name), $n) => Typed(Ptr(kr_dims_type($elem, $dims)), CGArrAddr($name));
+effect base.lower(Typed(Ptr($e), CGArrAddr($name)), $environment)
+    => mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"],
+        [RawAttr("global_name", concat("@\"", concat($name, "\"")))], []);
+effect kr_global_bind($spec, [], $class, $environment) => $environment;
+effect kr_global_bind($spec, $defs, $class, $environment) when lt(0, size($defs))
+    => kr_global_bind($spec, list.tail($defs), $class,
+        kr_global_bind_one(list.head($defs), $spec, $class, $environment));
+// extern declarations coexist with a later definition (C: declaration
+// + definition of the same object); everything else must be unique
+effect kr_global_bind_one(LD(Dclr($n, $s, 0), InitN()), $spec, "extern", $environment)
+    => choose(env.contains($environment, $n), $environment,
+        env.put($environment, $n, CGlobal(kr_stars($s, $spec), $n)));
+effect[fallback] kr_global_bind_one(LD(Dclr($n, $s, 0), $i), $spec, $class, $environment)
+    => env.put($environment, $n, CGlobal(kr_stars($s, $spec), $n));
+// arrays: the name decays to the address of the global object; the binding
+// carries the dims list (first may be -1 for extern [])
+effect[fallback] kr_global_bind_one(LD(KMDims($n, $s, $dims), $i), $spec, $class, $environment)
+    => env.put($environment, $n, CGA(kr_stars($s, $spec), $dims, $n));
+effect base.prepare(KGlobals($spec, $defs, $class), $environment)
+    => CheckedKGlobals(kr_global_items($spec, $defs, $class, $environment));
+effect kr_global_items($spec, [], $class, $env) => [];
+effect kr_global_items($spec, $defs, $class, $env) when lt(0, size($defs))
+    => list.prepend(kr_global_item(list.head($defs), $spec, $class, $env),
+        kr_global_items($spec, list.tail($defs), $class, $env));
+// scalars: definitions are internal unless extern
+effect kr_global_item(LD(Dclr($n, $s, 0), $i), $spec, $class, $env)
+    => choose(eq($class, "extern"), KGlobalExt($n, kr_stars($s, $spec), $i, $env),
+        KGlobal($n, kr_stars($s, $spec), $i, $env));
+// brace lists: unspecified size = count of initializers; explicit size must
+// cover them (K&R 8.x: remaining external elements are zero)
+// multi-dim globals store FLAT (row-major, like C layout); the first
+// dimension may be omitted and is derived from the initializer count
+effect kr_global_item(LD(KMDims($n, $s, $dims), InitList($vals)), $spec, $class, $env)
+    => kr_global_arr($n, kr_stars($s, $spec), kr_global_total($dims, $vals), $vals, $class, $env,
+        kr_global_dims($dims, $vals));
+effect kr_global_total($dims, $vals) when lt(list.head($dims), 0)
+    => kr_global_first($dims, $vals);
+effect[fallback] kr_global_total($dims, $vals) => kr_dims_total($dims);
+effect kr_global_first($dims, $vals) when eq(size($dims), 1) => size($vals);
+effect[fallback] kr_global_first($dims, $vals)
+    => choose(lt(int.rem(size($vals), kr_dims_total(list.tail($dims))), 1), 0,
+        int.div(size($vals), kr_dims_total(list.tail($dims))));
+effect kr_global_dims($dims, $vals) when lt(list.head($dims), 0)
+    => list.prepend(kr_global_first($dims, $vals), list.tail($dims));
+effect[fallback] kr_global_dims($dims, $vals) => $dims;
+// char arrays from string literals (K&R 8.x); other types reject
+effect kr_is_char(Signed(8)) => 1;
+effect kr_is_char(Unsigned(8)) => 1;
+effect[fallback] kr_is_char($t) => 0;
+effect kr_global_item(LD(KMDims($n, $s, $dims), InitStr($str)), $spec, $class, $env)
+    when and(kr_is_char(kr_stars($s, $spec)), eq(size($dims), 1))
+    => KGlobalChars($n, kr_arr_count(list.head($dims), kr_str_len($str, 0, text.len($str), 0)), $str);
+effect[fallback] kr_global_item(LD(Dclr($n, $s, $c), InitV($e)), $spec, $class, $env)
+    => fail(concat("array initializer must be a brace list or string literal; got spec=",
+        concat(text($spec), concat(" size=", concat(text($c), concat(" init=", text($e)))))));
+effect kr_global_arr($n, $elem, $c, $vals, $class, $env, $dims)
+    when and(and(lt($c, 1), eq($class, "extern")), lt(0, size($vals)))
+    => fail("extern array requires an explicit size (M2)");
+effect kr_global_arr($n, $elem, $c, $vals, $class, $env, $dims) when lt($c, 1)
+    => KGlobalArr($n, $elem, size($vals), $vals, $env);
+effect kr_global_arr($n, $elem, $c, $vals, $class, $env, $dims) when lt(size($vals), add($c, 1))
+    => KGlobalArr($n, $elem, $c, $vals, $env);
+effect[fallback] kr_global_arr($n, $elem, $c, $vals, $class, $env, $dims)
+    => fail("more initializers than array elements");
+effect base.analyze(KGlobals($spec, $defs, $class)) => prepare(KGlobals($spec, $defs, $class), env.empty());
+effect base.lower_checked(CheckedKGlobals($items)) => kr_lower_globals($items);
+effect base.lower_function(CheckedKGlobals($items)) => kr_lower_globals($items);
+// a pure extern declaration emits nothing: the definition (same or another
+// file) supplies the storage; a dangling declaration fails at link time
+effect kr_lower_globals([]) => [];
+effect kr_lower_globals($items) when lt(0, size($items))
+    => kr_lower_head(list.head($items), kr_lower_globals(list.tail($items)));
+effect kr_lower_head(KGlobalExt($n, $t, InitN(), $env), $rest) => $rest;
+effect[fallback] kr_lower_head($item, $rest) => list.prepend(kr.lower_global($item), $rest);
+effect kr.lower_global(KGlobal($name, $type, $init, $env)) => lower_function(CheckedKGlobal($name, $type, $init, $env));
+effect[fallback] kr.lower_global(KGlobalExt($name, $type, $init, $env))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", types.repr($type)),
+        RawAttr("linkage", "#llvm.linkage<external>")],
+        [mlir.region(mlir.op("llvm.return",
+            [lower(kr_expect(kr_check_any(kr.init_expr($init), env.empty()), $type), env.empty())], [], [], []))]);
+effect kr.init_expr(InitV($e)) => $e;
+// numeric arrays: zero-filled aggregate, initializers inserted in order
+effect kr.lower_global(KGlobalArr($name, $elem, $count, $vals, $env))
+    => lower_function(CheckedKGlobalArr($name, $elem, $count, $vals, $env));
+effect kr_pack_arr($vals, $i, $count, $elem, $agg) when eq($i, $count) => $agg;
+effect[fallback] kr_pack_arr($vals, $i, $count, $elem, $agg)
+    => bind($value, kr_elem_init($vals, $i, $elem),
+        kr_pack_arr($vals, add($i, 1), $count, $elem,
+            mlir.op("llvm.insertvalue", [$agg, $value],
+                [concat("!llvm.array<", concat(text($count),
+                    concat(" x ", concat(types.repr($elem), ">"))))],
+                [RawAttr("position", concat("array<i64: ", concat(text($i), ">")))], [])));
+// initializers beyond the list are already zero (dense<0> base)
+effect kr_elem_init($vals, $i, $elem) when lt($i, size($vals))
+    => bind(InitV($e), kr.elem_at($vals, $i),
+        lower(kr_expect(kr_check_any($e, env.empty()), $elem), env.empty()));
+effect[fallback] kr_elem_init($vals, $i, $elem)
+    => mlir.op("arith.constant", [], [types.repr($elem)], [Attr("value", 0, types.repr($elem))], []);
+effect kr.elem_at($vals, $i) when eq($i, 0) => list.head($vals);
+effect[fallback] kr.elem_at($vals, $i) => kr.elem_at(list.tail($vals), int.sub($i, 1));
+// char arrays from strings: byte string with NUL and zero padding
+effect kr.lower_global(KGlobalChars($name, $count, $str))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text($count), " x i8>"))),
+        RawAttr("linkage", "#llvm.linkage<internal>"), Attr("alignment", 1, "i64"),
+        RawAttr("value", concat("\"", concat(kr_str_bytes($str, 0, text.len($str)),
+            concat(kr_nuls(int.sub($count, kr_str_len($str, 0, text.len($str), 0))), "\""))))],
+        [mlir.region_blocks([])]);
+effect kr_nuls($n) when lt($n, 1) => "";
+effect[fallback] kr_nuls($n) => concat("\\00", kr_nuls(int.sub($n, 1)));
+effect base.lower_function(CheckedKGlobalChars($name, $count, $str))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text($count), " x i8>"))),
+        RawAttr("linkage", "#llvm.linkage<internal>"), Attr("alignment", 1, "i64"),
+        RawAttr("value", concat("\"", concat(kr_str_bytes($str, 0, text.len($str)),
+            concat(kr_nuls(int.sub($count, kr_str_len($str, 0, text.len($str), 0))), "\""))))],
+        [mlir.region_blocks([])]);
+effect base.lower_function(CheckedKGlobalArr($name, $elem, $count, $vals, $env))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", concat("!llvm.array<", concat(text($count),
+            concat(" x ", concat(types.repr($elem), ">"))))),
+        RawAttr("linkage", "#llvm.linkage<internal>")],
+        [mlir.region(mlir.op("llvm.return",
+            [kr_pack_arr($vals, 0, $count, $elem,
+                mlir.op("llvm.mlir.undef", [],
+                    [concat("!llvm.array<", concat(text($count),
+                        concat(" x ", concat(types.repr($elem), ">"))))], [], []))],
+            [], [], []))]);
+effect base.lower_function(CheckedKGlobal($name, $type, InitN(), $env))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", types.repr($type)),
+        RawAttr("linkage", "#llvm.linkage<internal>")],
+        [mlir.region(mlir.op("llvm.return",
+            [mlir.op("arith.constant", [], [types.repr($type)],
+                [Attr("value", 0, types.repr($type))], [])], [], [], []))]);
+effect base.lower_function(CheckedKGlobal($name, $type, InitV($e), $env))
+    => mlir.op("llvm.mlir.global", [], [], [Attr("sym_name", $name),
+        RawAttr("global_type", types.repr($type)),
+        RawAttr("linkage", "#llvm.linkage<internal>")],
+        [mlir.region(mlir.op("llvm.return",
+            [lower(kr_expect(kr_check_any($e, $env), $type), $env)], [], [], []))]);
+
+// forward declarations: unprototyped signature (result typed, params free)
+// declarations register unconditionally; a later DEFINITION overwrites
+effect base.declare(KFuncDecl($name, $spec), $rest, $environment)
+    => declarations($rest, env.put($environment, $name, SigU(kr.spec_type($spec))));
+effect base.prepare(KFuncDecl($name, $spec), $environment) => CheckedKFuncDecl($name);
+effect base.analyze(KFuncDecl($name, $spec)) => CheckedKFuncDecl($name);
+effect base.lower_function(CheckedKFuncDecl($name)) => [];
+// calls to an unprototyped declaration: result type known, arity unchecked
+effect kr_call(SigU($result), $f, $args, $environment, $expected)
+    => kr_expect(Typed($result, KDirectCall(kr_callee_name($f),
+            kr_promoted_args($args, $environment))), $expected);
+
+// ---- structs and unions ------------------------------------------------------------------
+// layout is computed at declare time: fields are [name, type, offset] triples,
+// the struct descriptor carries its total size and natural alignment
+effect base.declare(KStructDef($name, $members, $kind), $rest, $environment)
+    => bind($t, kr_layout_kind($kind, $members, $environment),
+        declarations($rest, env.put($environment, $name, $t)));
+effect kr_layout_kind("struct", $members, $env)
+    => bind([$fields, $size, $al, $bc], kr_layout_fields($members, $env, 0, 1, [], []),
+        KStructT("s", $fields, $size, $al));
+effect[fallback] kr_layout_kind($kind, $members, $env) => kr_layout_union($members, $env);
+// the accumulator carries a bitfield-container slot: [] = none, else
+// [containerType, containerOffset, bitsUsed]
+effect kr_layout_fields([], $env, $off, $maxal, $acc, $bitc)
+    => [list.reverse($acc), choose(lt(0, $off), kr_round_up($off, $maxal), $maxal), $maxal, $bitc];
+effect kr_layout_fields($members, $env, $off, $maxal, $acc, $bitc) when lt(0, size($members))
+    => kr_layout_member(list.head($members), list.tail($members), $env, $off, $maxal, $acc, $bitc);
+effect kr_layout_member(KM($spec, $ds), $rest, $env, $off, $maxal, $acc, $bitc)
+    => bind([$acc2, $off2, $max2, $bc2], kr_layout_decls($spec, $ds, $env, $off, $maxal, $acc, []),
+        kr_layout_fields($rest, $env, $off2, $max2, $acc2, $bc2));
+effect kr_layout_member(KMB($spec, $ds), $rest, $env, $off, $maxal, $acc, $bitc)
+    => bind([$acc2, $off2, $max2, $bc2], kr_layout_bits($spec, $ds, $env, $off, $maxal, $acc, $bitc),
+        kr_layout_fields($rest, $env, $off2, $max2, $acc2, $bc2));
+// place one declarator after another; the recursion threads the offset
+effect kr_layout_decls($spec, [], $env, $off, $maxal, $acc, $bitc) => [$acc, $off, $maxal, $bitc];
+effect kr_layout_decls($spec, $ds, $env, $off, $maxal, $acc, $bitc) when lt(0, size($ds))
+    => bind($d, list.head($ds),
+        bind($n, kr_dclr_name($d),
+        bind($type, kr_member_dclr_type($d, $spec),
+            bind($al, kr_align_of($type, $env),
+                bind($off2, kr_round_up($off, $al),
+                    kr_layout_decls($spec, list.tail($ds), $env,
+                        int.add($off2, kr_size_of($type, $env)),
+                        choose(lt($maxal, $al), $al, $maxal),
+                        list.prepend([$n, $type, $off2], $acc), $bitc))))));
+// member typing takes the whole declarator (scalars, arrays, fn pointers)
+effect kr_member_dclr_type(Dclr($n, $st, $c), $spec)
+    => kr_member_type($c, kr_stars($st, $spec));
+effect kr_member_dclr_type(KFPtr($n), $spec) => Ptr(KFunT($spec));
+effect kr_member_dclr_type(KMDims($n, $s, $dims), $spec)
+    => kr_dims_type(kr_stars($s, $spec), $dims);
+effect kr_member_type($c, $base) when eq($c, 0) => $base;
+effect kr_member_type($c, $base) when lt(0, $c) => KArrT($base, $c);
+effect[fallback] kr_member_type($c, $base) => fail("flexible array members are not K&R");
+// bitfield placement: pack into same-type containers; a field that does
+// not fit, a type change, or a zero width closes the container
+effect kr_layout_bits($spec, [], $env, $off, $maxal, $acc, $bitc)
+    => [$acc, $off, $maxal, $bitc];
+effect kr_layout_bits($spec, $ds, $env, $off, $maxal, $acc, $bitc) when lt(0, size($ds))
+    => bind(KBF($d, $w), list.head($ds),
+        kr_layout_bit_one($d, $w, $spec, list.tail($ds), $env, $off, $maxal, $acc, $bitc));
+effect kr_layout_bit_one($d, $w, $spec, $rest, $env, $off, $maxal, $acc, $bitc) when eq($w, 0)
+    => kr_layout_bits($spec, $rest, $env, $off, $maxal, $acc, []);
+effect[fallback] kr_layout_bit_one($d, $w, $spec, $rest, $env, $off, $maxal, $acc, $bitc)
+    => bind($type, kr_member_dclr_type($d, $spec),
+        kr_bit_place($d, $type, $w, $spec, $rest, $env, $off, $maxal, $acc, $bitc));
+// a new container is needed when none is open, the type differs, or the
+// field does not fit; unnamed fields (empty name) add padding only
+effect kr_bit_place($d, $type, $w, $spec, $rest, $env, $off, $maxal, $acc, [])
+    => kr_bit_in($d, $type, $w, $spec, $rest, $env, $off, $maxal, $acc,
+        kr_bit_open($type, $env, $off));
+effect kr_bit_place($d, $type, $w, $spec, $rest, $env, $off, $maxal, $acc,
+        KBitCont($ct, $co, $used))
+    => kr_bit_place2($d, $type, $w, $spec, $rest, $env, $off, $maxal, $acc, $ct, $co, $used);
+effect kr_bit_place2($d, $type, $w, $spec, $rest, $env, $off, $maxal, $acc, $ct, $co, $used)
+    when and(eq($ct, $type), lt(int.add($used, $w), int.add(1, int.mul(8, kr_size($ct)))))
+    => kr_bit_in($d, $type, $w, $spec, $rest, $env, $off, $maxal, $acc,
+        KBitCont($ct, $co, $used));
+effect[fallback] kr_bit_place2($d, $type, $w, $spec, $rest, $env, $off, $maxal, $acc, $ct, $co, $used)
+    => kr_bit_in($d, $type, $w, $spec, $rest, $env, $off, $maxal, $acc,
+        kr_bit_open($type, $env, $off));
+// open a container at the next aligned offset; off advances past it
+effect kr_bit_open($type, $env, $off)
+    => bind($co, kr_round_up($off, kr_align_of($type, $env)),
+        KBitCont($type, $co, 0));
+effect kr_bit_in($d, $type, $w, $spec, $rest, $env, $off, $maxal, $acc, KBitCont($ct, $co, $used))
+    => bind($n, kr_dclr_name($d),
+        bind($al, kr_align_of($ct, $env),
+            kr_bit_in2($n, $type, $w, $spec, $rest, $env, $off, $maxal, $acc,
+                KBitCont($ct, $co, $used), $al)));
+effect kr_bit_in2($n, $type, $w, $spec, $rest, $env, $off, $maxal, $acc,
+        KBitCont($ct, $co, $used), $al)
+    when eq($n, "")
+    => kr_layout_bits($spec, $rest, $env,
+        choose(eq($used, 0), int.add($co, kr_size($ct)), $off),
+        choose(lt($maxal, $al), $al, $maxal), $acc, KBitCont($ct, $co, int.add($used, $w)));
+effect[fallback] kr_bit_in2($n, $type, $w, $spec, $rest, $env, $off, $maxal, $acc,
+        KBitCont($ct, $co, $used), $al)
+    => kr_layout_bits($spec, $rest, $env,
+        choose(eq($used, 0), int.add($co, kr_size($ct)), $off),
+        choose(lt($maxal, $al), $al, $maxal),
+        list.prepend([$n, $type, $co, $used, $w], $acc),
+        KBitCont($ct, $co, int.add($used, $w)));
+// unions: every member at offset 0, size = the largest member (rounded to
+// its alignment), alignment = the strictest member
+effect kr_layout_union($members, $env)
+    => bind([$acc, $size, $maxal], kr_union_fold($members, $env, [], 1, 1),
+        KStructT("u", list.reverse($acc),
+            kr_round_up(choose(lt(0, $size), $size, $maxal), $maxal), $maxal));
+effect kr_union_fold($members, $env, $acc, $size, $maxal) when eq(size($members), 0)
+    => [$acc, $size, $maxal];
+effect[fallback] kr_union_fold($members, $env, $acc, $size, $maxal)
+    => bind(KM($spec, $ds), list.head($members),
+        bind([$acc2, $size2, $max2], kr_union_decls($spec, $ds, $env, $acc, $size, $maxal),
+            kr_union_fold(list.tail($members), $env, $acc2, $size2, $max2)));
+// fold-left over the declarators of one member line; all offsets are 0
+effect kr_union_decls($spec, $ds, $env, $acc, $size, $maxal) when eq(size($ds), 0)
+    => [$acc, $size, $maxal];
+effect[fallback] kr_union_decls($spec, $ds, $env, $acc, $size, $maxal)
+    => bind($n, kr_dclr_name(list.head($ds)),
+        bind($type, kr_member_dclr_type(list.head($ds), $spec),
+            bind($al, kr_align_of($type, $env),
+                kr_union_decls($spec, list.tail($ds), $env,
+                    list.prepend([$n, $type, 0], $acc),
+                    choose(lt($size, kr_size_of($type, $env)), kr_size_of($type, $env), $size),
+                    choose(lt($maxal, $al), $al, $maxal)))));
+
+// member lookup: [type, offset] for a member name; layered so no guard
+// indexes an empty list (ambiguity checks evaluate every guard)
+effect kr_member_lookup($fields, $m) when lt(0, size($fields))
+    => kr_member_pick(list.head($fields), $fields, $m);
+effect[fallback] kr_member_lookup([], $m) => fail(concat("no such member: ", $m));
+effect kr_member_pick($head, $fields, $m) when eq(kr_member_name($head), $m)
+    => kr_member_entry($head);
+effect[fallback] kr_member_pick($head, $fields, $m)
+    => kr_member_lookup(list.tail($fields), $m);
+// scalar/array fields are triples; bitfields carry container/bit info
+effect kr_member_name([$n, $t, $o]) => $n;
+effect[fallback] kr_member_name([$n, $t, $o, $bo, $w]) => $n;
+effect kr_member_entry([$n, $t, $o]) => [$t, $o];
+effect kr_member_entry([$n, $t, $o, $bo, $w]) => [$t, $o, $bo, $w];
+
+// struct definitions are type-only: no MLIR is emitted
+effect base.prepare(KStructDef($name, $members, $kind), $environment) => CheckedKStructDef($name);
+effect base.analyze(KStructDef($name, $members, $kind)) => CheckedKStructDef($name);
+effect base.lower_checked(CheckedKStructDef($name)) => [];
+effect base.lower_function(CheckedKStructDef($name)) => [];
+effect kr.lower_static([$gname, $type, $c, InitN()]) when kr_flat_p($type)
+    => lower_function(CheckedKGlobal($gname, $type, InitN(), env.empty()));
+effect kr.lower_static([$gname, $type, $c, InitV($e)]) when kr_flat_p($type)
+    => lower_function(CheckedKGlobal($gname, $type, InitV($e), env.empty()));
+effect kr.lower_static([$gname, $type, $c, InitStr($str)])
+    => lower_function(CheckedKGlobalChars($gname, kr_arr_count($c, kr_str_len($str, 0, text.len($str), 0)), $str));
+effect kr.lower_static([$gname, $type, $c, InitList($vals)])
+    => lower_function(CheckedKGlobalArr($gname, kr_stars(0, $type), $c, $vals, env.empty()));
+
+// ---- functions -------------------------------------------------------------------------
+// a definition replaces an earlier forward declaration of the same name;
+// two definitions still clash (base.declaration)
+effect base.declare(KFunc($name, $spec, $pnames, $pdecls, $body), $rest, $environment)
+    => kr_func_declared($name, kr_signature($pnames, $pdecls, kr.spec_type($spec)),
+        $rest, $environment);
+effect kr_func_declared($name, $sig, $rest, $environment) when env.contains($environment, $name)
+    => kr_func_over(env.get($environment, $name), $name, $sig, $rest, $environment);
+effect[fallback] kr_func_declared($name, $sig, $rest, $environment)
+    => base.declaration($name, $sig, $rest, $environment);
+effect kr_func_over($b, $name, $sig, $rest, $environment) when kr_is_unproto($b)
+    => declarations($rest, env.put($environment, $name, $sig));
+effect[fallback] kr_func_over($b, $name, $sig, $rest, $environment)
+    => fail(concat("duplicate function: ", $name));
+effect kr_is_unproto(SigU($r)) => 1;
+effect[fallback] kr_is_unproto($binding) => 0;
+// parameter types: declared ones from the pdecls, the rest default to int;
+// array declarators decay to pointers in parameter position
+effect kr_signature($pnames, $pdecls, $result)
+    => Signature(kr_promoted_params(kr_param_types($pnames, $pdecls)), $result);
+effect kr_promoted_params($types) => list.map("kr.promote_type", $types);
+effect kr.promote_type($t) => kr_promote($t);
+effect kr_param_types($pnames, $pdecls) => kr_param_types2($pnames, $pdecls, []);
+effect kr_param_types2([], $pdecls, $acc) => list.reverse($acc);
+effect kr_param_types2($pnames, $pdecls, $acc) when lt(0, size($pnames))
+    => kr_param_types2(list.tail($pnames), $pdecls,
+        list.prepend(kr_declared_type(list.head($pnames), $pdecls), $acc));
+effect kr_declared_type($n, []) => Signed(32);
+effect kr_declared_type($n, $pdecls) when lt(0, size($pdecls))
+    => kr_declared_scan($n, list.head($pdecls), kr_declared_type($n, list.tail($pdecls)));
+effect kr_declared_scan($n, PD($spec, $ds), $next) => kr_declared_in($n, $spec, $ds, $next);
+effect kr_declared_in($n, $spec, [], $next) => $next;
+effect kr_declared_in($n, $spec, $ds, $next) when lt(0, size($ds))
+    => kr_declared_match(kr_dclr_name(list.head($ds)), list.head($ds), $spec, $n,
+        kr_declared_in($n, $spec, list.tail($ds), $next));
+effect kr_declared_match($dname, $d, $spec, $n, $next) when eq($dname, $n)
+    => kr_param_decl_type($d, $spec);
+effect[fallback] kr_declared_match($dname, $d, $spec, $n, $next) => $next;
+effect kr_param_decl_type(Dclr($n, $s, $a), $spec)
+    => choose(lt(0, $a), Ptr(kr_stars($s, $spec)), kr_stars($s, $spec));
+effect kr_param_decl_type(KMDims($n, $s, $dims), $spec)
+    => kr_param_arr(kr_stars($s, $spec), $dims);
+effect kr_param_arr($elem, $dims) when eq(size($dims), 1) => Ptr($elem);
+effect[fallback] kr_param_arr($elem, $dims)
+    => Ptr(kr_dims_type($elem, list.tail($dims)));
+// function preparation: one TypedFunction with promoted signature params and
+// a shadow local per parameter (old-style parameters are assignable locals)
+effect kr_fn($name, $spec, $pnames, $pdecls, $body)
+    => bind($ptypes, kr_param_types($pnames, $pdecls),
+        TypedFunction($name, kr_param_plan($pnames, $ptypes), kr.spec_type($spec),
+            kr_shadows($pnames, $ptypes, kr_fn_body($body))));
+// rewrite every KStaticP into a binding chain; the walk collects the
+// global descriptors (the body's KStaticP terms carry their continuation)
+effect kr_static_hoist($fname, $body)
+    => bind([$value, Hoisting($statics, $ignored)],
+        tree.rewrite_with($body, "static_enter", "static_leave", 0,
+            Hoisting([], $fname)),
+        [$value, $statics]);
+effect[fallback] static_enter($node, $context, $state) when or(eq(term.kind($node), 0), eq(term.kind($node), 5))
+    => tree.Descend(term.children($node), $context, $node, $state);
+effect[fallback] static_enter($node, $context, $state) when and(not(eq(term.kind($node), 0)), not(eq(term.kind($node), 5)))
+    => tree.Stop($node, $state);
+// KStaticP(spec, defs, rest): children already rewritten; wrap the rest in
+// one binding per declarator and record the global
+effect static_leave(KStaticP($spec, $defs, $rest), $children, $context, Hoisting($statics, $fname))
+    => bind($spec2, list.head($children),
+        bind($rest2, list.head(list.tail(list.tail($children))),
+            kr_static_chain($fname, $spec2, list.head(list.tail($children)), $rest2,
+                Hoisting($statics, $fname))));
+effect[fallback] static_leave($original, $children, $context, $state) => [term.rebuild($original, $children), $state];
+effect kr_static_chain($fname, $spec, [], $rest, $state) => [$rest, $state];
+effect kr_static_chain($fname, $spec, $defs, $rest, $state) when lt(0, size($defs))
+    => bind(LD($d, $init), list.head($defs),
+        bind($n, kr_dclr_name($d),
+        bind($type, kr_member_dclr_type($d, $spec),
+            bind($c, kr_dclr_count($d),
+            bind($gname, concat(".stat.", concat($fname, concat(".", $n))),
+                bind([$chain, Hoisting($statics, $f)],
+                    kr_static_chain($fname, $spec, list.tail($defs), $rest, $state),
+                        [KStaticBind($n, $type, $gname, $init, $chain),
+                         Hoisting(list.prepend([$gname, $type, $c, $init], $statics), $f)]))))));
+effect kr.spec_type(KSpec($sc, $t)) => $t;
+// TypedFunction carries Param terms; bind_params assigns their identities
+effect kr_param_plan([], $ptypes) => [];
+effect kr_param_plan($pnames, $ptypes) when and(lt(0, size($pnames)), eq(size($pnames), size($ptypes)))
+    => list.prepend(Param(list.head($pnames), kr_promote(list.head($ptypes))),
+        kr_param_plan(list.tail($pnames), list.tail($ptypes)));
+// one shadow local per parameter, in declaration order
+effect kr_shadows([], $ptypes, $next) => $next;
+effect kr_shadows($pnames, $ptypes, $next) when and(lt(0, size($pnames)), eq(size($pnames), size($ptypes)))
+    => KShadow(list.head($pnames), list.head($ptypes),
+        kr_shadows(list.tail($pnames), list.tail($ptypes), $next));
+// implicit "return 0" when control can fall off the end (deviation: the
+// result is indeterminate in C; zero keeps diagnostics clean)
+effect kr_fn_body($body)
+    => choose(flow_terminal($body), $body, splice_end($body, KRetC(KRNothing(), End())));
+effect base.analyze(KFunc($name, $spec, $pnames, $pdecls, $body))
+    => prepare(KFunc($name, $spec, $pnames, $pdecls, $body),
+        env.put(kr_crt_env(), $name, kr_signature($pnames, $pdecls, kr.spec_type($spec))));
+effect base.emit(KFunc($name, $spec, $pnames, $pdecls, $body))
+    => lower_checked(analyze(KFunc($name, $spec, $pnames, $pdecls, $body)));
+
+// M4: kr functions are PRIVATE checked terms lowered as llvm.func so
+// function addresses can be taken with llvm.mlir.addressof; returns route
+// through the policy env (ReturnOpKey = llvm.return)
+effect base.prepare(KFunc($name, $spec, $pnames, $pdecls, $body), $environment)
+    => bind([$body2, $statics], kr_static_hoist($name, $body),
+        bind($checked, base.prepare(kr_fn($name, $spec, $pnames, $pdecls, $body2), $environment),
+            CheckedWithStatics($statics, CheckedKFunc($name,
+                kr_param_plan($pnames, kr_param_types($pnames, $pdecls)),
+                kr.spec_type($spec), CheckedKFuncBody($checked, $name)))));
+effect base.lower_checked(CheckedWithStatics($statics, $fn))
+    => list.concat(list.map("kr.lower_static", $statics), [lower_checked($fn)]);
+effect base.lower_function(CheckedWithStatics($statics, $fn))
+    => list.concat(list.map("kr.lower_static", $statics), [lower_function($fn)]);
+effect base.lower_checked(CheckedKFunc($name, $params, $result, $body))
+    => lower_function(CheckedKFunc($name, $params, $result, $body));
+effect base.lower_function(CheckedKFunc($name, $params, $result,
+        CheckedKFuncBody(CheckedFunction($x, $bp, $r, $cb), $fname)))
+    => mlir.op("llvm.func", [], [], [Attr("sym_name", $name),
+        RawAttr("function_type", kr_func_type($bp, $result))],
+        [kr_function_region($bp, $cb, $result)]);
+// llvm.func requires an !llvm.func<...> type attribute
+effect kr_func_type($params, $result)
+    => concat("!llvm.func<", concat(result_repr($result),
+        concat(" (", concat(types.join(list.map("base.bound_type", $params)), ")>"))));
+effect kr_function_region($params, $body, $result)
+    => bind($block, mlir.block(list.map("base.bound_type", $params)),
+        bind($scope, allocation.plan_frame($body, $block,
+                prepare_storage($body, $block, bind_ssa($params, $block, 0,
+                    env.put(env.empty(), ReturnOpKey(), "llvm.return")))),
+            mlir.region_blocks(lower_flow($body, $scope, $block, function_continuation($result)))));
+
+// ---- the CRT --------------------------------------------------------------------------
+// printf is variadic; putchar/getchar/puts/exit are fixed. exit never
+// returns, but its (discarded) value path yields zero.
+effect base.declare(KRuntimeDecls(), $rest, $environment) => declarations($rest, kr_crt_env());
+effect kr_crt_env()
+    => env.put(env.put(env.put(env.put(env.put(env.empty(),
+        "printf", Crt("printf")), "putchar", Crt("putchar")),
+        "getchar", Crt("getchar")), "puts", Crt("puts")), "exit", Crt("exit"));
+effect base.prepare(KRuntimeDecls(), $environment) => CheckedKRuntimeDecls();
+effect base.analyze(KRuntimeDecls()) => CheckedKRuntimeDecls();
+effect base.lower_checked(CheckedKRuntimeDecls()) => lower_function(CheckedKRuntimeDecls());
+effect base.lower_function(CheckedKRuntimeDecls())
+    => [kr_func_decl("printf", "!llvm.func<i32 (ptr, ...)>"),
+        kr_func_decl("putchar", "!llvm.func<i32 (i32)>"),
+        kr_func_decl("getchar", "!llvm.func<i32 ()>"),
+        kr_func_decl("puts", "!llvm.func<i32 (ptr)>"),
+        kr_func_decl("exit", "!llvm.func<void (i32)>")];
+effect kr_func_decl($name, $type)
+    => mlir.op("llvm.func", [], [], [Attr("sym_name", $name),
+        RawAttr("function_type", $type), RawAttr("linkage", "#llvm.linkage<external>")],
+        [mlir.region_blocks([])]);
+
+
+
+// ---- preprocessing (K&R 11): #define / #undef at the token level --------
+// K&R has no #if/#elif; #include needs file IO the rule layer does not
+// have (the CRT is linked directly, so test programs need no headers).
+// ONE iterative pass (list.fold, constant rule depth): directives update
+// the macro table at their line (so #undef is position-correct), macro
+// uses splice a worklist that is rescanned with the CURRENT table.
+effect kr_tok_text([$k, $r, $f, $l, $c, $sp]) => $r;
+effect kr_tok_space([$k, $r, $f, $l, $c, $sp]) => $sp;
+effect kr_tok_line([$k, $r, $f, $l, $c, $sp]) => $l;
+// state: mode, macros, out(rev), pending(rev worklist), name, list1, list2,
+// nest, cur(rev arg), done(args)
+effect kr_preprocess($tokens)
+    => bind(KPS($mode, $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff),
+        list.fold("kr.pp_step", $tokens,
+            KPS("normal", env.empty(), [], [], "", [], [], 0, [], [], [], 0)),
+        list.reverse($out));
+// a token entering the output stream takes the #line offset
+effect kr_out_tok($t, $off) when eq($off, 0) => $t;
+effect[fallback] kr_out_tok([$k, $r, $f, $l, $c, $sp], $off)
+    => [$k, $r, $f, int.add($l, $off), $c, $sp];
+// the fold step: drain the worklist first (splices enqueue at the FRONT),
+// then process the stream token; the drain recurses over spliced tokens,
+// which is bounded by the expansion size, not the file size
+effect kr.pp_step(KPS($mode, $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $tok)
+    when lt(0, size($pending))
+    => kr.pp_drain($pending, KPS($mode, $macros, $out, [], $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $tok);
+effect kr.pp_drain($pending, $state, $tok) when eq(size($pending), 0)
+    => kr.pp_tok($state, $tok);
+effect kr.pp_drain($pending, KPS($m, $mc, $o, $p, $n, $a, $b, $ne, $c, $d, $sk, $lo), $tok)
+    when lt(0, size($pending))
+    => bind(KPS($m3, $mc3, $o3, $p3, $n3, $a3, $b3, $ne3, $c3, $d3, $sk3, $lo3),
+            kr.pp_tok(KPS($m, $mc, $o, [], $n, $a, $b, $ne, $c, $d, $sk, $lo), list.head($pending)),
+        kr.pp_drain(list.concat($p3, list.tail($pending)),
+            KPS($m3, $mc3, $o3, [], $n3, $a3, $b3, $ne3, $c3, $d3, $sk3, $lo3), $tok));
+effect[fallback] kr.pp_step(KPS($mode, $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $tok)
+    => kr.pp_tok(KPS($mode, $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $tok);
+
+// ---- normal mode ----
+// while a conditional block is inactive, everything but its directives drops
+effect kr_is_hash($t) when and(eq(lex_kind($t), 5), eq(kr_tok_text($t), "#")) => 1;
+effect[fallback] kr_is_hash($t) => 0;
+effect kr.pp_tok(KPS("normal", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when and(kr_skipping($stack), not(kr_is_hash($t)))
+    => KPS("normal", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff);
+effect kr.pp_tok(KPS("normal", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when and(eq(lex_kind($t), 5), eq(kr_tok_text($t), "#"))
+    => KPS("dw", $macros, $out, $pending, "", $l1, $l2, $nest, $cur, $done, $stack, $loff);
+effect kr.pp_tok(KPS("normal", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when and(eq(lex_kind($t), 1), not(kr_skipping($stack)))
+    => kr.pp_ident(kr_out_tok($t, $loff), KPS("normal", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff));
+effect[fallback] kr.pp_tok(KPS("normal", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when not(kr_skipping($stack))
+    => KPS("normal", $macros, list.prepend(kr_out_tok($t, $loff), $out), $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff);
+// inactive when ANY enclosing conditional is false
+effect kr_skipping($stack) when eq(size($stack), 0) => 0;
+effect kr_skipping($stack) when lt(0, size($stack))
+    => kr_skipping_top(list.head($stack), list.tail($stack));
+effect kr_skipping_top($flag, $rest) when eq($flag, 0) => 1;
+effect[fallback] kr_skipping_top($flag, $rest) => kr_skipping($rest);
+// macro uses: object macros splice their body into the worklist
+effect kr.pp_ident($t, KPS("normal", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    when kr_macro_live($macros, kr_tok_text($t))
+    => kr.pp_macro(env.get($macros, kr_tok_text($t)), $t,
+        KPS("normal", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff));
+effect[fallback] kr.pp_ident($t, KPS("normal", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    => KPS("normal", $macros, list.prepend($t, $out), $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff);
+effect kr.pp_macro(KMacroObj($body), $t, KPS("normal", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    => KPS("normal", $macros, $out, list.concat($body, $pending),
+        $name, $l1, $l2, $nest, $cur, $done, $stack, $loff);
+// function macros: the next token must be the opening paren
+// the opening paren arrives as the NEXT token and raises nest to 1
+effect kr.pp_macro(KMacroFn($params, $body), $t, KPS("normal", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    => KPS("collect", $macros, $out, $pending, kr_tok_text($t), $params, $body, 0, [], [], $stack, $loff);
+effect[fallback] kr.pp_macro($macro, $t, $state) => fail("malformed macro table entry");
+
+// ---- argument collection (function macro call) ----
+effect kr.pp_tok(KPS("collect", $macros, $out, $pending, $name, $params, $body, $nest, $cur, $done, $stack, $loff), $t)
+    when and(eq(kr_tok_text($t), "("), eq(lex_kind($t), 5))
+    => KPS("collect", $macros, $out, $pending, $name, $params, $body, int.add($nest, 1), $cur, $done, $stack, $loff);
+effect kr.pp_tok(KPS("collect", $macros, $out, $pending, $name, $params, $body, $nest, $cur, $done, $stack, $loff), $t)
+    when and(eq(kr_tok_text($t), ")"), eq(lex_kind($t), 5))
+    => kr.pp_collect($t, KPS("collect", $macros, $out, $pending, $name, $params, $body, $nest, $cur, $done, $stack, $loff));
+effect kr.pp_tok(KPS("collect", $macros, $out, $pending, $name, $params, $body, $nest, $cur, $done, $stack, $loff), $t)
+    when and(or(eq(kr_tok_text($t), "]"), eq(kr_tok_text($t), "}")), eq(lex_kind($t), 5))
+    => KPS("collect", $macros, $out, $pending, $name, $params, $body, int.sub($nest, 1),
+        list.prepend($t, $cur), $done);
+effect kr.pp_tok(KPS("collect", $macros, $out, $pending, $name, $params, $body, $nest, $cur, $done, $stack, $loff), $t)
+    when and(and(eq(kr_tok_text($t), ","), eq($nest, 1)), eq(lex_kind($t), 5))
+    => KPS("collect", $macros, $out, $pending, $name, $params, $body, $nest,
+        [], list.prepend(list.reverse($cur), $done), $stack, $loff);
+effect[fallback] kr.pp_tok(KPS("collect", $macros, $out, $pending, $name, $params, $body, $nest, $cur, $done, $stack, $loff), $t)
+    => KPS("collect", $macros, $out, $pending, $name, $params, $body, $nest,
+        list.prepend($t, $cur), $done, $stack, $loff);
+// closing paren: substitute and rescan (spliced tokens re-enter the worklist)
+effect kr.pp_collect($t, KPS("collect", $macros, $out, $pending, $name, $params, $body, $nest, $cur, $done, $stack, $loff))
+    when eq($nest, 1)
+    => kr.pp_subst($params, $body, $macros, $out,
+        list.prepend(list.reverse($cur), $done), $pending, $stack, $loff);
+effect[fallback] kr.pp_collect($t, KPS("collect", $macros, $out, $pending, $name, $params, $body, $nest, $cur, $done, $stack, $loff))
+    => KPS("collect", $macros, $out, $pending, $name, $params, $body, int.sub($nest, 1),
+        list.prepend($t, $cur), $done);
+effect kr.pp_subst($params, $body, $macros, $out, $argsRev, $pending, $stack, $loff)
+    => kr.pp_subst2($params, $body, $macros, $out, list.reverse($argsRev), $pending, $stack, $loff);
+effect kr.pp_subst2($params, $body, $macros, $out, $args, $pending, $stack, $loff)
+    when not(eq(size($args), size($params)))
+    => fail("macro argument count mismatch");
+effect kr.pp_subst2($params, $body, $macros, $out, $args, $pending, $stack, $loff)
+    => KPS("normal", $macros, $out, list.concat(kr_subst_tokens($body, $params, $args), $pending),
+        "", [], [], 0, [], [], $stack, $loff);
+
+// ---- directive word after '#' ----
+effect kr.pp_tok(KPS("dw", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when eq(lex_kind($t), 1)
+    => kr.pp_directive(kr_tok_text($t), KPS("dw", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff));
+effect[fallback] kr.pp_tok(KPS("dw", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => KPS("skipline", $macros, $out, $pending, "", $l1, $l2, $nest, $cur, $done, $stack, $loff);
+// conditionals work while skipping too (nesting is tracked either way);
+// define/undef are ignored inside inactive blocks (the skip filter keeps
+// their tokens away from the defname modes)
+effect kr.pp_directive("define", KPS("dw", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    => KPS("defname", $macros, $out, $pending, "", $l1, $l2, $nest, $cur, $done, $stack, $loff);
+effect kr.pp_directive("undef", KPS("dw", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    => KPS("undefname", $macros, $out, $pending, "", $l1, $l2, $nest, $cur, $done, $stack, $loff);
+effect kr.pp_directive("include", KPS("dw", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    => fail("#include is not supported: single-file unit, CRT linked directly");
+// #ifdef NAME / #ifndef NAME: definedness = live (tombstones excluded)
+effect kr.pp_directive("ifdef", KPS("dw", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    => KPS("ifword", $macros, $out, $pending, "", $l1, $l2, $nest, $cur, $done, $stack, $loff);
+effect kr.pp_directive("ifndef", KPS("dw", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    => KPS("ifnword", $macros, $out, $pending, "", $l1, $l2, $nest, $cur, $done, $stack, $loff);
+// #else flips the top of the stack (only reachable when the block is live
+// enough to be scanned: the skip filter handles the rest)
+effect kr.pp_directive("else", KPS("dw", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    => KPS("normal", $macros, $out, $pending, "", $l1, $l2, $nest, $cur, $done,
+        kr_stack_flip($stack), $loff);
+// #endif pops
+effect kr.pp_directive("endif", KPS("dw", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    => KPS("normal", $macros, $out, $pending, "", $l1, $l2, $nest, $cur, $done,
+        kr_stack_pop($stack), $loff);
+// #line N ["file"]: shift subsequent line numbers (file renaming ignored)
+effect kr.pp_directive("line", KPS("dw", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    => KPS("linenum", $macros, $out, $pending, "", $l1, $l2, $nest, $cur, $done, $stack, $loff);
+effect[fallback] kr.pp_directive($word, $state)
+    => fail(concat("unknown preprocessor directive: ", $word));
+effect kr_stack_flip($stack) when lt(0, size($stack))
+    => list.prepend(kr_flip_bit(list.head($stack)), list.tail($stack));
+effect kr_flip_bit($flag) => choose(eq($flag, 0), 1, 0);
+effect kr_stack_pop($stack) => list.tail($stack);
+
+// ---- #define ----
+effect kr.pp_tok(KPS("defname", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when eq(lex_kind($t), 1)
+    => KPS("defform", $macros, $out, $pending, kr_tok_text($t), $l1, $l2, $nest, $cur, $done, $stack, $loff);
+effect[fallback] kr.pp_tok(KPS("defname", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => fail("malformed #define");
+// function-like only when ( immediately follows the name (no space)
+effect kr.pp_tok(KPS("defform", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when and(eq(lex_kind($t), 5), and(eq(kr_tok_text($t), "("), not(kr_tok_space($t))))
+    => KPS("fnparams", $macros, $out, $pending, $name, [], $l2, $nest, $cur, $done, $stack, $loff);
+effect[fallback] kr.pp_tok(KPS("defform", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => kr.pp_body_tok($t, KPS("defbody", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff));
+// parameter names
+effect kr.pp_tok(KPS("fnparams", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when eq(lex_kind($t), 1)
+    => KPS("fnparams", $macros, $out, $pending, $name, list.prepend(kr_tok_text($t), $l1), $l2, $nest, $cur, $done, $stack, $loff);
+effect kr.pp_tok(KPS("fnparams", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when and(eq(lex_kind($t), 5), eq(kr_tok_text($t), ","))
+    => KPS("fnparams", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff);
+effect kr.pp_tok(KPS("fnparams", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when and(eq(lex_kind($t), 5), eq(kr_tok_text($t), ")"))
+    => KPS("fnbody", $macros, $out, $pending, $name, list.reverse($l1), $l2, $nest, $cur, $done, $stack, $loff);
+effect[fallback] kr.pp_tok(KPS("fnparams", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => fail("malformed macro parameter list");
+// bodies run to end of line
+effect kr.pp_tok(KPS("fnbody", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when eq(lex_kind($t), 7)
+    => KPS("normal", env.put($macros, $name, KMacroFn($l1, list.reverse($l2))), $out, $pending,
+        "", [], [], 0, [], [], $stack, $loff);
+effect[fallback] kr.pp_tok(KPS("fnbody", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => KPS("fnbody", $macros, $out, $pending, $name, $l1, list.prepend($t, $l2), $nest, $cur, $done, $stack, $loff);
+effect kr.pp_tok(KPS("defbody", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when eq(lex_kind($t), 7)
+    => KPS("normal", env.put($macros, $name, KMacroObj(list.reverse($l2))), $out, $pending,
+        "", [], [], 0, [], [], $stack, $loff);
+effect[fallback] kr.pp_tok(KPS("defbody", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => kr.pp_body_tok($t, KPS("defbody", $macros, $out, $pending, $name, $l1, list.prepend($t, $l2), $nest, $cur, $done, $stack, $loff));
+// a token routed into a body that was transitioning from defform
+effect kr.pp_body_tok($t, KPS("defbody", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    when eq(lex_kind($t), 7)
+    => KPS("normal", env.put($macros, $name, KMacroObj(list.reverse($l2))), $out, $pending,
+        "", [], [], 0, [], [], $stack, $loff);
+effect[fallback] kr.pp_body_tok($t, KPS("defbody", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff))
+    => KPS("defbody", $macros, $out, $pending, $name, $l1, list.prepend($t, $l2), $nest, $cur, $done, $stack, $loff);
+
+// #ifdef/#ifndef read the macro name; the stack pushes the branch flag
+effect kr.pp_tok(KPS("ifword", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when eq(lex_kind($t), 1)
+    => KPS("normal", $macros, $out, $pending, "", [], [], 0, [], [],
+        list.prepend(kr_macro_live($macros, kr_tok_text($t)), $stack), $loff);
+effect[fallback] kr.pp_tok(KPS("ifword", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => fail("malformed #ifdef");
+effect kr.pp_tok(KPS("ifnword", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when eq(lex_kind($t), 1)
+    => KPS("normal", $macros, $out, $pending, "", [], [], 0, [], [],
+        list.prepend(choose(kr_macro_live($macros, kr_tok_text($t)), 0, 1), $stack), $loff);
+effect[fallback] kr.pp_tok(KPS("ifnword", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => fail("malformed #ifndef");
+// #line: a number then (optionally) a filename string, then end of line;
+// the offset makes the NEXT physical line number N
+effect kr.pp_tok(KPS("linenum", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when eq(lex_kind($t), 2)
+    => KPS("linefile", $macros, $out, $pending, "", int.parse(kr_tok_text($t)), [], 0, [], [], $stack, $loff);
+effect[fallback] kr.pp_tok(KPS("linenum", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => fail("malformed #line");
+// the directive's newline: declared line N covers the NEXT physical line,
+// so off = N - (newline line + 1)
+effect kr.pp_tok(KPS("linefile", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when and(eq(lex_kind($t), 7), lt(0, $l1))
+    => KPS("normal", $macros, $out, $pending, "", [], [], 0, [], [], $stack,
+        int.sub($l1, int.add(kr_tok_line($t), 1)));
+effect kr.pp_tok(KPS("linefile", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when eq(lex_kind($t), 3)
+    => KPS("linewait", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff);
+effect[fallback] kr.pp_tok(KPS("linefile", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => fail("malformed #line");
+effect kr.pp_tok(KPS("linewait", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when eq(lex_kind($t), 7)
+    => KPS("normal", $macros, $out, $pending, "", [], [], 0, [], [], $stack,
+        int.sub($l1, int.add(kr_tok_line($t), 1)));
+effect[fallback] kr.pp_tok(KPS("linewait", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => fail("malformed #line");
+// ---- #undef ----
+effect kr.pp_tok(KPS("undefname", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when eq(lex_kind($t), 1)
+    => KPS("normal", env.put($macros, kr_tok_text($t), KMacroUndef()), $out, $pending,
+        "", [], [], 0, [], [], $stack, $loff);
+effect[fallback] kr.pp_tok(KPS("undefname", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => fail("malformed #undef");
+
+// ---- skipping an unknown directive line ----
+effect kr.pp_tok(KPS("skipline", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    when eq(lex_kind($t), 7)
+    => KPS("normal", $macros, $out, $pending, "", [], [], 0, [], [], $stack, $loff);
+effect[fallback] kr.pp_tok(KPS("skipline", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff), $t)
+    => KPS("skipline", $macros, $out, $pending, $name, $l1, $l2, $nest, $cur, $done, $stack, $loff);
+
+// typedef targets resolve recursively (Ptr/KArrT wrappers, struct refs,
+// further typedefs)
+effect kr_resolve_both(KTypedefRef($n), $tenv, $senv)
+    => bind($t, env.get($tenv, KrTypedefKey($n)), kr_resolve_both($t, $tenv, $senv));
+effect kr_resolve_both(KStructRef($n), $tenv, $senv) => env.get($senv, $n);
+effect kr_resolve_both(Ptr($t), $tenv, $senv) => Ptr(kr_resolve_both($t, $tenv, $senv));
+effect kr_resolve_both(KArrT($e, $cnt), $tenv, $senv) => KArrT(kr_resolve_both($e, $tenv, $senv), $cnt);
+effect[fallback] kr_resolve_both($t, $tenv, $senv) => $t;
+
+// tombstones: an undefined macro is recorded and skipped (no env.remove)
+effect kr_macro_live($macros, $name)
+    => choose(env.contains($macros, $name),
+        not(eq(env.get($macros, $name), KMacroUndef())), 0);
+// parameter substitution over token lists
+effect kr_subst_tokens($tokens, $params, $args) when eq(size($tokens), 0) => [];
+effect kr_subst_tokens($tokens, $params, $args) when lt(0, size($tokens))
+    => kr_subst_tok(list.head($tokens), list.tail($tokens), $params, $args);
+effect kr_subst_tok($t, $rest, $params, $args) when eq(lex_kind($t), 1)
+    => kr_subst_ident($t, $rest, $params, $args);
+effect[fallback] kr_subst_tok($t, $rest, $params, $args)
+    => list.prepend($t, kr_subst_tokens($rest, $params, $args));
+effect kr_subst_ident($t, $rest, $params, $args) when kr_param_at($params, kr_tok_text($t), 0)
+    => list.concat(kr_param_body($params, $args, kr_tok_text($t), 0),
+        kr_subst_tokens($rest, $params, $args));
+effect[fallback] kr_subst_ident($t, $rest, $params, $args)
+    => list.prepend($t, kr_subst_tokens($rest, $params, $args));
+effect kr_nth($l, $i) when and(eq($i, 0), lt(0, size($l))) => list.head($l);
+effect[fallback] kr_nth($l, $i) when lt(0, size($l)) => kr_nth(list.tail($l), int.sub($i, 1));
+effect[fallback] kr_nth($l, $i) when eq(size($l), 0) => fail("index past the end");
+effect kr_param_at($params, $name, $i) when eq($i, size($params)) => 0;
+effect[fallback] kr_param_at($params, $name, $i)
+    => choose(eq(kr_nth($params, $i), $name), 1,
+        kr_param_at($params, $name, int.add($i, 1)));
+effect kr_param_body($params, $args, $name, $i) when eq($i, size($params)) => [];
+effect[fallback] kr_param_body($params, $args, $name, $i)
+    => choose(eq(kr_nth($params, $i), $name),
+        kr_nth($args, $i),
+        kr_param_body($params, $args, $name, int.add($i, 1)));
+
+// ---- typedef (K&R 8.7) --------------------------------------------------------------------
+// A token-level pre-scan collects typedef names and their decoded types
+// BEFORE parsing; the names enter the parse context so `length` parses as a
+// type where one is expected, and the typedef line itself is removed.
+// state: mode, out(rev stream), acc(rev typedef span), lastName, types env
+effect kr_typedef_scan($tokens)
+    => bind(KTD($mode, $out, $acc, $last, $types),
+        list.fold("kr.td_step", $tokens, KTD("normal", [], [], "", env.empty())),
+        [list.reverse($out), $types]);
+effect kr.td_step(KTD($mode, $out, $acc, $last, $types), $t)
+    when and(eq($mode, "normal"), and(eq(lex_kind($t), 1), eq(kr_tok_text($t), "typedef")))
+    => KTD("td", $out, [], "", $types);
+effect[fallback] kr.td_step(KTD("normal", $out, $acc, $last, $types), $t)
+    => KTD("normal", list.prepend($t, $out), $acc, $last, $types);
+// in a typedef: remember the newest identifier (the defined name), drop all
+effect kr.td_step(KTD("td", $out, $acc, $last, $types), $t) when eq(lex_kind($t), 1)
+    => KTD("td", $out, list.prepend($t, $acc), kr_tok_text($t), $types);
+effect kr.td_step(KTD("td", $out, $acc, $last, $types), $t) when eq(lex_kind($t), 7)
+    => KTD("td", $out, $acc, $last, $types);
+// semicolon: split the span into [name, type] - the simple form ends with
+// the name; the function-pointer form is ( * name ) ( params )
+effect kr.td_step(KTD("td", $out, $acc, $last, $types), $t)
+    when and(eq(lex_kind($t), 5), eq(kr_tok_text($t), ";"))
+    => kr_td_semi(list.reverse($acc), $types, $out);
+effect kr_td_semi($span, $types, $out) => kr_td_split($span, [], $types, $out);
+effect kr_td_split([], $base, $types, $out) when lt(0, size($base))
+    => KTD("normal", $out, [], "",
+        env.put($types, KrTypedefKey(kr_tok_text(kr.last_ident($base))),
+            kr_td_decode(kr_td_strip_last_ident($base))));
+effect kr_td_split($span, $base, $types, $out) when lt(0, size($span))
+    => kr_td_split_tok(list.head($span), list.tail($span), $base, $types, $out);
+effect kr_td_split_tok($t, $rest, $base, $types, $out)
+    when and(eq(lex_kind($t), 5), eq(kr_tok_text($t), "("))
+    => kr_td_fnptr($rest, $types, $out, kr_td_decode($base));
+effect[fallback] kr_td_split_tok($t, $rest, $base, $types, $out)
+    => kr_td_split($rest, list.concat($base, [$t]), $types, $out);
+// ( * name ) ( params ) -> Ptr(KFunT(base))
+effect kr_td_fnptr($rest, $types, $out, $base) when lt(1, size($rest))
+    => kr_td_fnptr_tok(list.head($rest), list.head(list.tail($rest)), $types, $out, $base);
+effect[fallback] kr_td_fnptr($rest, $types, $out, $base)
+    => fail("unsupported typedef declarator form");
+effect kr_td_fnptr_tok($star, $name, $types, $out, $base)
+    when and(and(eq(lex_kind($star), 5), eq(kr_tok_text($star), "*")), eq(lex_kind($name), 1))
+    => KTD("normal", $out, [], "",
+        env.put($types, KrTypedefKey(kr_tok_text($name)), Ptr(KFunT($base))));
+effect[fallback] kr_td_fnptr_tok($star, $name, $types, $out, $base)
+    => fail("unsupported typedef declarator form");
+// the last identifier of the span is the defined name (simple form)
+effect kr.last_ident($toks) when eq(size($toks), 1) => list.head($toks);
+effect[fallback] kr.last_ident($toks) when lt(1, size($toks))
+    => choose(eq(lex_kind(list.head(list.tail($toks))), 1),
+        kr.last_ident(list.tail($toks)), list.head($toks));
+effect kr_td_strip_last_ident($toks) when eq(size($toks), 1) => [];
+effect[fallback] kr_td_strip_last_ident($toks) when lt(1, size($toks))
+    => choose(eq(lex_kind(list.head(list.tail($toks))), 1),
+        list.prepend(list.head($toks), kr_td_strip_last_ident(list.tail($toks))),
+        []);
+effect[fallback] kr.td_step(KTD("td", $out, $acc, $last, $types), $t)
+    => KTD("td", $out, list.prepend($t, $acc), $last, $types);
+// decode: base = the leading type words; stars = every * in the span
+effect kr_td_decode($toks) => kr_td_stars($toks, kr_td_base($toks, "", ""), 0);
+effect kr_td_stars($toks, $base, $n) when eq(size($toks), 0) => kr_td_wrap($n, $base);
+effect kr_td_stars($toks, $base, $n) when lt(0, size($toks))
+    => choose(and(eq(lex_kind(list.head($toks)), 5), eq(kr_tok_text(list.head($toks)), "*")),
+        kr_td_stars(list.tail($toks), $base, int.add($n, 1)),
+        kr_td_stars(list.tail($toks), $base, $n));
+effect kr_td_wrap(0, $base) => $base;
+effect[fallback] kr_td_wrap($n, $base) => kr_td_wrap(int.sub($n, 1), Ptr($base));
+// base type words: consume non-star tokens left to right
+effect kr_td_base($toks, $word, $tag) when eq(size($toks), 0) => kr_td_word($word, $tag);
+effect kr_td_base($toks, $word, $tag) when lt(0, size($toks))
+    => kr_td_base_tok(list.head($toks), list.tail($toks), $word, $tag);
+effect[fallback] kr_td_base_tok($t, $rest, $word, $tag) when not(eq(lex_kind($t), 1))
+    => kr_td_base($rest, $word, $tag);
+effect kr_td_base_tok($t, $rest, $word, $tag)
+    => kr_td_base($rest, kr_td_advance($word, kr_tok_text($t)), kr_td_tag($word, $tag, kr_tok_text($t)));
+// pair words: unsigned+long, long+int, short+int collapse; struct/union
+// word pairs collapse; every pair is a literal rule so the guards are
+// mutually exclusive, and the generic fallback excludes all of them
+effect kr_td_advance("unsigned", "long") => "unsignedlong";
+effect kr_td_advance("long", "unsigned") => "unsignedlong";
+effect kr_td_advance("long", "int") => "long";
+effect kr_td_advance("int", "long") => "long";
+effect kr_td_advance("short", "int") => "short";
+effect kr_td_advance("int", "short") => "short";
+effect kr_td_advance("signed", "int") => "int";
+effect kr_td_advance("int", "signed") => "int";
+effect kr_td_advance("signed", "long") => "long";
+effect kr_td_advance("signed", "short") => "short";
+effect kr_td_advance("unsigned", "int") => "unsigned";
+effect kr_td_advance("int", "unsigned") => "unsigned";
+effect kr_td_advance("int", "char") => "char";
+effect kr_td_advance("char", "int") => "char";
+// struct/union hold the word until the tag identifier arrives
+effect kr_td_advance($word, $w) when or(eq($word, "struct"), eq($word, "union")) => $word;
+effect[fallback] kr_td_advance($word, $w) when not(kr_td_pair_p($word, $w)) => $w;
+effect kr_td_pair_p("unsigned", "long") => 1;
+effect kr_td_pair_p("long", "unsigned") => 1;
+effect kr_td_pair_p("long", "int") => 1;
+effect kr_td_pair_p("int", "long") => 1;
+effect kr_td_pair_p("short", "int") => 1;
+effect kr_td_pair_p("int", "short") => 1;
+effect kr_td_pair_p("signed", "int") => 1;
+effect kr_td_pair_p("int", "signed") => 1;
+effect kr_td_pair_p("signed", "long") => 1;
+effect kr_td_pair_p("signed", "short") => 1;
+effect kr_td_pair_p("unsigned", "int") => 1;
+effect kr_td_pair_p("int", "unsigned") => 1;
+effect kr_td_pair_p("int", "char") => 1;
+effect kr_td_pair_p("char", "int") => 1;
+effect[fallback] kr_td_pair_p($word, $w) => 0;
+effect kr_td_tag($word, $tag, $w) when or(eq($word, "struct"), eq($word, "union")) => $w;
+effect[fallback] kr_td_tag($word, $tag, $w) => $tag;
+effect kr_td_word($word, $tag) when or(eq($word, "struct"), eq($word, "union"))
+    => KStructRef($tag);
+effect kr_td_word("unsignedlong", $tag) => Unsigned(64);
+effect kr_td_word("unsigned", $tag) => Unsigned(32);
+effect kr_td_word("long", $tag) => Signed(64);
+effect kr_td_word("short", $tag) => Signed(16);
+effect kr_td_word("char", $tag) => Signed(8);
+effect kr_td_word("int", $tag) => Signed(32);
+effect kr_td_word("float", $tag) => Real("f32");
+effect kr_td_word("double", $tag) => Real("f64");
+effect[fallback] kr_td_word($word, $tag) => fail("unsupported typedef type words");
+
+// typedef names parse as types where kr.ts is expected
+syntax kr.ts[fallback] `$name:ident` when env.contains(syntax.context(), KrTypedefKey($name))
+    => KTypedefRef($name);
+
+// ---- function pointers (K&R 8.6) ------------------------------------------------------------
+// declarator ( * name ) ( params ): the type is Ptr(KFunT(result)); K&R
+// passes no prototype information, so calls through pointers take
+// default-promoted arguments with no arity check
+syntax kr.dclr[fallback] `( * $n:ident ) ( )` => KFPtr($n);
+syntax kr.dclr[fallback] `( * $n:ident ) ( $ps:kr.pnames )` => KFPtr($n);
+// ( * name ) [ n ]: pointer to array-of-n (K&R 8.6); (*a)[i] accesses
+syntax kr.dclr[fallback] `( * $n:ident ) [ $c:kr.arrsize ]` => KPArr($n, $c);
+// ( * name [ n ] ) ( params ): ARRAY of function pointers
+syntax kr.dclr[fallback] `( * $n:ident [ $c:kr.arrsize ] ) ( )` => KFPArr($n, $c);
+syntax kr.dclr[fallback] `( * $n:ident [ $c:kr.arrsize ] ) ( $ps:kr.pnames )` => KFPArr($n, $c);
+effect kr_decl_one(LD(KFPArr($n, $c), $i), $spec, $rest)
+    => KArrDecl($n, Ptr(KFunT($spec)), [$c], $rest);
+effect kr_param_decl_type(KFPArr($n, $c), $spec) => Ptr(Ptr(KFunT($spec)));
+effect kr_dclr_name(KFPArr($n, $c)) => $n;
+effect kr_dclr_count(KFPArr($n, $c)) => 0;
+effect kr_member_dclr_type(KFPArr($n, $c), $spec) => KArrT(Ptr(KFunT($spec)), $c);
+effect kr_decl_one(LD(KPArr($n, $c), $i), $spec, $rest)
+    => KDecl($n, Ptr(KArrT($spec, $c)), $i, $rest);
+effect kr_param_decl_type(KPArr($n, $c), $spec) => Ptr(KArrT($spec, $c));
+effect kr_dclr_name(KPArr($n, $c)) => $n;
+effect kr_dclr_count(KPArr($n, $c)) => 0;
+effect kr_member_dclr_type(KPArr($n, $c), $spec) => Ptr(KArrT($spec, $c));
+effect kr_decl_one(LD(KFPtr($n), $i), $spec, $rest)
+    => KDecl($n, Ptr(KFunT($spec)), $i, $rest);
+effect kr_param_decl_type(KFPtr($n), $spec) => Ptr(KFunT($spec));
+// a function name in value position decays to its address (K&R 7.6)
+effect kr_name_value(Signature($params, $result), $n) => Typed(Ptr(KFunT($result)), CFunAddr($n));
+effect kr_name_addr(Signature($params, $result), $n) => Typed(Ptr(KFunT($result)), CFunAddr($n));
+effect base.lower(Typed(Ptr(KFunT($r)), CFunAddr($name)), $environment)
+    => mlir.op("llvm.mlir.addressof", [], ["!llvm.ptr"],
+        [RawAttr("global_name", concat("@", $name))], []);
+// (*fp)(args): the callee is the pointer itself (no dereference load)
+effect kr_indirect_check($e, $args, $environment, $expected)
+    => bind(Typed(Ptr(KFunT($result)), $fp), kr_check_any($e, $environment),
+        expect(Typed($result,
+            CIndirectCall(Typed(Ptr(KFunT($result)), $fp),
+                kr_promoted_args($args, $environment))), $expected));
+effect base.lower(Typed($r, CIndirectCall(Typed(Ptr(KFunT($res)), $fp), $args)), $environment)
+    => mlir.op("llvm.call",
+        list.prepend(lower(Typed(Ptr(KFunT($res)), $fp), $environment),
+            kr_lower_args($args, $environment)),
+        [types.repr($r)],
+        [RawAttr("op_bundle_sizes", "array<i32>"),
+         RawAttr("operandSegmentSizes", concat("array<i32: ",
+             concat(text(int.add(size($args), 1)), ", 0>")))],
+        []);

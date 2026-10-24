@@ -1,0 +1,135 @@
+// ISO function specifiers compose as declaration facts, not function types.
+mod c11.functions;
+use c11.syntax;
+use c11.specifiers;
+use c11.declarators;
+use c11.scopes;
+use c11.objects;
+use c11.sema;
+use c11.names;
+use c11.types;
+use c11.msvc;
+use c11.layout;
+use c11.storage;
+use name_scope;
+use externc;
+use tree;
+use base;
+
+effect function_subject(c11.syntax.Function($name,$params,$result,$body)) => 1;
+effect function_subject(c11.syntax.OldFunction($name,$params,$result,$body)) => 1;
+effect function_subject(c11.syntax.VariadicFunction($name,$params,$result,$body)) => 1;
+effect function_subject(c11.syntax.Prototype($name,$params,$result,$variadic)) => 1;
+effect function_subject(c11.syntax.UnspecifiedPrototype($name,$result)) => 1;
+effect function_subject(c11.syntax.Internal($item)) => function_subject($item);
+effect[fallback] function_subject($item) => 0;
+effect c11.syntax.function_declaration($item,$flags,$storage) when function_subject($item)
+    => bind(c11.specifiers.FunctionFlags($inline,$noreturn),c11.specifiers.function_flags($flags),
+        Specified("file",c11.specifiers.FunctionFlags($inline,$noreturn),$storage,
+            choose(eq($inline,1),definition_source($item),NoSource()),
+            choose(and(eq($inline,2),not(eq($storage,"static"))),c11.syntax.HeaderInline($item),$item)));
+effect c11.scopes.link_declaration($item,c11.syntax.Specifiers($type,$storage,$flags)) when function_subject($item)
+    => Specified("block",c11.specifiers.function_flags($flags),$storage,NoSource(),$item);
+effect c11.scopes.link_declaration($item,c11.layout.AlignedSpec($spec,$alignment)) => c11.scopes.link_declaration($item,$spec);
+
+// Keep only constraint facts from the original body. Hoisting may remove a
+// static initializer before semantic checking; it must not hide its references.
+effect definition_source(c11.syntax.Function($name,$params,$result,$body)) => body_source($body);
+effect definition_source(c11.syntax.OldFunction($name,$params,$result,$body)) => body_source($body);
+effect definition_source(c11.syntax.VariadicFunction($name,$params,$result,$body)) => body_source($body);
+effect definition_source(c11.syntax.Internal($item)) => definition_source($item);
+effect[fallback] definition_source($item) => NoSource();
+effect body_source($body) => DefinitionSource(tree.fold_with($body,"c11.functions.source_fact",[],"c11.functions.source_children"));
+effect source_fact($out,c11.names.NameAt($frame,$name)) => list.prepend(Reference($frame,$name),$out);
+effect source_fact($out,c11.names.CallAt($frame,$name,$arguments)) => list.prepend(Reference($frame,$name),$out);
+effect source_fact($out,c11.syntax.StaticDeclare($name,$type,$value,$next)) => list.prepend(StaticObject($type),$out);
+effect[fallback] source_fact($out,$node) => $out;
+effect source_children(c11.names.NameAt($frame,$name)) => [];
+effect source_children(c11.names.CallAt($frame,$name,$arguments)) => [$arguments];
+effect source_children(c11.names.TypeAt($type,$tags)) => [];
+effect source_children(c11.names.ExpressionAt($tags,$expression)) => [$expression];
+effect source_children(c11.objects.ScopePoint($tags,$body,$next)) => [$body,$next];
+effect source_children(c11.scopes.LocalLinked($tags,$item,$next)) => [$next];
+effect source_children(c11.scopes.LocalTypedef($name,$type,$next)) => [$next];
+effect source_children(c11.syntax.Declare($name,$type,$value,$next)) => [$value,$next];
+effect source_children(c11.syntax.StaticDeclare($name,$type,$value,$next)) => [$value,$next];
+effect source_children(c11.storage.RegisterDeclare($name,$type,$value,$next)) => [$value,$next];
+effect[fallback] source_children($node) => tree.raw_children($node);
+
+effect c11.sema.item_name(Specified($scope,$flags,$storage,$source,$item)) => c11.sema.item_name($item);
+// Target declaration adapters operate on the underlying declaration while
+// retaining independent source specifiers. A target may refine its reserved
+// header helper policy through a separate, non-overlapping relation.
+effect c11.syntax.target_declaration(Specified($scope,$flags,$storage,$source,$item),$context)
+    => c11.functions.target_specifiers($scope,$flags,$storage,$source,c11.syntax.target_declaration($item,$context),$context);
+effect[fallback] c11.functions.target_specifiers($scope,$flags,$storage,$source,$item,$context)
+    => Specified($scope,$flags,$storage,$source,$item);
+effect c11.scopes.file_binding($context,Specified($scope,$flags,$storage,$source,$item)) => c11.scopes.file_binding($context,$item);
+effect c11.objects.declared_names(Specified($scope,$flags,$storage,$source,$item)) => c11.objects.declared_names($item);
+effect c11.objects.point_item(Specified($scope,$flags,$storage,$source,$item),$tags)
+    => Specified($scope,$flags,$storage,$source,c11.objects.point_item($item,$tags));
+effect c11.objects.block_link_children(Specified($scope,$flags,$storage,$source,$item)) => [$item];
+effect c11.scopes.replace_old_parameters(Specified($scope,$flags,$storage,$source,$item),$params)
+    => Specified($scope,$flags,$storage,$source,c11.scopes.replace_old_parameters($item,$params));
+effect externc.rewrite_enter(Specified($scope,$flags,$storage,$source,$item),$context,$state)
+    => tree.Descend([$item],$context,SpecifierCookie($scope,$flags,$storage,$source),$state);
+effect externc.rewrite_leave(SpecifierCookie($scope,$flags,$storage,$source),[$item],$context,$state)
+    => [Specified($scope,$flags,$storage,$source,$item),$state];
+effect c11.sema.declare(Specified($scope,$flags,$storage,$source,$item),$rest,$env)
+    => bind($name,c11.sema.item_name($item),c11.sema.declare($item,$rest,
+        record_source($name,$source,record_flags($name,$scope,$flags,$storage,$env))));
+effect record_source($name,DefinitionSource($facts),$env) => env.put($env,SourceKey($name),$facts);
+effect record_source($name,NoSource(),$env) => $env;
+effect record_flags($name,$scope,c11.specifiers.FunctionFlags($inline,$noreturn),$storage,$env)
+    => bind(Facts($iso,$external,$prior_noreturn),facts($name,$env),
+        env.put($env,FactsKey($name),Facts(or($iso,eq($inline,1)),
+            or($external,and(eq($scope,"file"),or(not(eq($inline,1)),eq($storage,"extern")))),or($prior_noreturn,$noreturn))));
+effect facts($name,$env) => choose(env.contains($env,FactsKey($name)),env.get($env,FactsKey($name)),Facts(0,0,0));
+effect c11.sema.prepare_item(Specified($scope,$flags,$storage,$source,$item),$rest,$env,$seen)
+    => c11.sema.prepare_item($item,$rest,$env,$seen);
+effect c11.sema.module_constraints($env) => list.fold("c11.functions.module_entry",env.entries($env),$env);
+effect module_entry($env,[FactsKey($name),Facts(1,$external,$noreturn)])
+    => seq(choose(or(env.contains($env,c11.sema.InternalKey($name)),has_definition(env.get($env,$name))),1,
+        fail("C inline declaration requires a definition in the same translation unit")),$env);
+effect[fallback] module_entry($env,$entry) => $env;
+effect has_definition(c11.sema.CSignature($params,$result,$variadic,$definition)) => $definition;
+effect has_definition(c11.sema.OldSignature($params,$result)) => 1;
+effect[fallback] has_definition($binding) => 0;
+// Check the completed declaration set: any non-inline or extern file-scope
+// declaration makes this TU provide the external definition (6.7.4p7).
+effect inline_only($name,$env) => bind(Facts($iso,$external,$noreturn),facts($name,$env),
+    and($iso,and(not($external),not(env.contains($env,c11.sema.InternalKey($name))))));
+effect c11.sema.function_constraints($name,$body,$env) => choose(inline_only($name,$env),
+    tree.fold_with(choose(env.contains($env,SourceKey($name)),env.get($env,SourceKey($name)),[]),
+        "c11.functions.constraint_fact",$env,"c11.functions.constraint_children"),1);
+effect constraint_children(Reference($frame,$name)) => [];
+effect constraint_children(StaticObject($type)) => [];
+effect[fallback] constraint_children($node) => tree.raw_children($node);
+effect constraint_fact($env,Reference($frame,$name)) => seq(check_reference(name_scope.lookup($frame,"ordinary",$name),$name,$env),$env);
+effect constraint_fact($env,StaticObject($type)) => seq(choose(immutable_object($type),1,
+    fail("C external inline definition cannot define a modifiable static object")),$env);
+effect[fallback] constraint_fact($env,$node) => $env;
+effect check_reference(name_scope.Binding($identity,c11.sema.DeclarationView($view)),$name,$env)
+    => choose(env.contains($env,c11.sema.InternalKey($name)),fail("C external inline definition cannot refer to an identifier with internal linkage"),1);
+effect[fallback] check_reference($binding,$name,$env) => 1;
+effect immutable_object(c11.types.Qualified($type,$const,$volatile,$restrict)) => or($const,immutable_object($type));
+effect immutable_object(c11.types.AlignedType($type,$alignment)) => immutable_object($type);
+effect immutable_object(c11.types.Array($count,$element)) => immutable_object($element);
+effect[fallback] immutable_object($type) => 0;
+
+effect c11.sema.language_annotations($item,$name,$env) when env.contains($env,FactsKey($name)) => bind(Facts($iso,$external,$noreturn),facts($name,$env),
+    bind($linked,choose(inline_only($name,$env),IsoInline($item),$item),choose($noreturn,NoReturn($linked),$linked)));
+effect base.lower_function(IsoInline($item)) => c11.sema.lower_symbol(IsoInline($item),env.empty());
+effect base.lower_function(NoReturn($item)) => c11.sema.lower_symbol(NoReturn($item),env.empty());
+effect c11.sema.lower_symbol(IsoInline($item),$policy) => c11.sema.lower_symbol($item,env.put($policy,"linkage","available_externally"));
+effect c11.sema.lower_symbol(NoReturn($item),$policy)
+    => c11.sema.lower_symbol($item,c11.sema.symbol_enum_attribute($policy,"noreturn"));
+// A return executed by a _Noreturn function is undefined behavior, not a
+// declaration constraint; do not reject unreachable return statements.
+effect c11.msvc.apply_advisory(c11.msvc.Advisory("noreturn"),$items) => list.map("c11.functions.mark_noreturn",$items);
+effect mark_noreturn(Specified($scope,$flags,$storage,$source,$item))
+    => bind(c11.specifiers.FunctionFlags($inline,$prior),c11.specifiers.function_flags($flags),
+        Specified($scope,c11.specifiers.FunctionFlags($inline,1),$storage,$source,$item));
+effect[fallback] mark_noreturn($item) => Specified("block",c11.specifiers.FunctionFlags(0,1),"none",NoSource(),$item);
+effect c11.msvc.validate_advisory($attribute,Specified($scope,$flags,$storage,$source,$item)) => c11.msvc.validate_advisory($attribute,$item);
+effect c11.msvc.validate_leaf_advisory(c11.msvc.Advisory($name),c11.syntax.OldFunction($symbol,$params,$result,$body)) when not(eq($name,"deprecated")) => 1;

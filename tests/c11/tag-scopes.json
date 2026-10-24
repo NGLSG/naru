@@ -1,0 +1,822 @@
+{
+  "format": 1,
+  "standard": "C11 N1570",
+  "target": "windows-x86_64-llp64",
+  "cases": [
+    {
+      "id": "local-tag-shadow",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S{int n;};int main(void){struct S{double n;};struct S s={42.0};return sizeof(s)==8?(int)s.n:1;}"
+    },
+    {
+      "id": "local-inline-tag",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int main(void){struct S{int n;}s={42};return s.n;}"
+    },
+    {
+      "id": "different-kind-inner-tag",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S{int n;};int main(void){union S{double n;};union S s={42.0};return (int)s.n;}"
+    },
+    {
+      "id": "sibling-tag-definitions",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int main(void){int n=0;{struct S{int n;};struct S s={20};n+=s.n;}{struct S{double n;};struct S s={22.0};n+=(int)s.n;}return n;}"
+    },
+    {
+      "id": "local-forward-opaque-pointer",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int main(void){struct S;struct S*p=0;return p==0?42:1;}"
+    },
+    {
+      "id": "local-forward-shadows-outer",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S{int n;};int main(void){struct S outer={42};{struct S;struct S*p=0;return p==0?outer.n:1;}}"
+    },
+    {
+      "id": "local-forward-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int main(void){struct S;struct S*p=0;struct S{int n;};struct S s={42};p=&s;return p->n;}"
+    },
+    {
+      "id": "file-forward-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S;struct S*p;struct S{int n;};int main(void){struct S s={42};p=&s;return p->n;}"
+    },
+    {
+      "id": "file-opaque-pointer-comparison",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S;int f(struct S*p){return p==0?42:1;}int main(void){return f(0);}"
+    },
+    {
+      "id": "local-enum-shadow",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "enum{Answer=20};int main(void){int n=Answer;{enum{Answer=22};n+=Answer;}return n;}"
+    },
+    {
+      "id": "enum-shadows-outer-object",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int Answer=20;int main(void){enum{Answer=42};return Answer;}"
+    },
+    {
+      "id": "object-shadows-outer-enum",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "enum{Answer=20};int main(void){int Answer=42;return Answer;}"
+    },
+    {
+      "id": "typedef-shadows-outer-enum",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "enum{Answer=20};int main(void){typedef int Answer;Answer n=42;return n;}"
+    },
+    {
+      "id": "enumerator-declaration-point",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "enum{Answer=20};int main(void){enum{Answer=Answer+2};return Answer+20;}"
+    },
+    {
+      "id": "previous-enumerator-visible",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "enum{A=20,B=A+2};int main(void){return A+B;}"
+    },
+    {
+      "id": "definition-parameter-tag-visible",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int f(struct S{int n;}*p){struct S s={42};return s.n;}int main(void){return f(0);}"
+    },
+    {
+      "id": "definition-parameter-enum-visible",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int f(enum E{Answer=42}n){return Answer;}int main(void){return f(0);}"
+    },
+    {
+      "id": "prototype-tag-does-not-leak",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "void f(struct S*p);union S{int n;};int main(void){union S s={42};return s.n;}"
+    },
+    {
+      "id": "prototype-tags-with-file-forward",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S;int f(struct S*p);int f(struct S*p){return p==0?42:1;}int main(void){return f(0);}"
+    },
+    {
+      "id": "prototype-enum-later-array-bound",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int f(enum E{Count=2}n,int a[Count]);int main(void){return 42;}"
+    },
+    {
+      "id": "nested-tag-visible-at-file",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct A{struct B{int n;}b;};int main(void){struct B b={42};return b.n;}"
+    },
+    {
+      "id": "same-frame-tag-redefinition",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S{int n;};struct S{double n;};int main(void){return 42;}",
+      "reject": "duplicate C tag definition"
+    },
+    {
+      "id": "same-frame-tag-kind-conflict",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S{int n;};union S{int n;};int main(void){return 42;}",
+      "reject": "C tag kind mismatch"
+    },
+    {
+      "id": "local-forward-incomplete-sizeof",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S{int n;};int main(void){struct S;return sizeof(struct S);}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "sizeof-before-file-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S;int f(void){return sizeof(struct S);}struct S{char n[42];};int main(void){return f();}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "member-before-file-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S;int f(struct S*p){return p->n;}struct S{int n;};int main(void){return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "automatic-object-before-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S;int f(void){struct S s;return 42;}struct S{int n;};int main(void){return f();}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "local-tag-does-not-leak",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int main(void){{struct S{int n;};}struct S s={42};return s.n;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "local-enum-does-not-leak",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int main(void){{enum{Answer=42};}return Answer;}",
+      "reject": "C identifier is not visible at this declaration point"
+    },
+    {
+      "id": "local-enum-object-conflict",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int main(void){int Answer=20;enum{Answer=42};return Answer;}",
+      "reject": "enumeration constant"
+    },
+    {
+      "id": "local-enum-typedef-conflict",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int main(void){typedef int Answer;enum{Answer=42};return Answer;}",
+      "reject": "enumeration constant"
+    },
+    {
+      "id": "enum-name-conflicts-with-parameter",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int f(int Answer){enum{Answer=42};return Answer;}int main(void){return f(0);}",
+      "reject": "enumeration constant"
+    },
+    {
+      "id": "distinct-prototype-tags-incompatible",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int f(struct S*p);int f(struct S*p);int main(void){return 42;}",
+      "reject": "incompatible C function declarations"
+    },
+    {
+      "id": "prototype-enum-does-not-leak",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "int f(enum E{Answer=42}n);int main(void){return Answer;}",
+      "reject": "C identifier is not visible at this declaration point"
+    },
+    {
+      "id": "self-by-value-is-incomplete",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3",
+      "source": "struct S{struct S child;};int main(void){return 42;}",
+      "reject": "C aggregate contains itself by value"
+    },
+    {
+      "id": "sizeof-dereference-before-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.5.3.4p1",
+      "source": "struct S;int f(struct S*p){return sizeof(*p);}struct S{int n;};int main(void){return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "pointer-add-before-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.5.6p2",
+      "source": "struct S;int f(struct S*p){p=p+1;return 42;}struct S{int n;};int main(void){return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "pointer-subtract-before-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.5.6p3",
+      "source": "struct S;int f(struct S*p){return p-p;}struct S{int n;};int main(void){return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "pointer-increment-before-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.5.2.4; 6.5.6",
+      "source": "struct S;int f(struct S*p){p++;return 42;}struct S{int n;};int main(void){return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "pointer-compound-before-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.5.16.2; 6.5.6",
+      "source": "struct S;int f(struct S*p){p+=1;return 42;}struct S{int n;};int main(void){return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "subscript-before-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.5.2.1; 6.5.6",
+      "source": "struct S;int f(struct S*p){return p[0].n;}struct S{int n;};int main(void){return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "record-field-before-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.7.2.1p3",
+      "source": "struct B;struct A{struct B b;};struct B{int n;};int main(void){return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "definition-hides-outer-tag-before-fields",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.5.3.4p1",
+      "source": "struct S{int n;};int main(void){struct S{int a[sizeof(struct S)];};return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "pointer-stride-after-local-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.5.6; 6.5.2.4; 6.5.16.2",
+      "source": "int main(void){struct S;struct S*p;struct S{int n;};struct S a[3]={{20},{22},{7}};p=a;p++;p+=1;p--;return p[-1].n+p->n;}"
+    },
+    {
+      "id": "pointer-difference-after-local-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.5.6p9",
+      "source": "int main(void){struct S;struct S*p;struct S{int n;};struct S a[3]={{1},{2},{3}};p=a;return (p+2)-p+40;}"
+    },
+    {
+      "id": "commutative-record-subscript",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.5.2.1p2",
+      "source": "int main(void){struct S{int n;};struct S a[2]={{20},{22}};struct S*p=a;return 0[p].n+1[p].n;}"
+    },
+    {
+      "id": "typedef-before-tag-completion",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.7.7; 6.7.2.3",
+      "source": "typedef struct S S;S*p;struct S{int n;};int main(void){S s={42};p=&s;return p->n;}"
+    },
+    {
+      "id": "future-enumerator-in-function",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7",
+      "source": "int f(void){return Answer;}enum{Answer=42};int main(void){return f();}",
+      "reject": "C identifier is not visible at this declaration point"
+    },
+    {
+      "id": "future-enumerator-in-static-assert",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7.10",
+      "source": "_Static_assert(Answer==42,\"future\");enum{Answer=42};int main(void){return 42;}",
+      "reject": "C identifier is not visible at this declaration point"
+    },
+    {
+      "id": "future-object-in-function",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7",
+      "source": "int f(void){return Answer;}int Answer=42;int main(void){return f();}",
+      "reject": "C identifier is not visible at this declaration point"
+    },
+    {
+      "id": "future-object-address-in-global",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7.9",
+      "source": "int*p=&Answer;int Answer=42;int main(void){return *p;}",
+      "reject": "C identifier is not visible at this declaration point"
+    },
+    {
+      "id": "future-function-without-prototype",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.5.1; 6.5.2.2",
+      "source": "int f(void){return g();}int g(void){return 42;}int main(void){return f();}",
+      "reject": "C identifier is not visible at this declaration point"
+    },
+    {
+      "id": "recursive-function-remains-visible",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.5.2.2",
+      "source": "int f(int n){if(n)return f(n-1);return 42;}int main(void){return f(3);}"
+    },
+    {
+      "id": "prototype-makes-later-function-visible",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.7.6.3",
+      "source": "int g(void);int f(void){return g();}int g(void){return 42;}int main(void){return f();}"
+    },
+    {
+      "id": "sizeof-completed-dereference",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.5.3.4",
+      "source": "int main(void){struct S;struct S*p=0;struct S{int n;};return sizeof(*p)+38;}"
+    },
+    {
+      "id": "enum-redeclaration-reuses-outer",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "enum E{A=42};int main(void){enum E;enum E x=A;return x;}",
+      "reject": "C enum declaration requires a definition or declarator"
+    },
+    {
+      "id": "first-enum-forward",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "enum E;int main(void){return 42;}",
+      "reject": "incomplete C enum type"
+    },
+    {
+      "id": "first-enum-pointer",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "enum E*p;int main(void){return 42;}",
+      "reject": "incomplete C enum type"
+    },
+    {
+      "id": "empty-struct",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "struct S{};int main(void){return 42;}",
+      "reject": "C tag definition requires at least one member or enumerator"
+    },
+    {
+      "id": "empty-union",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "union U{};int main(void){return 42;}",
+      "reject": "C tag definition requires at least one member or enumerator"
+    },
+    {
+      "id": "empty-enum",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "enum E{};int main(void){return 42;}",
+      "reject": "C tag definition requires at least one member or enumerator"
+    },
+    {
+      "id": "earlier-byvalue-field-later-tag-definition",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "struct A{struct B b;struct B{int n;}later;};int main(void){return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "same-frame-enum-then-typedef",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){enum{A=42};typedef int A;return 42;}",
+      "reject": "C ordinary identifier conflicts with enumeration constant"
+    },
+    {
+      "id": "same-frame-enum-then-object",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){enum{A=42};int A;return 42;}",
+      "reject": "C ordinary identifier conflicts with enumeration constant"
+    },
+    {
+      "id": "struct-definition-ice-hides-parent",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "struct S{int n;};int main(void){struct S{int a[sizeof(struct S)];};return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "enum-definition-ice-hides-parent",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "enum E{A=20};int main(void){enum E{B=sizeof(enum E)};return 42;}",
+      "reject": "incomplete C enum type",
+      "reference_reject_required": false,
+      "reference_flags": [],
+      "reference_note": "Clang accepts this input. N1570 6.2.1p7 begins the inner tag scope just after its name; 6.7.2.2p4 keeps that enum incomplete until }; 6.7.2.3p3 requires an enum type reference to follow completion. This diagnostic is required independently of Clang acceptance; the source is never executed."
+    },
+    {
+      "id": "nested-field-enum-declaration-point",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "enum{A=20};struct S{enum{A=A+2}n;};int main(void){return A+20;}",
+      "reject": "duplicate C enumeration constant"
+    },
+    {
+      "id": "enum-own-first-initializer-outer-value",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "enum{A=20};int main(void){enum{A=A+2,B=A};return B+20;}"
+    },
+    {
+      "id": "parameter-enum-conflicts-object",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int f(enum{A=42}n){int A;return 42;}int main(void){return f(0);}",
+      "reject": "C ordinary identifier conflicts with enumeration constant"
+    },
+    {
+      "id": "parameter-enum-conflicts-typedef",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int f(enum{A=42}n){typedef int A;return 42;}int main(void){return f(0);}",
+      "reject": "C ordinary identifier conflicts with enumeration constant"
+    },
+    {
+      "id": "if-condition-tag-visible-in-branch",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){if(sizeof(struct S{int n;})==4){struct S s={42};return s.n;}return 1;}"
+    },
+    {
+      "id": "if-condition-tag-does-not-leak",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){if(sizeof(struct S{int n;})==4){}struct S s;return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "while-condition-tag-visible-in-body",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){while(sizeof(struct S{int n;})==4){struct S s={42};return s.n;}return 1;}"
+    },
+    {
+      "id": "while-condition-tag-does-not-leak",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){while(sizeof(struct S{int n;})==4){break;}struct S s;return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "for-init-tag-visible-body",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){for(struct S{int n;}s={42};s.n;){struct S t={s.n};return t.n;}return 1;}"
+    },
+    {
+      "id": "for-init-tag-does-not-leak",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){for(struct S{int n;}s={42};0;){}struct S s;return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "if-condition-enum-visible-in-branch",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){if(sizeof(enum E{A=42})==4)return A;return 1;}"
+    },
+    {
+      "id": "if-condition-enum-does-not-leak",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){if(sizeof(enum E{A=42})==4){}return A;}",
+      "reject": "C identifier is not visible at this declaration point"
+    },
+    {
+      "id": "array-bound-enum-visible-after-declaration",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){int a[sizeof(enum{A=42})];return A;}"
+    },
+    {
+      "id": "initializer-enum-visible-after-declaration",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){int a=sizeof(enum{A=42});return A;}"
+    },
+    {
+      "id": "field-enum-visible-at-file-scope",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "struct S{enum{A=42}n;};int main(void){return A;}"
+    },
+    {
+      "id": "field-enum-visible-at-block-scope",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){struct S{enum{A=42}n;};return A;}"
+    },
+    {
+      "id": "label-block-tag-does-not-leak",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){next:{struct S{int n;};}struct S s;return 42;}",
+      "reject": "incomplete C aggregate used by value"
+    },
+    {
+      "id": "label-expression-tag-visible-after-label",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){next:sizeof(struct S{int n;});struct S s={42};return s.n;}"
+    },
+    {
+      "id": "for-step-enum-visible-in-body",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "int main(void){int i=0;for(;i<1;i+=sizeof(enum{A=42})){return A;}return 1;}"
+    },
+    {
+      "id": "empty-enum-comma",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1; 6.2.3; 6.7.2.2; 6.7.2.3; 6.8.4p3; 6.8.5p5",
+      "source": "enum E{,};int main(void){return 42;}",
+      "reject": "C enum definition requires at least one enumerator"
+    },
+    {
+      "id": "own-initializer-may-complete-local-object",
+      "source": "int main(void){struct S s=(struct S{int n;}){42};return s.n;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "file-linkage-may-complete-later-declarator",
+      "source": "struct S s,a[sizeof(struct S{int n;})];int main(void){s.n=42;return s.n;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "read-outer-object-before-expression-enum",
+      "source": "int A=20;int main(void){int n=A+sizeof(enum{A=22});return n+18;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "read-outer-enum-before-expression-enum",
+      "source": "enum{A=20};int main(void){int n=A+sizeof(enum{A=22});return n+18;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "read-after-expression-enum-uses-new-binding",
+      "source": "int A=20;int main(void){int n=A+sizeof(enum{A=22})+A;return n-4;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "assign-outer-object-before-expression-enum",
+      "source": "int A=20;int main(void){int n=(A+=18)+sizeof(enum{A=22});return n;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "sizeof-outer-array-before-expression-enum",
+      "source": "int A[3];int main(void){int n=sizeof(A)+sizeof(enum{A=22});return n+26;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "address-outer-object-before-expression-enum",
+      "source": "int A=42;int main(void){int*p=&A+(sizeof(enum{A=22})-4);return *p;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "call-outer-function-before-expression-enum",
+      "source": "int A(void){return 38;}int main(void){int n=A()+sizeof(enum{A=22});return n;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "read-static-outer-object-before-expression-enum",
+      "source": "int f(void){static int A=20;{int n=A+sizeof(enum{A=22});return n+18;}}int main(void){return f();}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "read-register-outer-object-before-expression-enum",
+      "source": "int main(void){register int A=20;{int n=A+sizeof(enum{A=22});return n+18;}}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "read-parameter-before-expression-enum",
+      "source": "int f(int A){{int n=A+sizeof(enum{A=22});return n+18;}}int main(void){return f(20);}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "ice-outer-enum-before-expression-enum",
+      "source": "enum{A=20};int main(void){enum{B=A+sizeof(enum{A=22})};return B+18;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "own-file-object-address-in-initializer",
+      "source": "struct S{int n;struct S*p;};struct S s={42,&s};int main(void){return s.p->n;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "file-comma-prior-object-address",
+      "source": "int A=42,*P=&A;int main(void){return *P;}",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "local-comma-before-later-bound-definition",
+      "source": "int main(void){struct S s,a[sizeof(struct S{int n;})];return 42;}",
+      "reject": "incomplete C aggregate used by value",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "local-reference-before-expression-enum",
+      "source": "int main(void){int n=A+sizeof(enum{A=38});return 42;}",
+      "reject": "C identifier is not visible at this declaration point",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "file-reference-before-same-declaration-enum",
+      "source": "int early=A,late=sizeof(enum{A=42});int main(void){return 42;}",
+      "reject": "C identifier is not visible at this declaration point",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "sizeof-before-expression-enum-name",
+      "source": "int main(void){int n=sizeof(A)+sizeof(enum{A=38});return 42;}",
+      "reject": "C identifier is not visible at this declaration point",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "unselected-generic-before-expression-enum-name",
+      "source": "int main(void){int n=_Generic(0,int:42,default:A)+sizeof(enum{A=38});return 42;}",
+      "reject": "C identifier is not visible at this declaration point",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4"
+    },
+    {
+      "id": "label-before-declaration-is-not-c11",
+      "source": "int main(void){next:int a=42;return a;}",
+      "reject": "C11 label requires a statement",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.7p7; 6.5.1.1; 6.5.3.4",
+      "reference_reject_required": false,
+      "reference_flags": [],
+      "reference_note": "Clang accepts declaration-after-label for this Windows target. N1570 6.8.1 requires a statement after a label; a declaration is a block-item, not a statement. This diagnostic is independent of the reference acceptance; the input is not executed."
+    },
+    {
+      "id": "sizeof-typedef-before-expression-enum",
+      "feature": "scope",
+      "work_item": "tag-and-enum-scope",
+      "clause": "6.2.1p7; 6.5.3.4",
+      "source": "typedef long long A;int main(void){int n=sizeof(A)+sizeof(enum{A=42});return n+30;}"
+    }
+  ]
+}
